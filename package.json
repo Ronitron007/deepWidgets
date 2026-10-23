@@ -1,0 +1,11 @@
+{
+  "name": "deepwidgets",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node src/cli.mjs dev",
+    "once": "node src/cli.mjs once",
+    "create": "node src/cli.mjs create",
+    "check": "node --test src/host.test.mjs"
+  }
+}
