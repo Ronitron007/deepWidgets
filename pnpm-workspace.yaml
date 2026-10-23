@@ -30,7 +30,7 @@ peerDependencyRules:
 # (git hooks) genuinely need theirs.
 allowBuilds:
   esbuild: true
-  lefthook: true
+  lefthook: false
   # Cross-platform boundary for the persistent PTY backend, including ConPTY on Windows.
   node-pty: true
   # Pulled in by @earendil-works/pi-ai (optional LLM API backend). pnpm lists
