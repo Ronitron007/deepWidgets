@@ -1,13 +1,14 @@
 # Plan for the fork and trim `fork_trim.plan`
 
-This plan implements the spec `docs/specs/fork-trim.md`. Each unit is one branch and one merge. Each unit has a check that can fail.
+This plan implements the spec `docs/specs/fork-trim.md`. Each unit is one branch and one PR. Each unit has a check that can fail. The task file for a unit is `docs/tasks/<unit>.md`.
 
 ## Units `fork_trim.plan.units`
 
 | Unit | Change | Check | Needs |
 |---|---|---|---|
 | `fork.import` | One squashed commit of DSH at the pinned SHA. Add `UPSTREAM.md`. Remove `plugins/`, `registry.json`, and `src/`. | A script compares the tree with a clean upstream checkout. It exits 0 only when the sole differences are `UPSTREAM.md` and the removed files. | the spec |
-| `fork.baseline` | Remove the lefthook `postinstall` entry and `lefthook.yml`. Replace the root `CLAUDE.md`. Move the Cordis skill. Install and build. | A boot smoke check exits 0. It sees the host `ready` message and the renderer load of `dsh-app://app`. | `fork.import` |
+| `fork.baseline` | Remove the lefthook `postinstall` entry and `lefthook.yml`. Replace the root `CLAUDE.md`. Install and build. | The boot smoke check `tools/smoke-desktop.mjs` exits 0. It sees a renderer page at `dsh-app://app/` and an HTTP answer from the host. A run with a short timeout must exit 1. | `fork.import` |
+| `skill.cordis_move` | Add the Cordis skill at `.agents/skills/cordis/`. | The skill files equal local commit `4d34ec5`, except for one deleted line. | `fork.import` |
 | `probe.round_trip` | Add the `probe` bundle and its test. | A Playwright `_electron` test reads the text `probe pid <n>`. A second run with the probe host row disabled must fail. | `fork.baseline` |
 | `trim.profile` | Add the deepWidgets patch file. It disables every row that is not on the keep list. | The smoke check and the probe test pass. The loaded row ids of both Contexts equal a committed list. | `probe.round_trip` |
 | `trim.packages` | Delete packages that no row loads, in batches. Start with packages that no other package imports. | After each batch, the install, the build, the smoke check, and the probe test pass. | `trim.profile` |
@@ -27,9 +28,9 @@ Read these DSH files before you write a check. Use them when they fit.
 
 ## Process `fork_trim.plan.process`
 
-- This repository has no Git remote. A unit is a local branch in `.worktrees/<branch>`. The branch merges into `main` with a merge commit.
+- The remote is https://github.com/Ronitron007/deepWidgets. A unit is a branch in `.worktrees/<branch>` and a PR against `main`. The PR merges with a merge commit.
 
-- An Opus agent implements each unit. A fresh Opus agent reviews it. The reviewer is never the implementer.
+- A Sonnet agent implements each unit from its task file. The planning session reviews the PR. The reviewer is never the implementer.
 
 - A unit merges only when its check passes and its review has no open finding.
 
