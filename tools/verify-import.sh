@@ -8,8 +8,7 @@ SHA="$(git -C "$ROOT" show "$REV:UPSTREAM.md" | grep -oE '[0-9a-f]{40}' | head -
 REPO=deepseek-ai/deepseek-harness
 OWN='UPSTREAM.md tools/verify-import.sh docs/specs/fork-trim.md docs/plans/fork-trim.md'
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-STATUS="$(curl -fsS "https://api.github.com/repos/$REPO/compare/$SHA...master?per_page=1" \
-  | grep -m1 -oE '"status": *"[a-z]+"' | grep -oE '[a-z]+"$' | tr -d '"')"
+STATUS="$(gh api "repos/$REPO/compare/$SHA...master" --jq .status 2>/dev/null || true)"
 case "$STATUS" in
   identical|ahead) ;;
   *) echo "verify-import: $SHA is not on $REPO master (compare status: ${STATUS:-none})" >&2; exit 1 ;;
