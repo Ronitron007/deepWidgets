@@ -1,3 +1,5 @@
+> **deepWidgets is an unofficial fork.** It is built on DeepSeek Harness (DSH) and is not affiliated with DeepSeek or endorsed by DeepSeek. The import source and license are in [UPSTREAM.md](UPSTREAM.md). The rest of this README is the upstream DSH README.
+
 # DeepSeek Harness
 
 English | [中文](README.zh.md)
