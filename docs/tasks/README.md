@@ -24,7 +24,9 @@ Before you write new code, search for code that already does the job. Search thi
 
 - Change only the files that your task names. If you must change another file, stop and report why.
 
-- Delete code that the trim removes. Do not comment it out.
+- Do not delete code that the trim removes. Comment it out, and put the marker `deepwidgets-trim: <reason>` on the first commented line.
+
+- To turn off a plugin row, set `disabled: true` on the row. Keep the row.
 
 - Do not change the Electron version or the pnpm version.
 

@@ -32,13 +32,13 @@ Electron main starts the host with `ELECTRON_RUN_AS_NODE=1` and `--expose-intern
 
 ## Trim method `fork_trim.method`
 
-The trim removes code in two levels. The first level is the runtime. The second level is the source tree.
+The trim turns code off. It does not delete code. The operator reads the code that the trim turns off, because it shows the DSH style for Cordis plugins. A deletion unit comes later, and only when the operator asks for it.
 
-1. Turn off plugin rows first. A deepWidgets patch file sets `disabled: true` on each row to remove. DSH uses the same syntax in `packages/bundle/web-app/cordis.patch.yml`.
+1. Turn off plugin rows first. A deepWidgets patch file sets `disabled: true` on each row to remove. DSH uses the same syntax in `packages/bundle/web-app/cordis.patch.yml`. Keep the row, and put a `# deepwidgets-trim: <reason>` comment above it.
 
-2. Delete a package only when no row loads it and no kept package imports it.
+2. Keep each package that no row loads. Do not delete its files, and do not comment them out.
 
-3. Delete code. Do not comment out code. Git history keeps each deleted file, and `git revert` brings it back.
+3. When a kept file must change, comment out the lines. Do not delete them. Put the marker `deepwidgets-trim: <reason>` on the first commented line. Then `git grep deepwidgets-trim` finds each commented block.
 
 4. After each cut, run the build, the boot smoke check, and the probe test. Do not start the next cut until all three pass.
 
