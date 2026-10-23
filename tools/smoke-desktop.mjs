@@ -4,7 +4,7 @@
  */
 
 import { spawn, execFile } from 'node:child_process'
-import { appendFileSync, openSync } from 'node:fs'
+import { appendFileSync, existsSync, openSync, readFileSync } from 'node:fs'
 import { mkdir, mkdtemp } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -13,6 +13,89 @@ import { setTimeout as delay } from 'node:timers/promises'
 
 const root = join(import.meta.dirname, '..')
 const timeoutMs = positiveInteger(process.env.DSH_SMOKE_TIMEOUT_MS, 240_000)
+const groupWatcherSource = `
+import ctypes, ctypes.util, os, select, sys, traceback
+libc = ctypes.CDLL(ctypes.util.find_library("c"))
+PROC_PIDT_SHORTBSDINFO = 13
+class ShortInfo(ctypes.Structure):
+    _fields_ = [
+        ("pbsi_pid", ctypes.c_uint32), ("pbsi_ppid", ctypes.c_uint32), ("pbsi_pgid", ctypes.c_uint32),
+        ("pbsi_status", ctypes.c_uint32), ("pbsi_comm", ctypes.c_char * 16), ("pbsi_flags", ctypes.c_uint32),
+        ("pbsi_uid", ctypes.c_uint32), ("pbsi_gid", ctypes.c_uint32), ("pbsi_ruid", ctypes.c_uint32),
+        ("pbsi_rgid", ctypes.c_uint32), ("pbsi_svuid", ctypes.c_uint32), ("pbsi_svgid", ctypes.c_uint32),
+        ("pbsi_rfu", ctypes.c_uint32),
+    ]
+def child_pids(ppid):
+    fn = libc.proc_listchildpids
+    fn.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    fn.restype = ctypes.c_int
+    buf = (ctypes.c_int * 512)()
+    n = fn(int(ppid), ctypes.byref(buf), ctypes.sizeof(buf))
+    if n < 0:
+        return []
+    return [int(buf[i]) for i in range(min(n, 512))]
+def pgid_of(pid):
+    fn = libc.proc_pidinfo
+    fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+    fn.restype = ctypes.c_int
+    info = ShortInfo()
+    size = fn(int(pid), PROC_PIDT_SHORTBSDINFO, 0, ctypes.byref(info), ctypes.sizeof(info))
+    if size <= 0 or int(info.pbsi_pid) != int(pid):
+        return 0
+    return int(info.pbsi_pgid)
+NOTE = select.KQ_NOTE_FORK | select.KQ_NOTE_EXEC | select.KQ_NOTE_EXIT
+def attach(kq, pid):
+    event = select.kevent(int(pid), filter=select.KQ_FILTER_PROC, flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE | select.KQ_EV_CLEAR, fflags=NOTE)
+    kq.control([event], 0)
+def main():
+    out = sys.argv[1]
+    self_group = os.getpgrp()
+    print("ready", flush=True)
+    root_pid = int(sys.stdin.readline())
+    kq = select.kqueue()
+    watched = set()
+    seen_groups = set()
+    def emit(pgid):
+        if pgid <= 0 or pgid == self_group or pgid in seen_groups:
+            return
+        seen_groups.add(pgid)
+        with open(out, "a") as handle:
+            handle.write(str(pgid) + "\\n")
+            handle.flush()
+    def watch(pid):
+        pgid = pgid_of(pid)
+        if pgid:
+            emit(pgid)
+        if pid in watched:
+            return
+        try:
+            attach(kq, pid)
+        except OSError:
+            return
+        watched.add(pid)
+    def walk(pid, seen):
+        if pid in seen:
+            return
+        seen.add(pid)
+        watch(pid)
+        for child in child_pids(pid):
+            walk(child, seen)
+    walk(root_pid, set())
+    while True:
+        events = kq.control(None, 64, 0.05)
+        for event in events:
+            pgid = pgid_of(event.ident)
+            if pgid:
+                emit(pgid)
+            if event.fflags & select.KQ_NOTE_FORK:
+                for child in child_pids(event.ident):
+                    walk(child, set())
+        walk(root_pid, set())
+try:
+    main()
+except Exception:
+    traceback.print_exc()
+`
 
 const temp = await mkdtemp(join(tmpdir(), 'deepwidgets-smoke-desktop-'))
 const home = join(temp, 'home')
@@ -83,12 +166,23 @@ async function descendantPids(rootPid) {
   return [...seen]
 }
 
+function addGroup(pgid) {
+  if (pgid === '' || pgid === '0' || pgid === selfGroup) return
+  knownGroups.add(pgid)
+}
+
+function readWatchedGroups() {
+  let text = ''
+  try { text = readFileSync(groupFile, 'utf8') } catch { return }
+  for (const line of lines(text)) addGroup(line)
+}
+
 async function rememberGroups() {
+  readWatchedGroups()
   const pids = await descendantPids(groupId)
   for (const pid of pids) {
     const result = await capture('ps', ['-o', 'pgid=', '-p', pid])
-    const pgid = result.stdout.trim()
-    if (pgid !== '') knownGroups.add(pgid)
+    addGroup(result.stdout.trim())
   }
 }
 
@@ -125,6 +219,7 @@ function signalGroups(signal) {
 
 async function stopGroup(hostPid) {
   await rememberGroups()
+  note(`groups=${[...knownGroups].join(',')}`)
   signalGroups('SIGTERM')
   const deadline = Date.now() + 20_000
   let remaining = await groupPids()
@@ -152,9 +247,66 @@ async function stopGroup(hostPid) {
 }
 
 function finish(ok, reason) {
+  if (groupWatcher !== undefined && groupWatcher.exitCode === null) {
+    try { groupWatcher.kill('SIGKILL') } catch { /* already gone */ }
+  }
   const line = ok ? 'smoke-desktop: pass' : `smoke-desktop: fail: ${reason}`
   console.log(line)
   process.exit(ok ? 0 : 1)
+}
+
+function pythonBin() {
+  const candidates = ['/opt/homebrew/bin/python3', '/usr/local/bin/python3', '/usr/bin/python3']
+  return candidates.find((path) => existsSync(path))
+}
+
+function startGroupWatcher(file) {
+  const python = pythonBin()
+  if (python === undefined) {
+    note('group-watcher: python3 unavailable')
+    return Promise.resolve(undefined)
+  }
+  const watcher = spawn(python, ['-c', groupWatcherSource, file], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, PATH: commandPath },
+  })
+  watcher.stderr.on('data', (chunk) => { note(`group-watcher: ${chunk.toString().trim()}`) })
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      try { watcher.kill('SIGKILL') } catch { /* already gone */ }
+      reject(new Error('group watcher did not start'))
+    }, 5000)
+    let buffer = ''
+    let settled = false
+    watcher.stdout.on('data', (chunk) => {
+      buffer += chunk.toString()
+      if (settled || !buffer.includes('ready')) return
+      settled = true
+      clearTimeout(timer)
+      resolve(watcher)
+    })
+    watcher.once('error', (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(error)
+    })
+    watcher.once('exit', (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(new Error(`group watcher exited ${String(code)}`))
+    })
+  })
+}
+
+const selfGroup = (await capture('ps', ['-o', 'pgid=', '-p', String(process.pid)])).stdout.trim()
+const groupFile = join(temp, 'process-groups')
+let groupWatcher
+try {
+  groupWatcher = await startGroupWatcher(groupFile)
+} catch (error) {
+  note(`group-watcher: ${error instanceof Error ? error.message : 'failed'}`)
 }
 
 const logFd = openSync(logPath, 'a')
@@ -176,7 +328,9 @@ const child = spawn('corepack', ['pnpm', 'run', 'start:desktop'], {
 
 const groupId = child.pid
 if (groupId === undefined) finish(false, 'desktop process did not start')
-const knownGroups = new Set([String(groupId)])
+const knownGroups = new Set()
+addGroup(String(groupId))
+if (groupWatcher !== undefined) groupWatcher.stdin.write(`${String(groupId)}\n`)
 child.once('error', (error) => { note(`spawn error=${error.message}`) })
 note(`group=${String(groupId)} renderer=${String(rendererPort)} hostInspect=${String(hostInspectPort)} mainInspect=${String(mainInspectPort)}`)
 child.unref()
@@ -209,6 +363,7 @@ finish(failed === undefined, failed ?? 'unknown')
 
 async function waitForRenderer(deadline) {
   while (Date.now() < deadline) {
+    await rememberGroups()
     try {
       const response = await fetch(`http://127.0.0.1:${String(rendererPort)}/json/list`, { signal: AbortSignal.timeout(2000) })
       if (response.ok) {
@@ -230,6 +385,7 @@ async function waitForRenderer(deadline) {
 
 async function waitUntilComplete(page, deadline) {
   while (Date.now() < deadline) {
+    await rememberGroups()
     try {
       const value = await evaluate(page.webSocketDebuggerUrl, 'document.readyState', deadline)
       note(`connected=${page.url} readyState=${String(value)}`)

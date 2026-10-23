@@ -14,7 +14,7 @@ Trim DSH to two Cordis Contexts and one test widget. The spec is `docs/specs/for
 
 - A task file in `docs/tasks/` is the authority for its unit. Read `docs/tasks/README.md` before you start a task.
 
-- Delete code that the trim removes. Do not comment it out.
+- Do not delete code that the trim removes. Comment it out, and put the marker `deepwidgets-trim: <reason>` on the first commented line.
 
 - Do not change the Electron version.
 
