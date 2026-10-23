@@ -262,10 +262,7 @@ function pythonBin() {
 
 function startGroupWatcher(file) {
   const python = pythonBin()
-  if (python === undefined) {
-    note('group-watcher: python3 unavailable')
-    return Promise.resolve(undefined)
-  }
+  if (python === undefined) return Promise.reject(new Error('python3 unavailable'))
   const watcher = spawn(python, ['-c', groupWatcherSource, file], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, PATH: commandPath },
@@ -307,7 +304,9 @@ try {
   groupWatcher = await startGroupWatcher(groupFile)
 } catch (error) {
   note(`group-watcher: ${error instanceof Error ? error.message : 'failed'}`)
+  finish(false, 'group watcher did not start')
 }
+if (groupWatcher === undefined) finish(false, 'group watcher did not start')
 
 const logFd = openSync(logPath, 'a')
 const child = spawn('corepack', ['pnpm', 'run', 'start:desktop'], {
