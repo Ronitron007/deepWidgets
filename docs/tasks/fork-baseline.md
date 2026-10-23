@@ -86,6 +86,10 @@ The root `postinstall` script installs DSH Git hooks. Remove it before the first
 
 2. Delete `lefthook.yml`.
 
+3. In `pnpm-workspace.yaml`, under `allowBuilds`, change `lefthook: true` to `lefthook: false`. Change nothing else in that file. This stops the `lefthook` package from running its own postinstall, `lefthook install -f`. That postinstall creates `lefthook.yml` and writes hooks into the common Git directory.
+
+4. If `~/deepWidgets/.git/hooks/prepare-commit-msg` exists from an earlier install, delete it.
+
 Keep `scripts/install-lefthook.mjs` and the files that refer to it. Without the `postinstall` entry, nothing runs it. The unit `trim.tooling` deletes it with the other DSH scripts.
 
 Keep the `lefthook` dev dependency. A change to it changes `pnpm-lock.yaml`, and this task must not change the lockfile.
@@ -110,6 +114,9 @@ After the install, make sure that no Git hook was installed:
 git config --get core.hooksPath ; echo "hooksPath exit=$?"                     # must print exit=1
 ls "$(git rev-parse --git-common-dir)/dsh-hooks" ; echo "common hooks exit=$?" # must print a non-zero exit
 ls "$(git rev-parse --git-dir)/dsh-hooks" ; echo "worktree hooks exit=$?"      # must print a non-zero exit
+find "$(git rev-parse --git-common-dir)/hooks" -type f ! -name '*.sample'        # must print no path
+test ! -e "$(git rev-parse --git-common-dir)/hooks/prepare-commit-msg" ; echo "prepare-commit-msg absent exit=$?"   # must print exit=0
+test ! -e lefthook.yml ; echo "lefthook.yml absent exit=$?"                     # must print exit=0
 ```
 
 ### Build `fork.baseline.steps.build`
@@ -185,6 +192,8 @@ Put these in the `Findings` section of the PR body. Write "unknown" when you did
 - `package.json` (only the `postinstall` entry)
 
 - `lefthook.yml` (delete)
+
+- `pnpm-workspace.yaml` (only `allowBuilds.lefthook`)
 
 - `tools/smoke-desktop.mjs` (new)
 
