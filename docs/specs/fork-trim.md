@@ -68,7 +68,7 @@ The text shows only after a successful round trip from the `client` Context to t
 
 ## Agent files `fork_trim.agent_files`
 
-DSH contains 32 `CLAUDE.md` and `AGENTS.md` files. It also contains `.agents/` with 3,809 note files and 40 skills. In DSH, `.claude/skills` is a symbolic link to `../.agents/skills`.
+At `22ddee3`, DSH contains 34 `CLAUDE.md` and `AGENTS.md` files. It also contains `.agents/` with 3,911 note files and 21 skills. In DSH, `.claude/skills` is a symbolic link to `../.agents/skills`.
 
 - The root `CLAUDE.md` becomes a short deepWidgets file. It links to the DSH `AGENTS.md` for code rules.
 
