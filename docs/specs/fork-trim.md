@@ -94,7 +94,7 @@ Do not change the Electron version during the trim. An Electron upgrade is a sep
 
 ## Out of scope `fork_trim.out_of_scope`
 
-- The floating pet window. The `shell.pet_window` unit comes after the trim.
+- The floating window. The spec `docs/specs/floating-widget.md` owns it.
 
 - The agent, LLM providers, MCP, and the plugin manager.
 
