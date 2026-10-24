@@ -92,7 +92,7 @@ Start with these 23 rows enabled. Turn off every other row.
 
 The rows that the keep list names stay enabled. Do not ablate them. Ablate means to try the boot check with the row turned off.
 
-The host halves of `session-controller` and `file-upload` inject services of the agent. The trim turns off the agent rows. Thus these host halves can stay enabled but not become active. The task allows this. The rows check records it.
+The host halves of `session-controller` and `file-upload` inject services of the agent. The trim turns off the agent rows. Thus these host halves can stay enabled and stay pending. The rows check allows a pending row only when `rows.host.txt` names it as pending, with the services that it waits for. Each other kept host row must be active. The rules are in `trim.profile.steps.host_state`.
 
 ## Steps `trim.profile.steps`
 
@@ -203,13 +203,17 @@ Change `tools/smoke-desktop.mjs`. Use only Node built-in modules. Do not add a d
 
 4. Read the client rows with the current `evaluate` helper on the renderer page. Evaluate `JSON.stringify(window.__DSH_BOOT__.entries.map((entry) => entry.id))`.
 
-5. Read both row lists. In each line, ignore the text after `#`, and ignore blank lines. Each other line is a key, then an optional word `inactive`.
+5. Read both row lists. In each line, ignore the text after `#`, and ignore blank lines. In `rows.client.txt`, each other line is one key. In `rows.host.txt`, each other line gives one expected host item. The form is in `trim.profile.steps.host_state`.
 
-6. Compare each live list with its row list as sets. When they are not equal, the result is `smoke-desktop: fail: host rows: extra <keys>, missing <keys>`. Use `client rows` for the client list. Use the word `none` for an empty part.
+6. Compare the client keys with `rows.client.txt` as sets. Compare the host items with the expected host items as sets. The state is part of each host item. When a pair of sets is not equal, the result is `smoke-desktop: fail: host rows: extra <items>, missing <items>`. Use `client rows` for the client list, and the word `none` for an empty part. A host row in the wrong state shows in both parts.
 
 7. Write both live lists to the log file with `note`.
 
-8. In the comment at the top of the script, add one sentence about `DSH_SMOKE_ROWS`.
+8. When `DSH_SMOKE_ROWS_SAVE` is set, write the host snapshot to that file as JSON. The host snapshot is the array that step 6 of `trim.profile.steps.host_rows` returns.
+
+9. When `DSH_SMOKE_ROWS_SNAPSHOT` is set, do not start the app. Read the host snapshot from that file, and make the host items from it. Compare them with `rows.host.txt` as in item 6, then print the result line and exit. Do not check the client rows in this mode.
+
+10. In the comment at the top of the script, add one sentence about each of `DSH_SMOKE_ROWS`, `DSH_SMOKE_ROWS_SAVE`, and `DSH_SMOKE_ROWS_SNAPSHOT`.
 
 The current `evaluate` helper sends one message and closes the socket. The host procedure needs several messages on one socket. Add one small helper for this on the built-in `WebSocket`. Give it the same deadline behavior as `evaluate`.
 
@@ -227,19 +231,58 @@ The host has no route that lists its rows. Do not add one. Use these Chrome DevT
 
 5. Send `Runtime.queryObjects` on the prototype of that function. Exactly one Loader instance must come back.
 
-6. Send `Runtime.callFunctionOn` with `returnByValue: true`. Map each entry `e` of `loader.entries()` to `e.id`, `e.options.id`, `e.options.name`, `e.disabled`, and `e.fiber?.state`.
+6. Send `Runtime.callFunctionOn` with `returnByValue: true`. Return an array with one object for each entry `e` of `loader.entries()`. Give each object these fields:
 
-Then make the host keys from that result:
+   | Field | Value |
+   |---|---|
+   | `id` | `e.id` |
+   | `optionsId` | `e.options.id` |
+   | `name` | `e.options.name` |
+   | `disabled` | `e.disabled` |
+   | `state` | `e.fiber?.state ?? null` |
+   | `missing` | When `state` is `0`: `Object.keys(e.fiber.inject).filter((service) => e.fiber.ctx.get(service) === undefined).sort()`. Else `[]`. |
 
-1. Skip the root entry. Its `options.name` is `cordis:include`.
+   The `missing` expression is the one that `inactiveEntries` in `packages/boot/app-boot/src/index.ts` uses for a pending row.
+
+Then make the host items from that array:
+
+1. Skip the root entry. Its `name` is `cordis:include`.
 
 2. Skip each entry where `disabled` is `true`.
 
-3. When `e.id` starts with `include:`, the key is `options.id`. Else the key is the text `name:` and then `options.name`. The second form covers rows that a plugin makes at run time with a random id.
+3. When `id` starts with `include:`, the key is `optionsId`. Else the key is the text `name:` and then `name`. The second form covers rows that a plugin makes at run time with a random id.
 
-4. When the fiber state is not `2`, add the word `inactive` after the key. The value `2` means active.
+4. Make the host item from the key and the state. The form is in `trim.profile.steps.host_state`.
+
+If an enabled entry is in state `1` or `5`, read the host rows again after 500 ms. Stop at the smoke deadline. If an entry is still in one of these states at the deadline, the result is `smoke-desktop: fail: host rows: not settled <items>`.
 
 If one of these calls fails on the Electron host, stop and report the call and its error.
+
+### Host states `trim.profile.steps.host_state`
+
+Cordis gives each fiber one state. The values are in `vendor/cordis/src/fiber.ts`. The host item is `<key>=<word>`, with the word from this table.
+
+| `state` | Word | Allowed for a kept row |
+|---|---|---|
+| `0` | `pending(<services>)` | Only on a pending line in `rows.host.txt` |
+| `1` | `loading` | No. The rows check reads the host rows again. |
+| `2` | `active` | Yes |
+| `3` | `failed` | No |
+| `4` | `disposed` | No |
+| `5` | `unloading` | No. The rows check reads the host rows again. |
+| `null` | `nofiber` | No. The import of the row failed. |
+
+In `pending(<services>)`, `<services>` is the `missing` array, joined with commas and no spaces.
+
+Each line of `rows.host.txt` has one of these two forms:
+
+- `<key>`. The expected host item is `<key>=active`.
+
+- `<key> pending <services>`. Write the services in sort order, joined with commas and no spaces. The expected host item is `<key>=pending(<services>)`.
+
+If a line has another form, the result is `smoke-desktop: fail: rows list: bad line <line>`.
+
+A kept row in state `failed`, `disposed`, or `nofiber` must fail the rows check. The host only writes a warning when an optional row fails. Thus the probe test can pass while the host half of a row is broken.
 
 ### Settle the keep set `trim.profile.steps.settle`
 
@@ -269,7 +312,17 @@ Record each round in the PR body: the row, the result line, and what you did.
 
 ### Write the row lists `trim.profile.steps.lists`
 
-1. Write `deepwidgets/trim/rows.host.txt`. Put one host key from the final keep set on each line. Add `inactive` when the row stays enabled but is not active. Give each line a reason after `#`.
+1. Write `deepwidgets/trim/rows.host.txt`. Put one host key from the final keep set on each line. Give each line a reason after `#`.
+
+   Write a pending line only when all of these are true:
+
+   - The rows check reads the row in state `0`.
+
+   - A row that the trim turns off gives each missing service.
+
+   - The reason names the row that is off for each missing service.
+
+   A kept row can be in another state, or wait for a service of a kept row. Then find the cause and fix it. Do not write a pending line for it.
 
 2. Write `deepwidgets/trim/rows.client.txt`. Put one package name on each line. List each kept row that has a web client half.
 
@@ -303,10 +356,13 @@ In the `Commands` block of the root `CLAUDE.md`, add `DSH_SMOKE_PROBE=1 DSH_SMOK
 
 ```bash
 T=$TMPDIR/deepwidgets-trim-profile
-DSH_SMOKE_PROBE=1 DSH_SMOKE_ROWS=deepwidgets/trim node tools/smoke-desktop.mjs ; echo "rows exit=$?"   # must print pass and exit=0
+DSH_SMOKE_PROBE=1 DSH_SMOKE_ROWS=deepwidgets/trim DSH_SMOKE_ROWS_SAVE="$T/host-rows.json" node tools/smoke-desktop.mjs ; echo "rows exit=$?"   # must print pass and exit=0
 mkdir -p "$T/minus-one" && cp deepwidgets/trim/rows.client.txt "$T/minus-one/"
 grep -vE '^[[:space:]]*(#|$)' deepwidgets/trim/rows.host.txt | sed '$d' > "$T/minus-one/rows.host.txt"
 DSH_SMOKE_PROBE=1 DSH_SMOKE_ROWS="$T/minus-one" node tools/smoke-desktop.mjs ; echo "rows minus one exit=$?"   # must print "fail: host rows:" and exit=1
+DSH_SMOKE_ROWS=deepwidgets/trim DSH_SMOKE_ROWS_SNAPSHOT="$T/host-rows.json" node tools/smoke-desktop.mjs ; echo "snapshot exit=$?"   # must print pass and exit=0
+node -e 'const fs = require("node:fs"); const rows = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const kept = rows.filter((r) => r.name !== "cordis:include" && r.disabled !== true); const row = kept.find((r) => r.state === 0) ?? kept.find((r) => r.state === 2); row.state = 3; row.missing = []; console.log(JSON.stringify(rows))' "$T/host-rows.json" > "$T/host-rows.failed.json"
+DSH_SMOKE_ROWS=deepwidgets/trim DSH_SMOKE_ROWS_SNAPSHOT="$T/host-rows.failed.json" node tools/smoke-desktop.mjs ; echo "failed snapshot exit=$?"   # must print "fail: host rows:" and exit=1
 DSH_SMOKE_PROBE=1 DEEPWIDGETS_PROBE=off node tools/smoke-desktop.mjs ; echo "probe off exit=$?"            # must print "fail: probe text:" and exit=1
 node tools/smoke-desktop.mjs ; echo "smoke exit=$?"                                                        # must print pass and exit=0
 DSH_SMOKE_TIMEOUT_MS=1000 node tools/smoke-desktop.mjs ; echo "short exit=$?"                             # must print fail and exit=1
@@ -316,6 +372,8 @@ git grep -c deepwidgets-trim -- packages/util/official-bundles/src/bundles.ts   
 Also run the commands in `trim.profile.steps.partition`. Each must give its expected output.
 
 The second run proves that the rows check can fail. Its host list has one line fewer than the live host rows.
+
+The two snapshot runs prove that the state is part of the comparison. The saved snapshot passes. The `node -e` command changes the first pending row to failed. When no row is pending, it changes the first active row. The changed snapshot must fail.
 
 ## Findings to record `trim.profile.findings`
 
@@ -327,7 +385,9 @@ Put these in the `Findings` section of the PR body. Write "unknown" when you did
 
 - Each settle round: the row, the result line, and the action.
 
-- The final counts: rows turned off, host rows kept, host rows kept but inactive, and client rows.
+- The final counts: rows turned off, host rows kept, host rows kept but pending, and client rows.
+
+- Each pending host row, with its missing services and the row that is off for each service.
 
 - Each kept row that is not on the spec keep list, with the evidence that the probe test needs it.
 
