@@ -1,6 +1,6 @@
 # deepWidgets `head`
 
-This file is the head node for every agent in this repository. Read it before any other agent file. Keep it current: a commit that makes a fact here wrong must also fix this file.
+This file is the head node for every agent in this repository. Read it before any other agent file. The rule that keeps it current is in `head.rules`.
 
 ## What this repository is `head.what`
 
@@ -24,14 +24,14 @@ The operator keeps the unused code on purpose. It shows how DSH writes Cordis pl
 
 - Delete packages only when the operator asks.
 
-Code without a comment can still be off. To know if code runs, find its plugin row, and read the row state in the patch files.
+Code without a comment can still be off. A plugin row is off when a patch layer sets `disabled: true`, or when its `!!js` condition is true. A row that waits for a missing service stays pending and does not run. Thus a comment search does not tell you which code runs.
 
 ## Status `head.status`
 
 | Item | State on 2026-10-24 |
 |---|---|
-| Rows turned off | None. All 196 rows load. The unit `trim.profile` turns rows off. |
-| Our packages | `deepwidgets/probe` (merged). `deepwidgets/trace` (planned). |
+| Rows that deepWidgets turns off | None yet. The unit `trim.profile` turns them off. DSH itself turns off some of the 196 rows, with `disabled: true` or a `!!js` condition. |
+| Our packages | `deepwidgets/probe` (merged). `deepwidgets/trim` and `deepwidgets/trace` (planned). |
 | Checks | `tools/smoke-desktop.mjs` boots the app. With `DSH_SMOKE_PROBE=1`, it also runs the probe test. |
 
 ## Where things are `head.map`
@@ -40,15 +40,15 @@ Code without a comment can still be off. To know if code runs, find its plugin r
 |---|---|
 | `docs/specs/` | `fork-trim.md` (spec `fork_trim`), `floating-widget.md` (spec `floating_widget`) |
 | `docs/plans/` | One plan for each spec. Each plan unit is one PR. |
-| `docs/tasks/` | One task file for each unit. `docs/tasks/README.md` is the task protocol. |
-| `deepwidgets/` | The `@deepwidgets/*` packages. They are plain JavaScript bundles with a host half and a client half. |
+| `docs/tasks/` | The task file of a unit, written before the unit starts. `docs/tasks/README.md` is the task protocol. |
+| `deepwidgets/` | The `@deepwidgets/*` packages, in plain JavaScript. A widget bundle, such as `probe`, has a host half and a client half. |
 | `tools/` | deepWidgets scripts, such as the smoke check. |
 | `.agents/skills/` | The skills. `.claude/skills` is a link to this folder. |
 | `.claude/hooks/` | Claude Code hooks for this repository. |
 
 ## Upstream agent files `head.upstream`
 
-The root `AGENTS.md` and 31 nested `CLAUDE.md` and `AGENTS.md` files come from DSH. Use their code conventions when you edit DSH code. Do not follow their process rules: PR description templates, AI usage sections, labels, `gh stack`, CI gates, release steps, upgrade guides, Agent Notes, bilingual documents, and translations.
+The root `AGENTS.md` and 31 nested `CLAUDE.md` and `AGENTS.md` files come from DSH. Some of the nested files are snapshot fixtures, not rules. Use their code conventions when you edit DSH code. Do not follow their process rules: PR description templates, AI usage sections, labels, `gh stack`, CI gates, release steps, upgrade guides, Agent Notes, bilingual documents, and translations.
 
 ## Skills `head.skills`
 
@@ -56,17 +56,21 @@ The repository has 22 skills: 21 from DSH and the `cordis` skill from deepWidget
 
 | Use | Skills |
 |---|---|
-| Always, for Cordis work | `cordis`, `cordis-styling-nitpicking`, `dsh-error-handling` |
+| Always, for Cordis work | `cordis`, `dsh-error-handling` |
+| Only when you review Cordis plugin code | `cordis-styling-nitpicking` |
+| Only when you write comments or JSDoc in DSH code | `dsh-prose-standard` |
 | Only when you change DSH client UI packages | `dsh-client-ui-ux`, `dsh-responsive-ui` |
 | Only when you write or fix a test that starts processes or listens on a port | `dsh-ci-test-reliability` |
-| Do not use. They serve DSH process rules. | `dsh-archive-agent-notes`, `dsh-code-review`, `dsh-create-upgrade-guide`, `dsh-doc`, `dsh-merging-stacked-prs`, `dsh-pr-description`, `dsh-pre-push-checks`, `dsh-prose-standard`, `dsh-translate-docs`, `dsh-trim-cot-leakage`, `record-browser-gif` |
-| Do not use. Their features are off or out of scope. | `agent-experience`, `dsh-find-simplifications`, `dsh-official-plugin-artwork`, `dsh-session-projection`, `dsh-speed-up-perf` |
+| Do not use. They serve DSH process rules. | `dsh-archive-agent-notes`, `dsh-code-review`, `dsh-create-upgrade-guide`, `dsh-doc`, `dsh-find-simplifications`, `dsh-merging-stacked-prs`, `dsh-pr-description`, `dsh-pre-push-checks`, `dsh-translate-docs`, `dsh-trim-cot-leakage`, `record-browser-gif` |
+| Do not use. Their features are off or out of scope. | `agent-experience`, `dsh-official-plugin-artwork`, `dsh-session-projection`, `dsh-speed-up-perf` |
+
+When a skill that you use tells you to use a skill from a "Do not use" row, or to write an Agent Note, skip that step.
 
 ## Rules for agents `head.rules`
 
 - A task file in `docs/tasks/` is the authority for its unit. Read `docs/tasks/README.md` before you start a task.
 
-- If your change makes a fact in this file wrong, fix this file in the same PR. If your task file does not name `CLAUDE.md`, write the proposed change under `Findings` in your PR body.
+- Keep this file current. If your change makes a fact in this file wrong or missing, and your task file lets you edit that part of `CLAUDE.md`, fix it in the same PR. Otherwise do not edit this file. Write the proposed change under `Findings` in your PR body.
 
 - Do not change the Electron version.
 
