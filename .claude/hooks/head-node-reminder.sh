@@ -9,11 +9,13 @@ printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_-])git([[:space:]][^;&|]*)?[[:spac
 
 dir=$(printf '%s' "$input" | jq -r '.cwd // "."' 2>/dev/null)
 event=$(printf '%s' "$input" | jq -r '.hook_event_name // "PostToolUse"' 2>/dev/null)
-duration_ms=$(printf '%s' "$input" | jq -r '.duration_ms // 120000 | floor' 2>/dev/null) || duration_ms=120000
+duration_ms=$(printf '%s' "$input" | jq -r '[(.duration_ms // 120000 | floor), 86400000] | min' 2>/dev/null) || duration_ms=120000
 
 # The command can commit in any worktree (cd, git -C, a shell variable), so take the newest HEAD of all of them.
-worktrees=$(git -C "$dir" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
-[ -n "$worktrees" ] || worktrees=$(git -C "${CLAUDE_PROJECT_DIR:-.}" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
+worktrees=$({
+  git -C "$dir" worktree list --porcelain 2>/dev/null
+  [ -n "${CLAUDE_PROJECT_DIR:-}" ] && git -C "$CLAUDE_PROJECT_DIR" worktree list --porcelain 2>/dev/null
+} | sed -n 's/^worktree //p' | sort -u)
 [ -n "$worktrees" ] || exit 0
 best=
 best_time=0
