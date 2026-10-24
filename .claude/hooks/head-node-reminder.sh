@@ -9,9 +9,11 @@ printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_-])git([[:space:]][^;&|]*)?[[:spac
 
 dir=$(printf '%s' "$input" | jq -r '.cwd // "."' 2>/dev/null)
 event=$(printf '%s' "$input" | jq -r '.hook_event_name // "PostToolUse"' 2>/dev/null)
+duration_ms=$(printf '%s' "$input" | jq -r '.duration_ms // 120000 | floor' 2>/dev/null) || duration_ms=120000
 
 # The command can commit in any worktree (cd, git -C, a shell variable), so take the newest HEAD of all of them.
 worktrees=$(git -C "$dir" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
+[ -n "$worktrees" ] || worktrees=$(git -C "${CLAUDE_PROJECT_DIR:-.}" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
 [ -n "$worktrees" ] || exit 0
 best=
 best_time=0
@@ -22,8 +24,9 @@ done <<EOF
 $worktrees
 EOF
 
-# Only a commit from the last 2 minutes counts. A failed commit leaves an older HEAD.
-[ -n "$best" ] && [ $(( $(date +%s) - best_time )) -le 120 ] || exit 0
+# Only a commit made while this command ran counts, plus 5 s for clock rounding. This keeps a
+# commit by another agent in another worktree out. Without duration_ms, the window is 120 s.
+[ -n "$best" ] && [ $(( $(date +%s) - best_time )) -le $(( duration_ms / 1000 + 5 )) ] || exit 0
 git -C "$best" show HEAD:CLAUDE.md 2>/dev/null | head -n 1 | grep -q '^# deepWidgets' || exit 0
 
 files=$(git -C "$best" show --name-only --format= HEAD 2>/dev/null)
