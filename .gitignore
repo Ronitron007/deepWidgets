@@ -24,7 +24,8 @@ oxlint-contract-*.ts
 tmp/
 .claude/commands/
 .claude/launch.json
-.claude/settings.json
+# deepwidgets-trim: deepWidgets commits the project Claude Code hook in .claude/settings.json.
+# .claude/settings.json
 .vscode/
 .DS_Store
 .idea

@@ -1,3 +1,11 @@
+<!-- deepwidgets-head: this block is deepWidgets text. The rest of the file is upstream DSH text. -->
+# deepWidgets
+
+This repository is deepWidgets, an unofficial fork of DeepSeek Harness (DSH). Read the root `CLAUDE.md` first. It is the head node for every agent. It tells why the repository holds DSH code, which code runs, how the trim turns code off, and which skills apply.
+
+The rest of this file is the upstream DSH `AGENTS.md`. Use its code conventions when you edit DSH code. Do not follow its process rules.
+<!-- deepwidgets-head: end -->
+
 # AGENTS.md
 
 DeepSeek Harness is an all-plugin Cordis agent harness. Read [docs/architecture.md](docs/architecture.md) before changing `packages/`; follow [docs/AGENTS.md](docs/AGENTS.md) for documentation.
