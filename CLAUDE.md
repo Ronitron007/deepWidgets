@@ -32,4 +32,5 @@ corepack pnpm run build:artifacts
 corepack pnpm --filter @deepseek-ai/dsh-desktop run build
 corepack pnpm run start:desktop
 node tools/smoke-desktop.mjs
+DSH_SMOKE_PROBE=1 node tools/smoke-desktop.mjs
 ```

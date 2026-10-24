@@ -1,5 +1,6 @@
 /**
  * Boot the unpackaged desktop app and check that the main renderer and host answer.
+ * With DSH_SMOKE_PROBE=1, also check that the renderer shows the host process id.
  * Uses only Node built-in modules. Prints one result line.
  */
 
@@ -348,6 +349,7 @@ try {
     } else {
       const host = await waitForHost(deadline)
       if (!host) failed = 'host timeout'
+      else if (process.env.DSH_SMOKE_PROBE === '1') failed = await checkProbe(page, deadline)
     }
   }
 } catch (error) {
@@ -476,4 +478,25 @@ async function waitForHost(deadline) {
     await delay(250)
   }
   return false
+}
+
+async function checkProbe(page, deadline) {
+  let text = ''
+  while (Date.now() < deadline) {
+    try {
+      text = String(await evaluate(page.webSocketDebuggerUrl,
+        "document.querySelector('[data-deepwidgets-probe]')?.textContent ?? ''", deadline) ?? '')
+    } catch (error) {
+      note(`probe evaluate error=${error instanceof Error ? error.message : 'unknown'}`)
+    }
+    const match = /^probe pid (\d+)$/u.exec(text)
+    if (match !== null) {
+      note(`probe text=${text} hostPid=${String(hostPid)}`)
+      return match[1] === hostPid ? undefined : `probe pid ${match[1]} is not host pid ${String(hostPid)}`
+    }
+    await delay(250)
+  }
+  const shown = text === '' ? 'missing' : text
+  note(`probe text=${shown} hostPid=${String(hostPid)}`)
+  return `probe text: ${shown}`
 }
