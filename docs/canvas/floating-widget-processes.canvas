@@ -37,7 +37,7 @@
       "width": 1300,
       "height": 280,
       "color": "4",
-      "text": "## Electron main\n\nIt runs no Cordis Context. It starts the host and opens the windows.\n\n- `protocol.handle` for `dsh-app://app/` in `apps/desktop/src/main.ts`. Before the host is ready, it answers 503.\n- `forwardWebRequest` in `apps/desktop/src/web-document.ts` sends each request to the host, with the host cookie. The response body passes through as a stream.\n- It keeps its start-up steps in a list until the host is ready (unit `trace.sources`)."
+      "text": "## Electron main\n\nIt runs no Cordis Context. It starts the host and opens the windows.\n\n- `protocol.handle` for `dsh-app://app/` in `apps/desktop/src/main.ts`. Before the host is ready, it answers 503.\n- `forwardWebRequest` in `apps/desktop/src/web-document.ts` sends each request to the host, with the host cookie. The response body passes through as a stream.\n- It keeps each start-up step. Each host that becomes ready gets all kept steps (unit `trace.sources`)."
     },
     {
       "id": "group_host",
