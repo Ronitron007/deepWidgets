@@ -78,6 +78,9 @@ Then read the code in this table. Each row gives a fact that this task uses. The
 | `packages/client/connection/src/api-request-trust.ts`, `isTrustedApiRequest` | A request with a loopback `Host` header and no `Origin` header passes the fence. Node `fetch` sends such a request. |
 | `tools/trace-late-row.mjs` | The model of the client row check. |
 | `tools/smoke-desktop.mjs`, `traceReadExpression`, `traceReason`, and `checkTrace` | The trace test of `trace.host`. |
+| `apps/desktop/tests/main-startup.spec.ts`, the `vi.mock` calls at the top | The startup test imports `apps/desktop/src/main.ts`. It replaces each side module of `main.ts` with `vi.mock`, for example `../src/background-notice.ts`. Many tests replace the global `fetch` with one mock for all URLs. |
+| `apps/desktop/tests/welcome-startup.spec.ts`, the `vi.mock` calls at the top and `state.startHost` | The welcome test also imports `apps/desktop/src/main.ts`. It replaces side modules of `main.ts` with `vi.mock`, for example `../src/tray.ts`. Its fake host URL is `http://127.0.0.1:3080/?token=test`. Its mock of `../src/web-document.ts` gives the cookie `test-cookie`. It does not replace the global `fetch`. |
+| `scripts/test-official-listing-guard.ts` | A setup file of each Vitest project. It wraps the global `fetch` and rejects one URL. |
 
 ## Steps `trace.sources.steps`
 
@@ -425,6 +428,84 @@ If an output is different, stop and report it.
 
 Each `traceSteps.step` call has its own line. `trace.sources.check` turns off the line of `main-window-open`, to prove that the trace test needs each step.
 
+### Stub the trace module in the startup test `trace.sources.steps.startup_test`
+
+In this task, the "startup test" is the file `apps/desktop/tests/main-startup.spec.ts`. `DesktopTraceSteps` posts its steps with the global `fetch`. Many tests in the startup test replace the global `fetch` with one mock for all URLs. Thus the trace `POST` gets the responses that a test made for the policy requests.
+
+The test `handles a deferred authentication failure with popup permission true` fails because of this. Its mock gives the same `Response` object to each call after the first call. The trace `POST` gets this object, and `sendSteps` cancels its body. The next policy request then gets a used body, and the test stops at its 5-second timeout.
+
+The architect logged each `fetch` call of this test at the PR head `2bfcc26b`. The policy request at launch got 200. The trace `POST` got 401. The manual policy request got 401 with `bodyUsed` set to `true`.
+
+In `apps/desktop/tests/main-startup.spec.ts`, make one insertion. Do not change or delete a line that is there. Find the line `vi.mock('../src/background-notice.ts', () => ({ DesktopBackgroundNotice: class {`. Find the first line `} }))` after it. After that line, insert these six lines:
+
+```ts
+// deepWidgets trace: the real steps post with global `fetch`, so they would share each `fetch` stub of these tests.
+vi.mock('../src/deepwidgets-trace.ts', () => ({ DesktopTraceSteps: class {
+  step() {}
+  hostReady() {}
+  hostGone() {}
+} }))
+```
+
+Then run these commands:
+
+```bash
+git diff --numstat 5ff963e9 -- apps/desktop/tests/main-startup.spec.ts | tr '\t' ' '             # must print "6 0 apps/desktop/tests/main-startup.spec.ts"
+git grep -c "^vi.mock('../src/deepwidgets-trace.ts'" -- apps/desktop/tests/main-startup.spec.ts   # must print "apps/desktop/tests/main-startup.spec.ts:1"
+```
+
+If an output is different, stop and report it.
+
+These are the reasons for the design:
+
+- The startup test already replaces each side module of `main.ts` in this way, for example `../src/welcome-backend.ts`. The stub uses the same pattern.
+
+- The stub keeps each trace `POST` away from each `fetch` mock of the file. This includes the mocks of the tests that pass today. No test and no assertion changes.
+
+- The trace test checks the real steps in the app. Thus the startup test does not need them.
+
+- The welcome test also imports `main.ts`. `trace.sources.steps.welcome_test` adds the same stub to it.
+
+Look Before You Build: the architect found no `fetch` helper in `apps/desktop/tests` that answers by URL. The tests replace the global `fetch` itself, so a mock at the `undici` dispatcher level cannot separate the two requests.
+
+### Stub the trace module in the welcome test `trace.sources.steps.welcome_test`
+
+In this task, the "welcome test" is the file `apps/desktop/tests/welcome-startup.spec.ts`. It imports `main.ts`, but it does not replace the global `fetch`. Thus the real `DesktopTraceSteps` posts the steps to the fake host URL of the test, with the cookie `test-cookie`. The test does not own the port `3080` of this URL.
+
+The architect logged each `fetch` call of the welcome test at the PR head `2bfcc26b`. Each of its two tests sent one `POST http://127.0.0.1:3080/api/trace`. The test log had no `deepwidgets-trace:` warning. Thus a search of the test log cannot find these requests. The run `witness tests` and the command `trace requests` in `trace.sources.check` find them.
+
+In `apps/desktop/tests/welcome-startup.spec.ts`, make one insertion. Do not change or delete a line that is there. Find the line `vi.mock('../src/tray.ts', () => ({ DesktopTray: class { relabel() {} dispose() {} } }))`. After that line, insert these six lines:
+
+```ts
+// deepWidgets trace: the real steps would post with global `fetch` to the fake Host URL of these tests.
+vi.mock('../src/deepwidgets-trace.ts', () => ({ DesktopTraceSteps: class {
+  step() {}
+  hostReady() {}
+  hostGone() {}
+} }))
+```
+
+Then run these commands:
+
+```bash
+git diff --numstat 5ff963e9 -- apps/desktop/tests/welcome-startup.spec.ts | tr '\t' ' '             # must print "6 0 apps/desktop/tests/welcome-startup.spec.ts"
+git grep -c "^vi.mock('../src/deepwidgets-trace.ts'" -- apps/desktop/tests/welcome-startup.spec.ts   # must print "apps/desktop/tests/welcome-startup.spec.ts:1"
+```
+
+If an output is different, stop and report it.
+
+These are the reasons for the design:
+
+- The stub has the same code as the stub of `trace.sources.steps.startup_test`. Only its comment is different, because the welcome test has no `fetch` mock.
+
+- The welcome test already replaces side modules of `main.ts` in this way, for example `../src/tray.ts`.
+
+- No test and no assertion changes.
+
+- The stubs apply only in Vitest. The built app runs the real `DesktopTraceSteps`. The trace test and the run `trace no step` of `trace.sources.check` prove the real steps.
+
+Look Before You Build: `scripts/test-official-listing-guard.ts` blocks one URL in each Vitest process. A guard of this type for `/api/trace` changes the setup of each test suite. Also, a test that replaces the global `fetch` skips the guard. Thus the stub is the smaller change. The run `witness tests` uses the same wrap of the global `fetch` in a temporary file.
+
 ### Install `trace.sources.steps.install`
 
 This unit adds no dependency. Thus the lockfile does not change.
@@ -741,11 +822,34 @@ The client half injects only `loader`. Thus a row that the trim turns off cannot
 
 ### Run the checks `trace.sources.check`
 
+First write the temporary file `$TMPDIR/deepwidgets-trace-sources/trace-witness.mjs` with this text. Do not put it in the worktree, and do not commit it.
+
+```js
+// trace.sources.check: record each `fetch` to `/api/trace` in this process, and answer it with 204.
+import { appendFileSync } from 'node:fs'
+
+const log = process.env.TRACE_WITNESS_LOG
+appendFileSync(log, '')
+const ambientFetch = globalThis.fetch
+globalThis.fetch = (input, init) => {
+  const url = input instanceof Request ? input.url : input instanceof URL ? input.href : String(input)
+  if (new URL(url, 'http://localhost/').pathname !== '/api/trace') return ambientFetch(input, init)
+  appendFileSync(log, `${init?.method ?? 'GET'} ${url}\n`)
+  return Promise.resolve(new Response(null, { status: 204 }))
+}
+```
+
 Run each command in the worktree. Capture each exit code.
 
 ```bash
 node tools/trace-client-rows.mjs ; echo "client rows exit=$?"                                          # must print "trace-client-rows: pass" and exit=0
 node tools/trace-late-row.mjs ; echo "late row exit=$?"                                                # must print "trace-late-row: pass" and exit=0
+corepack pnpm exec vitest run apps/desktop/tests/main-startup.spec.ts apps/desktop/tests/welcome-startup.spec.ts ; echo "startup tests exit=$?"   # must print "Test Files  2 passed (2)" and exit=0
+rm -f "$TMPDIR/deepwidgets-trace-sources/trace-requests.txt"
+TRACE_WITNESS_LOG="$TMPDIR/deepwidgets-trace-sources/trace-requests.txt" NODE_OPTIONS="--import $TMPDIR/deepwidgets-trace-sources/trace-witness.mjs" corepack pnpm exec vitest run apps/desktop/tests/main-startup.spec.ts apps/desktop/tests/welcome-startup.spec.ts ; echo "witness tests exit=$?"   # must print "Test Files  2 passed (2)" and exit=0
+awk 'END { print NR }' "$TMPDIR/deepwidgets-trace-sources/trace-requests.txt" ; echo "trace requests exit=$?"   # must print "0" and "trace requests exit=0"
+corepack pnpm exec vitest run apps/desktop/tests > "$TMPDIR/deepwidgets-trace-sources/desktop-tests.log" 2>&1 ; echo "desktop tests exit=$?"     # must print "desktop tests exit=1"
+grep '^ FAIL ' "$TMPDIR/deepwidgets-trace-sources/desktop-tests.log" | grep -o 'apps/desktop/tests/[^ >]*' | sort -u                           # must print only "apps/desktop/tests/desktop-publish-local-preflight.spec.ts"
 DSH_SMOKE_TRACE=1 node tools/smoke-desktop.mjs ; echo "trace exit=$?"                                  # must print "smoke-desktop: pass" and exit=0
 DSH_SMOKE_TRACE=1 DEEPWIDGETS_TRACE=off node tools/smoke-desktop.mjs ; echo "trace off exit=$?"        # must print "smoke-desktop: fail: trace: status 404" and exit=1
 DEEPWIDGETS_TRACE=off node tools/smoke-desktop.mjs ; echo "smoke trace off exit=$?"                    # must print "smoke-desktop: pass" and exit=0
@@ -757,6 +861,16 @@ DSH_SMOKE_TIMEOUT_MS=1000 node tools/smoke-desktop.mjs ; echo "short exit=$?"   
 git diff --quiet 5ff963e9 -- deepwidgets/trace/index.js ; echo "host half exit=$?"                     # must print "host half exit=0"
 git grep -c deepwidgets-trim -- packages/util/official-bundles/src/bundles.ts                          # must print packages/util/official-bundles/src/bundles.ts:1
 ```
+
+The run `desktop tests` runs all tests of the desktop package. The test `desktop-publish-local-preflight.spec.ts` fails before this unit. It reads `.github/workflows/desktop-publish.yml`, and this file does not exist at the base `5ff963e9`. Do not fix it. Record it under `Findings`.
+
+The `grep` command after the run `desktop tests` must print only the preflight test file. If it prints another file, use `tasks.protocol.stop`.
+
+The architect ran the run `desktop tests` and its `grep` command at `1669b4bc` and at the PR head `2bfcc26b`. The code at `1669b4bc` is the same as at `5ff963e9`. At `1669b4bc`, only the preflight test failed. At the PR head with no stub, the startup test also failed. With the stubs of `trace.sources.steps.startup_test` and `trace.sources.steps.welcome_test`, only the preflight test failed.
+
+The run `witness tests` loads `trace-witness.mjs` into each Node process of the run through `NODE_OPTIONS`. This includes each Vitest worker process. The file writes each `fetch` to the path `/api/trace` as one line in `trace-requests.txt`. It answers each such `fetch` with status 204. Thus the run sends no trace request to a port.
+
+The file makes `trace-requests.txt` when it loads. Thus the command `trace requests` prints `0` only when the file loaded and no test sent a trace request. When the file did not load, `awk` cannot open `trace-requests.txt` and exits 2. A test that replaces the global `fetch` with `vi.stubGlobal` skips the file. The stubs of the trace module prevent each trace request in such a test too.
 
 The run `trace off` proves that the trace test can fail. `DEEPWIDGETS_TRACE=off` disables the trace host row. Thus `/api/trace` falls to the `/api` prefix of `client-connection`, which answers 404. The client half is also off (`trace.sources.read`, `processOne`).
 
@@ -850,6 +964,33 @@ Then prove that the trace test needs each step of Electron main:
 
 4. Run `node tools/trace-client-rows.mjs` and `DSH_SMOKE_TRACE=1 node tools/smoke-desktop.mjs` again. Each must print its pass line and exit 0.
 
+Then prove that the startup test needs the stub of `trace.sources.steps.startup_test`. The `sed` command moves the stub to a module path that `main.ts` does not import. If a `grep -c` command prints a number that is not `1`, stop and report.
+
+```bash
+cp apps/desktop/tests/main-startup.spec.ts "$TMPDIR/deepwidgets-trace-sources/main-startup.spec.ts.keep"
+sed -i '' "s|^vi.mock('../src/deepwidgets-trace.ts'|vi.mock('../src/deepwidgets-trace-off.ts'|" apps/desktop/tests/main-startup.spec.ts
+grep -c "^vi.mock('../src/deepwidgets-trace-off.ts'" apps/desktop/tests/main-startup.spec.ts                                                                      # must print 1
+corepack pnpm exec vitest run apps/desktop/tests/main-startup.spec.ts > "$TMPDIR/deepwidgets-trace-sources/startup-no-stub.log" 2>&1 ; echo "startup no stub exit=$?"   # must print "startup no stub exit=1"
+grep -c '× handles a deferred authentication failure with popup permission true' "$TMPDIR/deepwidgets-trace-sources/startup-no-stub.log"                       # must print 1
+cp "$TMPDIR/deepwidgets-trace-sources/main-startup.spec.ts.keep" apps/desktop/tests/main-startup.spec.ts
+cmp apps/desktop/tests/main-startup.spec.ts "$TMPDIR/deepwidgets-trace-sources/main-startup.spec.ts.keep" ; echo "startup restore exit=$?"                     # must print "startup restore exit=0"
+```
+
+Then prove that `trace-witness.mjs` finds the trace requests of the welcome test. The `sed` command moves the stub of `trace.sources.steps.welcome_test` to a module path that `main.ts` does not import. Then the welcome test runs the real `DesktopTraceSteps`. If a `grep -c` command prints a number that is not its expected number, stop and report.
+
+```bash
+cp apps/desktop/tests/welcome-startup.spec.ts "$TMPDIR/deepwidgets-trace-sources/welcome-startup.spec.ts.keep"
+sed -i '' "s|^vi.mock('../src/deepwidgets-trace.ts'|vi.mock('../src/deepwidgets-trace-off.ts'|" apps/desktop/tests/welcome-startup.spec.ts
+grep -c "^vi.mock('../src/deepwidgets-trace-off.ts'" apps/desktop/tests/welcome-startup.spec.ts                                                                   # must print 1
+rm -f "$TMPDIR/deepwidgets-trace-sources/trace-requests.txt"
+TRACE_WITNESS_LOG="$TMPDIR/deepwidgets-trace-sources/trace-requests.txt" NODE_OPTIONS="--import $TMPDIR/deepwidgets-trace-sources/trace-witness.mjs" corepack pnpm exec vitest run apps/desktop/tests/welcome-startup.spec.ts ; echo "welcome no stub exit=$?"   # must print "Test Files  1 passed (1)" and exit=0
+grep -c '^POST http://127.0.0.1:3080/api/trace$' "$TMPDIR/deepwidgets-trace-sources/trace-requests.txt"                                                         # must print 2
+cp "$TMPDIR/deepwidgets-trace-sources/welcome-startup.spec.ts.keep" apps/desktop/tests/welcome-startup.spec.ts
+cmp apps/desktop/tests/welcome-startup.spec.ts "$TMPDIR/deepwidgets-trace-sources/welcome-startup.spec.ts.keep" ; echo "welcome restore exit=$?"               # must print "welcome restore exit=0"
+```
+
+The welcome test passes also with no stub. Only the two lines in `trace-requests.txt` show the requests, one for each test. The file `trace-witness.mjs` answers each request. Thus this run also sends no request to the port `3080`.
+
 If a check gives a result that is not its expected result, use `tasks.protocol.stop`.
 
 ## Findings to record `trace.sources.findings`
@@ -868,6 +1009,12 @@ Put these items in the `Findings` section of the PR body. Write "unknown" when y
 
 - The output of the `warning` command in `trace.sources.check`.
 
+- The lines `Test Files` and `Tests` from the log of the run `desktop tests`. Also the output of the `grep` command after that run.
+
+- The failure of the preflight test in the run `desktop tests`. This failure existed before this unit.
+
+- The output of the command `trace requests`, and the output of the `grep -c` command for `POST http://127.0.0.1:3080/api/trace`.
+
 - Whether you used `trace.sources.trim`, and each conflict that you resolved.
 
 ## Files you may change `trace.sources.files`
@@ -879,6 +1026,10 @@ Put these items in the `Findings` section of the PR body. Write "unknown" when y
 - `apps/desktop/src/deepwidgets-trace.ts` (new)
 
 - `apps/desktop/src/main.ts` (only the insertions of `trace.sources.steps.main`)
+
+- `apps/desktop/tests/main-startup.spec.ts` (only the six lines of `trace.sources.steps.startup_test`)
+
+- `apps/desktop/tests/welcome-startup.spec.ts` (only the six lines of `trace.sources.steps.welcome_test`)
 
 - `tools/trace-client-rows.mjs` (new)
 
