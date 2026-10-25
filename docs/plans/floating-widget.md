@@ -1,13 +1,13 @@
 # Plan for the floating widget, first draft `floating_widget.plan`
 
-This plan implements the spec `docs/specs/floating-widget.md`. Each unit is one branch and one PR. Each unit has a check that can fail. The task file for a unit is `docs/tasks/<unit>.md`. The process rules are in `fork_trim.plan.process` in `docs/plans/fork-trim.md`.
+This plan implements the spec `docs/specs/floating-widget.md`. Each unit is one branch and one PR. Each unit has a check that can fail. The task files are `docs/tasks/trace-host.md`, `docs/tasks/trace-sources.md`, and `docs/tasks/trace-window.md`. The process rules are in `fork_trim.plan.process` in `docs/plans/fork-trim.md`.
 
 ## Units `floating_widget.plan.units`
 
-| Unit | Change | Check | Needs |
-|---|---|---|---|
-| `trace.host` | Add the bundle `@deepwidgets/trace` with its host half. The host half makes the snapshot, listens to the Cordis events, keeps the messages, and serves `GET /api/trace`, `POST /api/trace`, and `GET /trace`. | The trace test reads `/api/trace` from the main window. It must find the host service `webServer` in the state `up`. A run with `DEEPWIDGETS_TRACE=off` must fail. | `probe.round_trip` |
-| `trace.sources` | Add the client half. Make Electron main send its start-up steps. | The trace test must find messages from each of `main`, `host`, and `client`. A run with `DEEPWIDGETS_TRACE=off` must fail. | `trace.host` |
-| `trace.window` | Electron main opens the trace window. The page shows the messages. | The trace test reads the rows on the page `dsh-app://app/trace`. It must find rows from each of `main`, `host`, and `client`. A run with `DEEPWIDGETS_TRACE=off` must fail. | `trace.sources` |
+| Unit | Task file | Change | Check | Needs |
+|---|---|---|---|---|
+| `trace.host` | `docs/tasks/trace-host.md` | Add the bundle `@deepwidgets/trace` with its host half. The host half makes the snapshot, listens to the Cordis events, keeps the messages, and serves `GET /api/trace`, `POST /api/trace`, and `GET /trace`. | The trace test reads `/api/trace` from the main window. It must find the host service `webServer` in the state `up`. A run with `DEEPWIDGETS_TRACE=off` must fail. | `probe.round_trip` |
+| `trace.sources` | `docs/tasks/trace-sources.md` | Add the client half. Make Electron main send its start-up steps. | The trace test must find messages from each of `main`, `host`, and `client`. A run with `DEEPWIDGETS_TRACE=off` must fail. | `trace.host` |
+| `trace.window` | `docs/tasks/trace-window.md` | Electron main opens the trace window. The page shows the messages. | The trace test reads the rows on the page `dsh-app://app/trace`. It must find rows from each of `main`, `host`, and `client`. A run with `DEEPWIDGETS_TRACE=off` must fail. | `trace.sources` |
 
 The trace units do not need `trim.profile`. Either one can merge first.

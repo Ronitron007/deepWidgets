@@ -25,9 +25,21 @@ The operator made these decisions on 2026-10-24.
 | host | Each plugin state change and each service change in the `host` Context. | In the same process. |
 | renderer of the main window | Each plugin state change and each service change in the `client` Context. | `POST /api/trace` with `fetch`. |
 
-The trace plugins start after other plugins. Thus each trace plugin first sends one snapshot message for each plugin and each service that already exists. `packages/host/plugin-inventory/src/index.ts` reads the plugin rows from `ctx.loader.entries()`. Cordis keeps the services in `ReflectService.store` in `vendor/cordis/src/reflect.ts`.
+The Loader starts its rows in parallel (`EntryGroup.update` in `vendor/loader/src/config/group.ts`). Thus other plugins can start before a trace plugin. Each trace plugin first sends one snapshot message for each plugin and each service that already exists. `packages/host/plugin-inventory/src/index.ts` reads the plugin rows from `ctx.loader.entries()`. Cordis keeps the services in `ReflectService.store` in `vendor/cordis/src/reflect.ts`.
 
 After the snapshot, the trace plugins listen to the Cordis events `internal/status` and `internal/service`. The file `vendor/cordis/src/events.ts` declares these events.
+
+- Each listener gets `internal/status` for each fiber. The event has no filter.
+
+- A listener gets `internal/service` only for the services of its own isolate scope. The trace listens without `{ global: true }`. Thus it sends the services of the `host` Context and of the `client` Context, not of isolated scopes.
+
+- The Loader fires `internal/service` for `loader` once for each row. A trace plugin sends a service message only when the state of a service changes between `up` and `down`.
+
+- A listener that throws breaks the state change of the fiber (`vendor/cordis/src/fiber.ts`). Each trace listener catches its own errors.
+
+The client half sets the field `window`. When it starts, it reads the query parameter `window` of the page URL once. When the URL has no such parameter, the value is `main`. In this draft, no window URL has this parameter. Thus the only value is `main`.
+
+The reason for the query parameter: Electron main sends each request with the same host cookie. Thus the host cannot tell two pages apart. A later widget window can load `dsh-app://app/?window=widget`, and the host needs no change.
 
 ## Message `floating_widget.message`
 
@@ -36,11 +48,26 @@ After the snapshot, the trace plugins listen to the Cordis events `internal/stat
 | `seq` | The order number in the host, from 1. The host half sets it. |
 | `time` | Milliseconds since 1970, from the process that saw the event. |
 | `process` | `main`, `host`, or `client`. |
+| `window` | Only in a message from `client`. The name of the window whose page sent the message. In this draft, the only value is `main`. `floating_widget.sources` tells which code sets it. |
 | `kind` | `step`, `plugin`, or `service`. |
-| `name` | The step name, the row id, or the service name. |
-| `state` | For `plugin`, the name of the Cordis fiber state in `vendor/cordis/src/fiber.ts`. For `service`, `up` or `down`. For `step`, `done`. |
+| `name` | The step name, the row key, or the service name. `floating_widget.names` defines the row key. |
+| `state` | For `plugin`, the word for the Cordis fiber state: `pending`, `loading`, `active`, `failed`, `disposed`, or `unloading`. The words are the names of the values 0 to 5 of `FiberState` in `vendor/cordis/src/fiber.ts`. `FiberState` is a `const enum`. Thus a trace plugin keeps its own copy of these words. For `service`, `up` or `down`. For `step`, `done`. |
 | `detail` | Optional text, for example the package name, the plugin that provides a service, the services that a pending plugin waits for, or an error message. |
 | `snapshot` | `true` when the message comes from the snapshot. |
+
+## Names `floating_widget.names`
+
+A `plugin` message is only for the root fiber of a Loader row. A fiber is a row root when `fiber.entry` has a value and `fiber.parent.fiber.entry` is a different entry (`vendor/loader/src/index.ts`). The trace sends no message for a sub-plugin fiber. The reason: a sub-plugin has no row key of its own. Its message would repeat the key of its row with a different state.
+
+Use `fiber.entry`, not `entry.fiber`. The Loader sets `fiber.entry` before the first state change. It sets `entry.fiber` only after `ctx.plugin` returns (`vendor/loader/src/config/entry.ts`).
+
+The row key is the key of the rows check in `trim.profile.steps.host_rows` (`docs/tasks/trim-profile.md`):
+
+- For a host row, when `entry.id` starts with `include:`, the key is `entry.options.id`. Else the key is the text `name:` and then `entry.options.name`.
+
+- For a client row, the key is `entry.options.name`. This is the form of `deepwidgets/trim/rows.client.txt`.
+
+The reason: client rows and rows that a plugin makes at run time get a random id at each boot. With the same key, the trace list and the trim row lists use one name for one row.
 
 ## Transport `floating_widget.transport`
 
@@ -54,7 +81,24 @@ A new bundle `@deepwidgets/trace` at `deepwidgets/trace/` holds the trace plugin
 
 - `GET /trace` returns the page of the trace window.
 
-Electron main sends each request from a `dsh-app://app/` page to the host, with the host cookie. The code is the `protocol.handle` call in `apps/desktop/src/main.ts`. Thus the trace window needs no preload script and no new IPC channel.
+Electron main sends each request from a `dsh-app://app/` page to the host, with the host cookie. The code is the `protocol.handle` call in `apps/desktop/src/main.ts` and `forwardWebRequest` in `apps/desktop/src/web-document.ts`. Thus the trace window needs no preload script and no new IPC channel. The board [`docs/canvas/floating-widget-processes.canvas`](../canvas/floating-widget-processes.canvas) shows each process and each message path.
+
+The host half registers the routes in this way:
+
+| Route | Registration | Reason |
+|---|---|---|
+| `GET /api/trace` and `POST /api/trace` | One exact route of `ctx.connection.fetch.register`, with `methods: ['GET', 'POST']` and `requestBody: 'buffered'`. | The route gets the cookie check and the Host and Origin check of `client-connection`. A `ctx.webServer` route on this path skips both checks. A `ctx.webServer` resource route also answers 405 to `POST`. |
+| `GET /trace` | One exact route of `ctx.webServer.register`, with a `resource`. | The page holds no data. Its data comes from `GET /api/trace`, which has the checks. |
+
+The stream follows these rules:
+
+- The stream closes when `request.signal` aborts. The reason: after a client closes, the bridge in `packages/client/connection/src/http-bridge.ts` reads the body until the body ends.
+
+- The stream sends the comment line `: ping` every 15 seconds. The reason: `forwardWebRequest` uses the Node `fetch`. It stops a body after 300 seconds with no data (inferred from the `undici` default `bodyTimeout`).
+
+- Before the host is ready, Electron main answers 503. `EventSource` does not connect again after an answer that is not 200. Thus the trace page makes a new `EventSource` after an error.
+
+A spike on `74de914b` read an SSE stream from a `ctx.connection.fetch` route through `protocol.handle`. Each event came to the page in 17 ms or less. Each stream closed on abort.
 
 ## Trace window `floating_widget.window`
 
