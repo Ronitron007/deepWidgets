@@ -323,6 +323,12 @@ vi.mock('../src/background-notice.ts', () => ({ DesktopBackgroundNotice: class {
   readonly close = harness.backgroundNotice.close
   readonly dispose = harness.backgroundNotice.dispose
 } }))
+// deepWidgets trace: the real steps post with global `fetch`, so they would share each `fetch` stub of these tests.
+vi.mock('../src/deepwidgets-trace.ts', () => ({ DesktopTraceSteps: class {
+  step() {}
+  hostReady() {}
+  hostGone() {}
+} }))
 vi.mock('node:fs/promises', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:fs/promises')>()
   return { ...original, readFile: vi.fn((path: Parameters<typeof original.readFile>[0], encoding?: 'utf8') => {

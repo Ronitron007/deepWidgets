@@ -2,6 +2,7 @@
  * Boot the unpackaged desktop app and check that the main renderer and host answer.
  * With DSH_SMOKE_PROBE=1, also check that the renderer shows the host process id.
  * With DSH_SMOKE_TRACE=1, also read /api/trace from the main window and check the trace test.
+ * The trace test also needs the start-up steps of Electron main and a message for each client row.
  * Uses only Node built-in modules. Prints one result line.
  */
 
@@ -524,6 +525,12 @@ function traceReadExpression() {
     if (line === undefined) return
     messages.push(JSON.parse(line.slice(6)))
   }
+  const STEPS = ['app-ready', 'host-started', 'host-ready', 'main-window-open']
+  const bootIds = () => (window.__DSH_BOOT__?.entries ?? []).map((entry) => entry.id)
+  const hasStep = (name) => messages.some((message) => message.process === 'main' && message.kind === 'step' && message.name === name && message.state === 'done')
+  const hasClientRow = (id) => messages.some((message) => message.process === 'client' && message.kind === 'plugin' && message.name === id)
+  const hasClientLoader = () => messages.some((message) => message.process === 'client' && message.kind === 'service' && message.name === 'loader' && message.state === 'up')
+  const hasSources = () => STEPS.every(hasStep) && bootIds().length > 0 && bootIds().every(hasClientRow) && hasClientLoader()
   const pull = async (done) => {
     while (!done()) {
       if (reader === undefined) return false
@@ -572,7 +579,7 @@ function traceReadExpression() {
         out.postGood = good.status
         if (good.status === 200) out.added = (await good.json()).added
         const hasClient = () => messages.some((message) => message.name === prefix + 'client')
-        await pull(hasClient)
+        await pull(() => hasClient() && hasSources())
         const mainCopy = messages.find((message) => message.name === prefix + 'main')
         const clientCopy = messages.find((message) => message.name === prefix + 'client')
         const withoutSeq = (message) => {
@@ -599,6 +606,18 @@ function traceReadExpression() {
       if (!processes.includes(message.process)) processes.push(message.process)
     }
     out.processes = processes
+    out.steps = STEPS.filter(hasStep)
+    const windows = []
+    for (const message of messages) {
+      if (message.process !== 'client') continue
+      if (typeof message.name === 'string' && message.name.startsWith('smoke-trace-')) continue
+      if (!windows.includes(message.window)) windows.push(message.window)
+    }
+    out.clientWindows = windows
+    const ids = bootIds()
+    out.bootCount = ids.length
+    out.clientMissing = ids.filter((id) => !hasClientRow(id))
+    out.clientLoader = hasClientLoader()
     const web = messages.find((message) => message.process === 'host' && message.kind === 'service' && message.name === 'webServer' && message.state === 'up')
     out.webSeq = web ? web.seq : undefined
     out.snapshotPlugins = messages.filter((message) => message.snapshot === true && message.kind === 'plugin').length
@@ -623,6 +642,11 @@ function traceReason(result) {
     [result.postGood === 200 && result.added === 2, `post good status ${String(result.postGood)} added ${String(result.added)}`],
     [result.leak === false, 'mixed batch added a message'],
     [result.echoMain === true && result.echoClient === true && result.echoSeq === true, `posted messages not in stream ${String(result.echoMain)},${String(result.echoClient)},${String(result.echoSeq)}`],
+    [['host', 'main', 'client'].every((name) => Array.isArray(result.processes) && result.processes.includes(name)), `processes ${String(result.processes)}`],
+    [Array.isArray(result.steps) && result.steps.length === 4, `main steps ${String(result.steps)}`],
+    [Array.isArray(result.clientWindows) && result.clientWindows.length === 1 && result.clientWindows[0] === 'main', `client windows ${String(result.clientWindows)}`],
+    [result.bootCount > 0 && Array.isArray(result.clientMissing) && result.clientMissing.length === 0, `client rows missing ${String(result.clientMissing?.length)} of ${String(result.bootCount)}: ${String(result.clientMissing?.[0])}`],
+    [result.clientLoader === true, 'no client service loader up'],
   ]
   for (let index = 0; index < rules.length; index += 1) {
     if (rules[index][0]) continue

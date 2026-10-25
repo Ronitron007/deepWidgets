@@ -100,6 +100,12 @@ vi.mock('electron', () => ({
 }))
 // The Windows tray relabels through Menu as well; keep the menu call counts below platform-neutral.
 vi.mock('../src/tray.ts', () => ({ DesktopTray: class { relabel() {} dispose() {} } }))
+// deepWidgets trace: the real steps would post with global `fetch` to the fake Host URL of these tests.
+vi.mock('../src/deepwidgets-trace.ts', () => ({ DesktopTraceSteps: class {
+  step() {}
+  hostReady() {}
+  hostGone() {}
+} }))
 
 vi.mock('../src/paths.ts', () => ({ resolveDesktopPaths: () => ({ profile: '/profile' }) }))
 vi.mock('../src/settings.ts', () => ({ readDesktopSettings: () => ({ updates: { allowTestAuthPopupWindow: false } }) }))
