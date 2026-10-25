@@ -324,7 +324,7 @@ Then change only these two parts of the root `CLAUDE.md`:
 
 2. In `head.status`, in the row `Our packages`, change `(host half and client half merged)` to `(host half, client half, and trace window merged)`.
 
-Then run `git diff --numstat 2043342 | tr '\t' ' '`. It must print these seven lines. Also run `wc -l < deepwidgets/trace/page.html | tr -d ' '`. It must print `67`. If an output is different, stop and report it.
+Then run `git diff --numstat --merge-base origin/main | tr '\t' ' '`. It must print these seven lines. The option `--merge-base` compares with the commit where your branch starts, so the output does not show this task file. Also run `wc -l < deepwidgets/trace/page.html | tr -d ' '`. It must print `67`. If an output is different, stop and report it.
 
 ```text
 2 2 CLAUDE.md
