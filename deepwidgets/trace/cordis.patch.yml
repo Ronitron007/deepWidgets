@@ -1,0 +1,4 @@
+- insert:
+    - id: deepwidgets-trace
+      name: '@deepwidgets/trace'
+      disabled: !!js "process.env.DEEPWIDGETS_TRACE === 'off'"

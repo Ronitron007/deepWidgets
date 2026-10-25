@@ -529,6 +529,9 @@ importers:
       '@deepwidgets/probe':
         specifier: workspace:*
         version: link:../../deepwidgets/probe
+      '@deepwidgets/trace':
+        specifier: workspace:*
+        version: link:../../deepwidgets/trace
       commander:
         specifier: ^15.0.0
         version: 15.0.0
@@ -1202,6 +1205,8 @@ importers:
         version: 4.4.3
 
   deepwidgets/probe: {}
+
+  deepwidgets/trace: {}
 
   native/system:
     devDependencies:
