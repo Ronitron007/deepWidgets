@@ -63,6 +63,10 @@ import { DesktopUpdateOverlays } from './update-overlay.ts'
 import { DesktopQuitConfirmation } from './quit-confirmation.ts'
 import { DesktopTray } from './tray.ts'
 import { DesktopBackgroundNotice } from './background-notice.ts'
+import { DesktopTraceSteps } from './deepwidgets-trace.ts'
+
+/** deepWidgets trace: the start-up steps for `POST /api/trace` (`floating_widget.sources`). */
+const traceSteps = new DesktopTraceSteps()
 
 let focusPrimaryWindow = (): void => {}
 let stopForRecovery = async (): Promise<void> => {}
@@ -317,6 +321,7 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
 }
 
 async function main(): Promise<void> {
+  traceSteps.step('app-ready')
   const desktopSettings = readDesktopSettings(app.getPath('userData'))
   void pruneCrashReports(app.getPath('logs'))
   const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
@@ -473,6 +478,7 @@ async function main(): Promise<void> {
       resources, (next) => { platformView.setSession(next) })
     return {
       start: async () => {
+        traceSteps.step('host-started')
         const ready = await host.start()
         hostCookie = await authenticateWebHost(ready.url)
         hostUrl = ready.url
@@ -535,6 +541,8 @@ async function main(): Promise<void> {
       resolveDragResource: (address: string, signal?: AbortSignal) => host.resolveDragResource(address, signal),
     }
   }, (state) => {
+    if (state.phase === 'ready' && hostUrl !== undefined && hostCookie !== undefined) traceSteps.hostReady(hostUrl, hostCookie)
+    if (state.phase !== 'ready') traceSteps.hostGone()
     if (state.phase === 'error') reportFatal(state.failure, 'host')
     else if (!shuttingDown) backendReady = state.phase === 'ready'
   })
@@ -598,6 +606,7 @@ async function main(): Promise<void> {
   const reconcileBackend = (): Promise<void> => {
     startup ??= (async () => {
       await navigateMain(applicationUrl)
+      traceSteps.step('main-window-open')
       await backend.start(async () => {
         await Promise.all([manager.applyRelease(), prepareHostEnvironment()])
       })
