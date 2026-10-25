@@ -10,7 +10,7 @@ The goal is a floating desktop widget whose plugins run on Cordis. DSH already h
 
 ## Why most code does not run `head.why`
 
-Most code in this repository is DSH code that deepWidgets does not need. The repository has 387 workspace packages. At boot, the desktop app composes 196 plugin rows. The floating widget needs only a small part of them.
+Most code in this repository is DSH code that deepWidgets does not need. The repository has 387 workspace packages. At boot, the desktop app composes 197 plugin rows. The floating widget needs only a small part of them.
 
 The operator keeps the unused code on purpose. It shows how DSH writes Cordis plugins, and the operator reads it. Do not delete it to make the repository smaller.
 
@@ -31,7 +31,7 @@ Code without a comment can still be off. A plugin row is off when a patch layer 
 | Item | State on 2026-10-24 |
 |---|---|
 | Rows that deepWidgets turns off | None yet. The unit `trim.profile` turns them off. DSH itself turns off some of the 196 rows, with `disabled: true` or a `!!js` condition. |
-| Our packages | `deepwidgets/probe` (merged). `deepwidgets/trace` (host half and client half merged). `deepwidgets/trim` (planned). |
+| Our packages | `deepwidgets/probe` (merged). `deepwidgets/trace` (host half, client half, and trace window merged). `deepwidgets/trim` (planned). |
 | Checks | `tools/smoke-desktop.mjs` boots the app. With `DSH_SMOKE_PROBE=1`, it also runs the probe test. With `DSH_SMOKE_TRACE=1`, it also runs the trace test. `tools/trace-late-row.mjs` checks that the trace finds late rows. `tools/trace-client-rows.mjs` checks the client half with no app. |
 
 ## Where things are `head.map`

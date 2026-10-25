@@ -328,7 +328,7 @@ vi.mock('../src/deepwidgets-trace.ts', () => ({ DesktopTraceSteps: class {
   step() {}
   hostReady() {}
   hostGone() {}
-} }))
+}, openTraceWindow() {} }))
 vi.mock('node:fs/promises', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:fs/promises')>()
   return { ...original, readFile: vi.fn((path: Parameters<typeof original.readFile>[0], encoding?: 'utf8') => {

@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs'
+
 const STATES = ['pending', 'loading', 'active', 'failed', 'disposed', 'unloading']
+const PAGE = readFileSync(new URL('./page.html', import.meta.url), 'utf8')
 const encoder = new TextEncoder()
 
 export const inject = ['webServer', 'connection', 'loader']
@@ -230,10 +233,7 @@ export function apply(ctx) {
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: '/trace',
-    resource: async () => new Response(
-      '<!DOCTYPE html><html><head><title>deepWidgets trace</title></head><body><main data-deepwidgets-trace>trace window</main></body></html>',
-      { headers: { 'content-type': 'text/html; charset=utf-8' } },
-    ),
+    resource: async () => new Response(PAGE, { headers: { 'content-type': 'text/html; charset=utf-8' } }),
   }), 'deepwidgets-trace: GET /trace')
 
   ctx.effect(() => () => {

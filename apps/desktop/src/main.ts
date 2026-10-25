@@ -63,7 +63,7 @@ import { DesktopUpdateOverlays } from './update-overlay.ts'
 import { DesktopQuitConfirmation } from './quit-confirmation.ts'
 import { DesktopTray } from './tray.ts'
 import { DesktopBackgroundNotice } from './background-notice.ts'
-import { DesktopTraceSteps } from './deepwidgets-trace.ts'
+import { DesktopTraceSteps, openTraceWindow } from './deepwidgets-trace.ts'
 
 /** deepWidgets trace: the start-up steps for `POST /api/trace` (`floating_widget.sources`). */
 const traceSteps = new DesktopTraceSteps()
@@ -611,6 +611,7 @@ async function main(): Promise<void> {
         await Promise.all([manager.applyRelease(), prepareHostEnvironment()])
       })
       if (backend.host !== undefined) await openInitialWindow()
+      if (backend.host !== undefined && !isQuitting()) openTraceWindow(() => { traceSteps.step('trace-window-open') })
       if (backend.host !== undefined) updateJournal?.action('workspace-ready')
       // The existing Web document resumes through the boot IPC response.
     })().catch((error: unknown) => {
