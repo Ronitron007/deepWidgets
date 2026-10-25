@@ -1,0 +1,177 @@
+{
+  "nodes": [
+    {
+      "id": "intro",
+      "type": "text",
+      "x": 0,
+      "y": -420,
+      "width": 1500,
+      "height": 260,
+      "text": "# Obstacles for a widget window and outside models `floating_widget.obstacles`\n\nThis board shows why the next phase cannot simply open a second window with its own `client` Context, and why an outside MCP client cannot reach the host yet. The code is `main` at `9d699b92`.\n\nEach claim has a label: verified (read the named file) or inferred. Red boxes are obstacles. The spec is `docs/specs/floating-widget.md`. The board `floating-widget-processes.canvas` shows the trace paths that work today."
+    },
+    {
+      "id": "electron_main",
+      "type": "text",
+      "x": 0,
+      "y": -60,
+      "width": 520,
+      "height": 380,
+      "text": "## Electron main\n\n- `protocol.handle('dsh-app')` serves `/`, `/index.html`, and `/assets/*` from the bundled `dsh-web-frontend`. It sends each other path to the host with the host cookie. Verified (`apps/desktop/src/main.ts:706-721`).\n\n- A page gets the boot graph and the host origin through the IPC call `boot`. Verified (`main.ts:730-735`, `preload-app.ts:97`).\n\n- It adds the host cookie to a WebSocket request only when the request comes from the main window. Verified (`main.ts:755-766`).",
+      "color": "4"
+    },
+    {
+      "id": "host",
+      "type": "text",
+      "x": 0,
+      "y": 420,
+      "width": 520,
+      "height": 420,
+      "text": "## Host\n\n- `client/modules` builds one boot graph, `window.__DSH_BOOT__`, from each host row that declares `dsh.client`. Verified (`packages/client/modules/src/index.ts:633`).\n\n- The client boot reads no page path and no query to choose rows. Verified (no match in `packages/client/web/src/boot.ts`, `boot-client.ts`, `client/manifest.ts`).\n\n- An exact Connection fetch route answers only the principal `owner`. The host cookie makes a caller the owner. Verified (`packages/client/connection/src/rpc-host.ts:219-222`).\n\n- `remote-access` lets a package add a policy for a principal kind that is not `owner`. Verified (header of `packages/api/remote-access/src/index.ts`)."
+    },
+    {
+      "id": "main_window",
+      "type": "text",
+      "x": 700,
+      "y": -60,
+      "width": 420,
+      "height": 260,
+      "text": "## Main window\n\nLoads `dsh-app://app/` and boots the full DSH client graph. HTTP goes through Electron main with the cookie. The WebSocket gets the cookie from Electron main. Thus its `client` Context connects. Verified (live run: 225 client messages).",
+      "color": "4"
+    },
+    {
+      "id": "trace_window",
+      "type": "text",
+      "x": 700,
+      "y": 260,
+      "width": 420,
+      "height": 220,
+      "text": "## Trace window (today)\n\nA plain page at `dsh-app://app/trace`. It uses only HTTP and SSE through Electron main, so it needs no WebSocket cookie and no boot graph. Verified (`deepwidgets/trace/page.html`).",
+      "color": "4"
+    },
+    {
+      "id": "widget_window",
+      "type": "text",
+      "x": 700,
+      "y": 540,
+      "width": 420,
+      "height": 260,
+      "text": "## Widget window (planned)\n\nNeeds its own `client` Context, with only the widget plugins. It is the window that floats like a pet (decision `Float`).",
+      "color": "6"
+    },
+    {
+      "id": "outside_mcp",
+      "type": "text",
+      "x": 700,
+      "y": 880,
+      "width": 420,
+      "height": 220,
+      "text": "## Outside MCP client (planned)\n\nFor example Claude Code. It runs outside the app, so it has no host cookie and does not go through Electron main.",
+      "color": "6"
+    },
+    {
+      "id": "obs_socket",
+      "type": "text",
+      "x": 1300,
+      "y": -60,
+      "width": 560,
+      "height": 330,
+      "text": "## Obstacle `obstacles.socket_cookie`\n\nA second window can use HTTP, but its WebSocket goes to the host with no cookie. The host refuses it, so its `client` Context cannot connect. The IPC call `bootFailed` and the product commands also accept only the main window. Verified (`main.ts:737-743`, `main.ts:768-772`).\n\nFix shape (inferred): Electron main keeps a set of trusted app windows and gives the cookie to each of them. Product commands can stay main-window-only.",
+      "color": "1"
+    },
+    {
+      "id": "obs_graph",
+      "type": "text",
+      "x": 1300,
+      "y": 330,
+      "width": 560,
+      "height": 330,
+      "text": "## Obstacle `obstacles.full_graph`\n\nEach `dsh-app://app/` page gets the same index page and the same boot graph. A widget window would boot all DSH client plugins: the sidebar, the chat, and the settings. Verified (`main.ts:711-714`, `client/modules/src/index.ts:633`).\n\nFix shape (inferred): a second entry page and a second boot graph that holds only the widget plugins. One choice is a `dsh.client` tag per window. Another choice is a separate client profile.",
+      "color": "1"
+    },
+    {
+      "id": "obs_auth",
+      "type": "text",
+      "x": 1300,
+      "y": 720,
+      "width": 560,
+      "height": 380,
+      "text": "## Obstacle `obstacles.outside_auth`\n\nAn outside MCP client has no cookie, so each Connection fetch route answers 403. The host also has no MCP server. Verified (`rpc-host.ts:221`, research notes).\n\nFix shapes (inferred):\n\n- An MCP route on `webServer` with its own token for each client. `GeekRicardo/dsh-cordis-mcp` uses this pattern.\n\n- A new principal kind, for example `mcp-client`, with a `remote-access` policy. This gives each model an identity, so the host can record which model wrote which data.",
+      "color": "1"
+    },
+    {
+      "id": "obs_lifecycle",
+      "type": "text",
+      "x": 0,
+      "y": 900,
+      "width": 520,
+      "height": 300,
+      "text": "## Obstacle `obstacles.lifecycle`\n\nThe trace window opens once, after the main window and the host are ready. It does not open again after a close or a host recovery. While it is visible, a Dock click does not show a hidden main window. Verified (`main.ts:1281-1282`, `main.ts:1374`).\n\nThe decision `Float` asks for a window that works independently of the main window. Thus the window code in Electron main must change first.",
+      "color": "1"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_main_em",
+      "fromNode": "main_window",
+      "fromSide": "left",
+      "toNode": "electron_main",
+      "toSide": "right",
+      "toEnd": "arrow",
+      "label": "HTTP through dsh-app, with cookie. WebSocket cookie added."
+    },
+    {
+      "id": "e_trace_em",
+      "fromNode": "trace_window",
+      "fromSide": "left",
+      "toNode": "electron_main",
+      "toSide": "right",
+      "toEnd": "arrow",
+      "label": "HTTP and SSE through dsh-app, with cookie"
+    },
+    {
+      "id": "e_em_host",
+      "fromNode": "electron_main",
+      "fromSide": "bottom",
+      "toNode": "host",
+      "toSide": "top",
+      "toEnd": "arrow",
+      "label": "forwards requests with the host cookie"
+    },
+    {
+      "id": "e_widget_sock",
+      "fromNode": "widget_window",
+      "fromSide": "right",
+      "toNode": "obs_socket",
+      "toSide": "left",
+      "toEnd": "arrow",
+      "label": "WebSocket with no cookie"
+    },
+    {
+      "id": "e_widget_graph",
+      "fromNode": "widget_window",
+      "fromSide": "right",
+      "toNode": "obs_graph",
+      "toSide": "left",
+      "toEnd": "arrow",
+      "label": "boots the full client graph"
+    },
+    {
+      "id": "e_outside_auth",
+      "fromNode": "outside_mcp",
+      "fromSide": "right",
+      "toNode": "obs_auth",
+      "toSide": "left",
+      "toEnd": "arrow",
+      "label": "no cookie, no MCP server"
+    },
+    {
+      "id": "e_host_lifecycle",
+      "fromNode": "host",
+      "fromSide": "bottom",
+      "toNode": "obs_lifecycle",
+      "toSide": "top",
+      "toEnd": "arrow",
+      "label": "window code in Electron main"
+    }
+  ]
+}
