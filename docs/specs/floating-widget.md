@@ -21,9 +21,9 @@ The operator made these decisions on 2026-10-24.
 
 | Process | What it sends | How the message gets to the host |
 |---|---|---|
-| Electron main | Its start-up steps: app ready, host started, host ready, main window open, trace window open. | `POST /api/trace` with the host cookie. Steps from before host ready wait in a list in Electron main. |
+| Electron main | Its start-up steps. `floating_widget.sources.steps` gives their names. | `POST /api/trace` with the host cookie. Electron main keeps each step. Each host that becomes ready gets all kept steps. After that, Electron main posts each new step at once. |
 | host | Each plugin state change and each service change in the `host` Context. | In the same process. |
-| renderer of the main window | Each plugin state change and each service change in the `client` Context. | `POST /api/trace` with `fetch`. |
+| renderer of the main window | Each plugin state change and each service change in the `client` Context. | `POST /api/trace` with `fetch`. The client half sends one `POST` at a time. |
 
 The Loader starts its rows in parallel (`EntryGroup.update` in `vendor/loader/src/config/group.ts`). Thus other plugins can start before a trace plugin. Each trace plugin first sends one snapshot message for each plugin and each service that already exists. `packages/host/plugin-inventory/src/index.ts` reads the plugin rows from `ctx.loader.entries()`. Cordis keeps the services in `ReflectService.store` in `vendor/cordis/src/reflect.ts`.
 
@@ -40,6 +40,10 @@ After the snapshot, the trace plugins listen to the Cordis events `internal/stat
 The client half sets the field `window`. When it starts, it reads the query parameter `window` of the page URL once. When the URL has no such parameter, the value is `main`. In this draft, no window URL has this parameter. Thus the only value is `main`.
 
 The reason for the query parameter: Electron main sends each request with the same host cookie. Thus the host cannot tell two pages apart. A later widget window can load `dsh-app://app/?window=widget`, and the host needs no change.
+
+The client half puts each message in a queue. It sends one `POST` at a time, with all messages that wait. When a `POST` fails, the client half drops that batch and writes a warning.
+
+The page starts its `client` Context only after the host is ready. Thus the client half sends no message before the host is ready. When the page loads again, the client half sends a new snapshot. The host keeps the earlier messages too.
 
 ### Late rows `floating_widget.sources.late_rows`
 
@@ -58,6 +62,22 @@ Each trace plugin finds these rows with a rescan:
 A row whose import fails has no fiber. The trace sends no message for it. After boot, one gap stays open. When a new row stays `pending` and an import fails last, the row gets its message only at the next `loader` event.
 
 A spike on `cbe90c51` ran a model of the host half with the vendored Cordis and Loader. Without the `loader` rescan, a pending row that the spike added after boot had no message. Without the `ctx.loader.await()` rescan, a late pending row had no message when the last import failed.
+
+### Start-up steps `floating_widget.sources.steps`
+
+The `name` of a `step` message is one of these step names. The code is in `apps/desktop/src/main.ts`.
+
+| Step name | When Electron main records it | Unit |
+|---|---|---|
+| `app-ready` | At the start of `main()`. `app.whenReady()` calls `main()`. | `trace.sources` |
+| `main-window-open` | After the main window loads `dsh-app://app/`. This is the `navigateMain` call at the start of `reconcileBackend`. | `trace.sources` |
+| `host-started` | Before each call of `DesktopHostProcess.start()`. That call spawns the host process at once. | `trace.sources` |
+| `host-ready` | Each time that the backend state changes to `ready`. | `trace.sources` |
+| `trace-window-open` | When the trace window opens. | `trace.window` |
+
+`reconcileBackend` loads the main window page before it starts the host. Thus `main-window-open` comes before `host-started`.
+
+Electron main keeps each step until the app stops. Each host that becomes ready gets all kept steps. Thus a host that starts again also gets the steps. A `POST` that fails writes one warning in Electron main, and it does not throw. The reason: an unhandled rejection in Electron main shows an error dialog.
 
 ## Message `floating_widget.message`
 
