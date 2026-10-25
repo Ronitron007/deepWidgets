@@ -30,6 +30,23 @@ function goodPending(list, id) {
     && !Object.hasOwn(message, 'snapshot'))
 }
 
+function liveService(list) {
+  return list.some((message) => message.process === 'host'
+    && message.kind === 'service'
+    && message.name === 'deepwidgets-missing'
+    && message.state === 'up'
+    && !Object.hasOwn(message, 'snapshot'))
+}
+
+function liveActive(list, id) {
+  return list.some((message) => message.process === 'host'
+    && message.kind === 'plugin'
+    && message.name === `name:cordis:${id}`
+    && message.state === 'active'
+    && message.detail === `cordis:${id}`
+    && !Object.hasOwn(message, 'snapshot'))
+}
+
 async function readStream(route) {
   const controller = new AbortController()
   const timer = setTimeout(() => { controller.abort() }, 200)
@@ -103,11 +120,17 @@ try {
   await loader.await()
   await wait(10)
   const second = await readStream(routes[0])
+  ctx.provide('deepwidgets-missing', {})
+  await loader.await()
+  await wait(10)
+  const third = await readStream(routes[0])
   const lateCount = second.filter((message) => message.kind === 'plugin' && message.name === 'name:cordis:late').length
-  if (!seqOk(first) || !seqOk(second)) finish('trace-late-row: fail: seq out of order', 1)
+  if (!seqOk(first) || !seqOk(second) || !seqOk(third)) finish('trace-late-row: fail: seq out of order', 1)
   if (!goodPending(first, 'late')) finish('trace-late-row: fail: no pending message for name:cordis:late', 1)
   if (!goodPending(second, 'late2')) finish('trace-late-row: fail: no pending message for name:cordis:late2', 1)
   if (lateCount !== 1) finish('trace-late-row: fail: more than one message for name:cordis:late', 1)
+  if (!liveService(third)) finish('trace-late-row: fail: no live service message for deepwidgets-missing', 1)
+  if (!liveActive(third, 'late')) finish('trace-late-row: fail: no live active message for name:cordis:late', 1)
   finish('trace-late-row: pass', 0)
 } catch (error) {
   console.error(error)
