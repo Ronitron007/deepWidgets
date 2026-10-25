@@ -20,7 +20,7 @@ The host half does these things:
 
 In this task, the "trace test" is the command `DSH_SMOKE_TRACE=1 node tools/smoke-desktop.mjs`. It boots the app like the smoke check. Then it reads `/api/trace` from the main window page. It passes only when it finds the host service `webServer` in the state `up`. It also posts test messages. It passes only when the good test messages come back in the stream, and a bad batch adds no message.
 
-The "late row check" is the command `node tools/trace-late-row.mjs`. It runs the host half in a small Cordis tree, with no app. It passes only when the host half sends a message for each row that stays `pending` after the snapshot.
+The "late row check" is the command `node tools/trace-late-row.mjs`. It runs the host half in a small Cordis tree, with no app. It passes only when the host half sends a message for each row that stays `pending` after the snapshot. It also passes only when the two listeners send live messages. One message is for a service that comes up. The other message is for a row that then becomes `active`.
 
 This unit has no client half and no Electron main change. The units `trace.sources` and `trace.window` add them. Do not add them here.
 
@@ -164,7 +164,7 @@ Then listen with `ctx.on('internal/status', (fiber) => { ... })`. For each event
 
 4. If `fiber.entry.options.name` is `cordis:include`, skip the event.
 
-5. Add one message with `kind` `plugin`, the row key as `name`, and the word of `fiber.state` as `state`.
+5. Add one message with `kind` `plugin`, the row key as `name`, and the word of `fiber.state` as `state`. Write the call that adds this message on its own line. The steps in `trace.host.check` turn off this line.
 
 6. Put `fiber` in the fiber set of `trace.host.steps.host_half.rescan`.
 
@@ -188,7 +188,7 @@ Then listen with `ctx.on('internal/service', function (name, value) { ... })`. D
 
 3. If the map already has this state for this name, skip the event. The Loader fires the event for `loader` many times.
 
-4. Put the state in the map. Add one message with `kind` `service`.
+4. Put the state in the map. Add one message with `kind` `service`. Write the call that adds this message on its own line. The steps in `trace.host.check` turn off this line.
 
 #### Late rows `trace.host.steps.host_half.rescan`
 
@@ -467,9 +467,19 @@ The script does these steps in this order:
 
 14. Read the stream again. The messages must have a good message for `late2`. They must have only one `plugin` message whose `name` is `name:cordis:late`.
 
+15. Run `ctx.provide('deepwidgets-missing', {})`. This makes the missing service available after the snapshot. Then run `await loader.await()`, and wait 10 ms.
+
+16. Read the stream a third time. The messages must have a live service message and a live active message for `late`.
+
 To read the stream, call `routes[0].fetch(new Request('http://127.0.0.1/api/trace', { signal }))`. Make the signal with an `AbortController` that aborts after 200 ms. Read the body until it ends or aborts. Parse each `data: ` line as JSON.
 
 A good message for the row `<id>` has `kind` `plugin` and `name` `name:cordis:<id>`. It has `state` `pending` and `detail` `cordis:<id> waits for deepwidgets-missing`. It has no `snapshot` field. These rows have ids with no `include:` prefix, so the row key starts with `name:`.
+
+A live service message has `process` `host`, `kind` `service`, `name` `deepwidgets-missing`, and `state` `up`. It has no `snapshot` field. Only the `internal/service` listener (`trace.host.steps.host_half.services`) adds it.
+
+A live active message for the row `<id>` has `process` `host`, `kind` `plugin`, and `name` `name:cordis:<id>`. It has `state` `active` and `detail` `cordis:<id>`. It has no `snapshot` field. Only the `internal/status` listener (`trace.host.steps.host_half.plugins`) adds it. The rescan cannot add it, because the fiber of `late` is already in the fiber set.
+
+This is why the `ctx.provide` call works. The function `ctx.provide` in `vendor/cordis/src/reflect.ts` calls `notify` when the root fiber is active. The function `notify` refreshes each fiber that injects the service, and then emits `internal/service`. Thus the fiber of `late` changes from `pending` to `loading` to `active`, and both listeners get an event.
 
 The script prints one result line on stdout. Then it exits with `process.exit`, because the ping timers keep the process alive. Check the rules in this order. The first rule that is false gives the result.
 
@@ -480,11 +490,23 @@ The script prints one result line on stdout. Then it exits with `process.exit`, 
 | The first read has a good message for `late` | `trace-late-row: fail: no pending message for name:cordis:late` |
 | The second read has a good message for `late2` | `trace-late-row: fail: no pending message for name:cordis:late2` |
 | The second read has one `plugin` message for `name:cordis:late` | `trace-late-row: fail: more than one message for name:cordis:late` |
+| The third read has a live service message | `trace-late-row: fail: no live service message for deepwidgets-missing` |
+| The third read has a live active message for `late` | `trace-late-row: fail: no live active message for name:cordis:late` |
 | The script ends in 10 seconds | `trace-late-row: fail: timeout` |
 
 When each rule is true, the result is `trace-late-row: pass`. The exit code is 0 for `pass` and 1 for each fail.
 
 A spike on `cbe90c51` ran this script against a model of the host half. It passed 15 times in 15 runs. Without the `loader` rescan, it printed the fail for `late2`. Without the `ctx.loader.await()` rescan, it printed the fail for `late`.
+
+A second spike added the `ctx.provide` call and the third read to the script of [Ronitron007/deepWidgets#15](https://github.com/Ronitron007/deepWidgets/pull/15) at `873215e1`. It used the `deepwidgets/trace/index.js` of that commit. Each case below ran 20 times and gave the same result each time.
+
+| Change to `index.js` | Result |
+|---|---|
+| None | `trace-late-row: pass` |
+| The add call in the `internal/status` listener turned off | `trace-late-row: fail: no live active message for name:cordis:late` |
+| The add call in the `internal/service` listener turned off | `trace-late-row: fail: no live service message for deepwidgets-missing` |
+| The `loader` rescan call turned off | `trace-late-row: fail: no pending message for name:cordis:late2` |
+| The `ctx.loader.await()` rescan call turned off | `trace-late-row: fail: no pending message for name:cordis:late` |
 
 ### Fill in `CLAUDE.md` `trace.host.steps.head`
 
@@ -562,11 +584,23 @@ Then prove that the late row check can fail. Do these steps in the worktree:
 
 6. Run `node tools/trace-late-row.mjs ; echo "late row no await exit=$?"`. It must print `trace-late-row: fail: no pending message for name:cordis:late` and `exit=1`.
 
-7. Copy the kept file back again. Run `cmp deepwidgets/trace/index.js "$TMPDIR/deepwidgets-trace-host/index.js.keep" ; echo "restore exit=$?"`. It must print `restore exit=0`.
+7. Copy the kept file back again.
 
-8. Run `node tools/trace-late-row.mjs ; echo "late row exit=$?"` again. It must print `trace-late-row: pass` and `exit=0`.
+8. Put `//` at the start of the line with the call that adds the message in the `internal/status` listener.
 
-If the file does not parse after you add `//`, the rescan call is not on its own line. Put each rescan call on its own line, as `trace.host.steps.host_half.rescan` tells. Then run all checks again.
+9. Run `node tools/trace-late-row.mjs ; echo "late row no status exit=$?"`. It must print `trace-late-row: fail: no live active message for name:cordis:late` and `exit=1`.
+
+10. Copy the kept file back again.
+
+11. Put `//` at the start of the line with the call that adds the message in the `internal/service` listener.
+
+12. Run `node tools/trace-late-row.mjs ; echo "late row no service exit=$?"`. It must print `trace-late-row: fail: no live service message for deepwidgets-missing` and `exit=1`.
+
+13. Copy the kept file back again. Run `cmp deepwidgets/trace/index.js "$TMPDIR/deepwidgets-trace-host/index.js.keep" ; echo "restore exit=$?"`. It must print `restore exit=0`.
+
+14. Run `node tools/trace-late-row.mjs ; echo "late row exit=$?"` again. It must print `trace-late-row: pass` and `exit=0`.
+
+If the file does not parse after you add `//`, the call is not on its own line. Put each rescan call and each add call of a listener on its own line. `trace.host.steps.host_half.rescan`, `trace.host.steps.host_half.plugins`, and `trace.host.steps.host_half.services` tell this. Then run all checks again.
 
 If a check gives a result that is not its expected result, use `tasks.protocol.stop`.
 
