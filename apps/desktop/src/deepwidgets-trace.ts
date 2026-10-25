@@ -3,9 +3,10 @@
  * The spec is `floating_widget.sources` in `docs/specs/floating-widget.md`.
  * @module deepwidgets-trace
  */
+import { BrowserWindow, screen } from 'electron'
 
 /** Names of the start-up steps that Electron main sends. */
-export type DesktopTraceStepName = 'app-ready' | 'host-started' | 'host-ready' | 'main-window-open'
+export type DesktopTraceStepName = 'app-ready' | 'host-started' | 'host-ready' | 'main-window-open' | 'trace-window-open'
 
 /** One `step` message of `floating_widget.message`, before the Host sets its `seq`. */
 interface DesktopTraceStep {
@@ -81,4 +82,49 @@ export class DesktopTraceSteps {
   private post(target: DesktopTraceTarget, batch: readonly DesktopTraceStep[]): void {
     this.queue = this.queue.then(() => sendSteps(target, batch))
   }
+}
+
+/** Page of the trace window (`floating_widget.window`). */
+const TRACE_WINDOW_URL = 'dsh-app://app/trace'
+let traceWindow: BrowserWindow | undefined
+/**
+ * Open the trace window once: no frame, always on top, on all Spaces, and shown without focus.
+ * A page that fails or does not answer 200 writes one warning and destroys the window.
+ * @param onOpen - called after the page loads and the window shows.
+ */
+export function openTraceWindow(onOpen: () => void): void {
+  if (traceWindow !== undefined && !traceWindow.isDestroyed()) return
+  const area = screen.getPrimaryDisplay().workArea
+  const window = new BrowserWindow({
+    x: area.x + area.width - 360 - 16,
+    y: area.y + 16,
+    width: 360,
+    height: 480,
+    resizable: true,
+    frame: false,
+    alwaysOnTop: true,
+    show: false,
+    title: 'deepWidgets trace',
+    backgroundColor: '#18181b',
+    webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
+  })
+  traceWindow = window
+  window.setVisibleOnAllWorkspaces(true, { skipTransformProcessType: true })
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  window.webContents.on('will-navigate', (event) => { event.preventDefault() })
+  let status = 0
+  window.webContents.once('did-navigate', (_event, _url, code) => { status = code })
+  void window.loadURL(TRACE_WINDOW_URL).then(() => {
+    if (window.isDestroyed()) return
+    if (status !== 200) {
+      console.warn(`deepwidgets-trace: GET /trace answered ${String(status)}`)
+      window.destroy()
+      return
+    }
+    window.showInactive()
+    onOpen()
+  }, (error: unknown) => {
+    console.warn('deepwidgets-trace: the trace window did not load', error)
+    if (!window.isDestroyed()) window.destroy()
+  })
 }

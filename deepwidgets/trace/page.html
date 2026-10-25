@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>deepWidgets trace</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { display: flex; flex-direction: column; background: #18181b; color: #e4e4e7; font: 11px/1.4 ui-monospace, Menlo, monospace; }
+  header { -webkit-app-region: drag; app-region: drag; user-select: none; padding: 6px 8px; background: #27272a; font-weight: 600; }
+  main { flex: 1; overflow-y: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 1px 4px; white-space: nowrap; vertical-align: top; }
+  td.detail { white-space: normal; color: #a1a1aa; }
+  tr[data-process="main"] td.process { color: #fbbf24; }
+  tr[data-process="host"] td.process { color: #60a5fa; }
+  tr[data-process="client"] td.process { color: #4ade80; }
+  tr[data-snapshot="true"] { opacity: 0.6; font-style: italic; }
+</style>
+</head>
+<body>
+<header>deepWidgets trace <span data-trace-status>connecting</span></header>
+<main><table><tbody data-trace-rows></tbody></table></main>
+<script>
+  const list = document.querySelector('main')
+  const rows = document.querySelector('[data-trace-rows]')
+  const status = document.querySelector('[data-trace-status]')
+  function clock(time) {
+    const date = new Date(time)
+    return date.toTimeString().slice(0, 8) + '.' + String(date.getMilliseconds()).padStart(3, '0')
+  }
+  function addRow(message) {
+    const atEnd = list.scrollTop + list.clientHeight >= list.scrollHeight - 4
+    const row = document.createElement('tr')
+    Object.assign(row.dataset, { traceRow: String(message.seq), process: message.process, kind: message.kind, name: message.name, snapshot: String(message.snapshot === true) })
+    const cells = [['time', clock(message.time)], ['process', message.process], ['kind', message.kind], ['name', message.name], ['state', message.state], ['detail', message.detail ?? '']]
+    for (const [name, text] of cells) {
+      const item = document.createElement('td')
+      item.className = name
+      item.textContent = text
+      row.append(item)
+    }
+    rows.append(row)
+    if (atEnd) list.scrollTop = list.scrollHeight
+  }
+  function connect() {
+    const source = new EventSource('api/trace')
+    source.onopen = () => {
+      rows.replaceChildren()
+      status.textContent = 'live'
+    }
+    source.onmessage = (event) => {
+      try {
+        addRow(JSON.parse(event.data))
+      } catch (error) {
+        console.warn('deepwidgets-trace: bad trace frame', error)
+      }
+    }
+    source.onerror = () => {
+      status.textContent = 'reconnecting'
+      if (source.readyState !== EventSource.CLOSED) return
+      setTimeout(connect, 1000)
+    }
+  }
+  connect()
+</script>
+</body>
+</html>

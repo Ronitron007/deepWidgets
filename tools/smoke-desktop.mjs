@@ -3,6 +3,7 @@
  * With DSH_SMOKE_PROBE=1, also check that the renderer shows the host process id.
  * With DSH_SMOKE_TRACE=1, also read /api/trace from the main window and check the trace test.
  * The trace test also needs the start-up steps of Electron main and a message for each client row.
+ * Then it reads the rows of the trace window page dsh-app://app/trace.
  * Uses only Node built-in modules. Prints one result line.
  */
 
@@ -525,7 +526,7 @@ function traceReadExpression() {
     if (line === undefined) return
     messages.push(JSON.parse(line.slice(6)))
   }
-  const STEPS = ['app-ready', 'host-started', 'host-ready', 'main-window-open']
+  const STEPS = ['app-ready', 'host-started', 'host-ready', 'main-window-open', 'trace-window-open']
   const bootIds = () => (window.__DSH_BOOT__?.entries ?? []).map((entry) => entry.id)
   const hasStep = (name) => messages.some((message) => message.process === 'main' && message.kind === 'step' && message.name === name && message.state === 'done')
   const hasClientRow = (id) => messages.some((message) => message.process === 'client' && message.kind === 'plugin' && message.name === id)
@@ -643,7 +644,7 @@ function traceReason(result) {
     [result.leak === false, 'mixed batch added a message'],
     [result.echoMain === true && result.echoClient === true && result.echoSeq === true, `posted messages not in stream ${String(result.echoMain)},${String(result.echoClient)},${String(result.echoSeq)}`],
     [['host', 'main', 'client'].every((name) => Array.isArray(result.processes) && result.processes.includes(name)), `processes ${String(result.processes)}`],
-    [Array.isArray(result.steps) && result.steps.length === 4, `main steps ${String(result.steps)}`],
+    [Array.isArray(result.steps) && result.steps.length === 5, `main steps ${String(result.steps)}`],
     [Array.isArray(result.clientWindows) && result.clientWindows.length === 1 && result.clientWindows[0] === 'main', `client windows ${String(result.clientWindows)}`],
     [result.bootCount > 0 && Array.isArray(result.clientMissing) && result.clientMissing.length === 0, `client rows missing ${String(result.clientMissing?.length)} of ${String(result.bootCount)}: ${String(result.clientMissing?.[0])}`],
     [result.clientLoader === true, 'no client service loader up'],
@@ -666,7 +667,7 @@ async function checkTrace(page, deadline) {
       if (typeof value === 'string') {
         const result = JSON.parse(value)
         const next = traceReason(result)
-        if (next === undefined) return undefined
+        if (next === undefined) return checkTracePage(deadline)
         reason = next
       }
     } catch (error) {
@@ -676,4 +677,36 @@ async function checkTrace(page, deadline) {
     await delay(500)
   }
   return `trace: ${reason}`
+}
+
+function tracePageExpression() {
+  return `JSON.stringify((() => {
+  const rows = [...document.querySelectorAll('tr[data-trace-row]')].filter((row) => !row.dataset.name.startsWith('smoke-trace-'))
+  const processes = [...new Set(rows.map((row) => row.dataset.process))]
+  const opened = rows.some((row) => row.dataset.process === 'main' && row.dataset.kind === 'step'
+    && row.dataset.name === 'trace-window-open' && row.textContent.includes('trace-window-open'))
+  return { rows: rows.length, processes, opened }
+})())`
+}
+async function checkTracePage(deadline) {
+  let reason = 'no page dsh-app://app/trace'
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${String(rendererPort)}/json/list`, { signal: AbortSignal.timeout(2000) })
+      const targets = response.ok ? await response.json() : []
+      const trace = Array.isArray(targets)
+        ? targets.find((target) => target?.type === 'page' && target.url === 'dsh-app://app/trace' && typeof target.webSocketDebuggerUrl === 'string')
+        : undefined
+      if (trace !== undefined) {
+        const result = JSON.parse(String(await evaluate(trace.webSocketDebuggerUrl, tracePageExpression(), Math.min(deadline, Date.now() + 5000))))
+        note(`trace page=${JSON.stringify(result)}`)
+        if (['main', 'host', 'client'].every((name) => result.processes.includes(name)) && result.opened === true) return undefined
+        reason = `rows ${String(result.rows)} processes ${result.processes.join(',')} opened ${String(result.opened)}`
+      }
+    } catch (error) {
+      note(`trace page error=${error instanceof Error ? error.message : 'unknown'}`)
+    }
+    await delay(500)
+  }
+  return `trace page: ${reason}`
 }

@@ -105,7 +105,7 @@ vi.mock('../src/deepwidgets-trace.ts', () => ({ DesktopTraceSteps: class {
   step() {}
   hostReady() {}
   hostGone() {}
-} }))
+}, openTraceWindow() {} }))
 
 vi.mock('../src/paths.ts', () => ({ resolveDesktopPaths: () => ({ profile: '/profile' }) }))
 vi.mock('../src/settings.ts', () => ({ readDesktopSettings: () => ({ updates: { allowTestAuthPopupWindow: false } }) }))
