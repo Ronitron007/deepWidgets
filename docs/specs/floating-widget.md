@@ -8,7 +8,7 @@ The trace window has two jobs. It proves that a floating window can get data fro
 
 ## Decisions `floating_widget.decisions`
 
-The operator made these decisions on 2026-10-24.
+The operator made the first four decisions on 2026-10-24, and the decision `Float` on 2026-10-25.
 
 | Decision | Choice |
 |---|---|
@@ -16,6 +16,7 @@ The operator made these decisions on 2026-10-24.
 | Message kinds | Plugin state changes and service changes. No log lines. No other Cordis events. |
 | Window | The trace window floats from the first unit that opens it. |
 | Trim | The trace units do not need `trim.profile`. The trace window shows the rows that load, before or after the trim. |
+| Float | The floating window floats like a desktop pet. It shows over full-screen apps. It works independently of the main window. It is see-through, and clicks go through its empty parts. It opens at the position where the user left it. The trace window of `trace.window` does not do these things yet. A later unit adds them. The board `docs/canvas/widget-window-obstacles.canvas` shows what blocks this unit and the next phase. |
 
 ## Sources `floating_widget.sources`
 
