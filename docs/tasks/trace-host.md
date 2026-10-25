@@ -12,11 +12,15 @@ The host half does these things:
 
 - It listens to the Cordis events `internal/status` and `internal/service`, and makes one message for each change.
 
+- It rescans the Loader rows to find each row that stays `pending` after the snapshot.
+
 - It keeps all messages in memory, in order.
 
 - It serves `GET /api/trace`, `POST /api/trace`, and `GET /trace`.
 
-In this task, the "trace test" is the command `DSH_SMOKE_TRACE=1 node tools/smoke-desktop.mjs`. It boots the app like the smoke check. Then it reads `/api/trace` from the main window page. It passes only when it finds the host service `webServer` in the state `up`.
+In this task, the "trace test" is the command `DSH_SMOKE_TRACE=1 node tools/smoke-desktop.mjs`. It boots the app like the smoke check. Then it reads `/api/trace` from the main window page. It passes only when it finds the host service `webServer` in the state `up`. It also posts test messages. It passes only when the good test messages come back in the stream, and a bad batch adds no message.
+
+The "late row check" is the command `node tools/trace-late-row.mjs`. It runs the host half in a small Cordis tree, with no app. It passes only when the host half sends a message for each row that stays `pending` after the snapshot.
 
 This unit has no client half and no Electron main change. The units `trace.sources` and `trace.window` add them. Do not add them here.
 
@@ -63,7 +67,11 @@ The third command lists the files that changed after the base. Use these rules:
 
 - `vendor/cordis/src/events.ts`, the interface `Events`: `internal/status(fiber, oldValue)` and `internal/service(this: Context, name, value)`.
 
-- `vendor/cordis/src/fiber.ts`, `FiberState`: `PENDING` 0, `LOADING` 1, `ACTIVE` 2, `FAILED` 3, `DISPOSED` 4, `UNLOADING` 5.
+- `vendor/cordis/src/fiber.ts`, `FiberState`: `PENDING` 0, `LOADING` 1, `ACTIVE` 2, `FAILED` 3, `DISPOSED` 4, `UNLOADING` 5. Also read `_updateState`. It emits `internal/status` only when the state changes.
+
+- `vendor/loader/src/config/entry.ts`, `Entry.init`. It fires `internal/service` for `loader` only when no import and no state change is in progress. It fires nothing after an import that fails.
+
+- `vendor/loader/src/config/tree.ts`: `import`, `getTasks`, and `await`. A row name `cordis:<name>` imports `loader.builtins[<name>]`. The late row check uses this.
 
 - `vendor/cordis/src/reflect.ts`: `props`, `store`, `get(name, strict)`, and `notify`. `notify` emits `internal/service`.
 
@@ -144,6 +152,8 @@ Make the snapshot first:
 
 4. Add one message with `kind` `plugin`, the row key as `name`, the word of `entry.fiber.state` as `state`, and `snapshot: true`.
 
+5. Put `entry.fiber` in the fiber set of `trace.host.steps.host_half.rescan`.
+
 Then listen with `ctx.on('internal/status', (fiber) => { ... })`. For each event:
 
 1. Read `fiber.entry`. Do not use `entry.fiber`. The reason is in `floating_widget.names`.
@@ -155,6 +165,8 @@ Then listen with `ctx.on('internal/status', (fiber) => { ... })`. For each event
 4. If `fiber.entry.options.name` is `cordis:include`, skip the event.
 
 5. Add one message with `kind` `plugin`, the row key as `name`, and the word of `fiber.state` as `state`.
+
+6. Put `fiber` in the fiber set of `trace.host.steps.host_half.rescan`.
 
 #### Service messages `trace.host.steps.host_half.services`
 
@@ -170,17 +182,37 @@ Make the snapshot first:
 
 Then listen with `ctx.on('internal/service', function (name, value) { ... })`. Do not pass `{ global: true }`. The reason is in `floating_widget.sources`. For each event:
 
-1. The state is `up` when `value` is not `undefined`. Else the state is `down`.
+1. If `name` is `loader`, call the rescan of `trace.host.steps.host_half.rescan`. Do this before the next steps.
 
-2. If the map already has this state for this name, skip the event. The Loader fires the event for `loader` once for each row.
+2. The state is `up` when `value` is not `undefined`. Else the state is `down`.
 
-3. Put the state in the map. Add one message with `kind` `service`.
+3. If the map already has this state for this name, skip the event. The Loader fires the event for `loader` many times.
+
+4. Put the state in the map. Add one message with `kind` `service`.
+
+#### Late rows `trace.host.steps.host_half.rescan`
+
+The reason for this part is in `floating_widget.sources.late_rows`.
+
+1. Keep one `WeakSet` of fibers, the fiber set. Each time that you add a `plugin` message, put its fiber in the set.
+
+2. Write one rescan function. It reads each entry of `ctx.loader.entries()`. It skips the root entry (`options.name` is `cordis:include`) and each entry that has no `fiber`. It also skips each entry whose `fiber` is in the set.
+
+3. For each other entry, the rescan adds one message with `kind` `plugin`, the row key as `name`, and the word of `entry.fiber.state` as `state`. The `detail` follows `trace.host.steps.host_half.plugins`. Do not set `snapshot`.
+
+4. Call the rescan from the `internal/service` listener (`trace.host.steps.host_half.services`).
+
+5. In `apply`, call `ctx.loader.await().then(callback)` once. Do not await it. The callback calls the rescan, unless the flag `stopped` is `true`.
+
+6. Keep the flag `stopped`. Set it to `true` in the `ctx.effect` of `trace.host.steps.host_half.stream`.
+
+7. Write each of the two rescan calls on its own line. The steps in `trace.host.check` turn off each line, to prove that the late row check can fail.
 
 #### Listener errors `trace.host.steps.host_half.errors`
 
-Put the body of each listener in `try` and `catch`. In the `catch`, call `ctx.logger.warn('deepwidgets-trace: <listener name> failed', error)`. Do not throw. The reason: a listener that throws breaks the state change of the fiber (`floating_widget.sources`).
+Put the body of each listener in `try` and `catch`. Do the same for the callback of `ctx.loader.await()`. In the `catch`, call `ctx.logger.warn('deepwidgets-trace: <listener name> failed', error)`. Do not throw. The reason: a listener that throws breaks the state change of the fiber (`floating_widget.sources`).
 
-Make the snapshots and add both listeners in the same synchronous part of `apply`. Thus no event comes between the snapshot and the listeners.
+Make the snapshots, add both listeners, and call `ctx.loader.await()` in the same synchronous part of `apply`. Thus no event comes between the snapshot and the listeners.
 
 #### The stream `trace.host.steps.host_half.stream`
 
@@ -209,7 +241,7 @@ The stream function returns a `Response` with a `ReadableStream` body and these 
 
 6. In `cancel`, remove the stream from the set and stop the ping timer.
 
-7. Use `ctx.effect` to close each open stream when the plugin stops. Also stop each ping timer.
+7. Use `ctx.effect` to close each open stream when the plugin stops. Also stop each ping timer, and set the flag `stopped` of `trace.host.steps.host_half.rescan`.
 
 Look Before You Build: `better-sse` 0.16.1 can make this `Response`. Do not add it. The reason: this is one route, and each frame is one JSON line. The stream needs no channels, no retry, and no `Last-Event-ID`. Write this reason in one line in the PR body.
 
@@ -310,16 +342,62 @@ Change `tools/smoke-desktop.mjs` in these ways. Use only Node built-in modules.
 
 #### The page read `trace.host.steps.smoke.read`
 
-The expression does these things in the page, and returns these fields:
+The expression does these steps in the page, in this order:
+
+1. Make a test id, for example `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`. The prefix `<p>` is `smoke-trace-<id>-`. Keep `T = Date.now()`.
+
+2. Make an `AbortController` that aborts after 10 seconds. Call `fetch('api/trace', { signal })`. If the status is not 200, return the result at once.
+
+3. Read the body with a reader and a `TextDecoder`. Split frames on a blank line. Parse each `data: ` line as JSON, and keep each message in one list.
+
+4. Read until the list has a message with `process` `host`, `kind` `service`, `name` `webServer`, and `state` `up`. If the body ends or the signal aborts first, return the result.
+
+5. Call `fetch('trace')`.
+
+6. Send the four `POST` requests of the table below, in the order of the table. Send each one to `api/trace` with the header `content-type: application/json`. Await each answer before the next `POST`.
+
+7. Read the same body again, until the list has a message with the name of the client message. Stop also when the body ends or the signal aborts.
+
+8. Return the result.
+
+Use `try`, `catch`, and `finally`. In `finally`, call `abort()`, and set `count`, `seqOk`, and `processes` from the list.
+
+| `POST` | Body |
+|---|---|
+| `postEmpty` | `[]` |
+| `postBad` | `[{"process":"host"}]` |
+| `postMixed` | Two items: the mixed message, then `{"process":"host"}`. |
+| `postGood` | Two items: the main message with one more field `"seq": 0` at the start, then the client message. |
+
+These are the test messages. Write the fields in this order.
+
+| Test message | Value |
+|---|---|
+| mixed message | `{ time: T, process: 'main', kind: 'step', name: '<p>mixed', state: 'done' }` |
+| main message | `{ time: T, process: 'main', kind: 'step', name: '<p>main', state: 'done', detail: 'smoke' }` |
+| client message | `{ time: T, process: 'client', window: 'main', kind: 'service', name: '<p>client', state: 'up' }` |
+
+The field `"seq": 0` tests that the host sets `seq` (`trace.host.steps.host_half.post`). The text test of `echoMain` and `echoClient` also tests the field order of `trace.host.steps.host_half.list`.
+
+The expression returns these fields:
 
 | Field | How the expression gets it |
 |---|---|
-| `status`, `type` | `fetch('api/trace', { signal })` with an `AbortController` that aborts after 10 seconds. The status, and the `content-type` header. |
-| `count`, `seqOk`, `found`, `processes` | Read the body with a reader and a `TextDecoder`. Split frames on a blank line. Parse each `data: ` line as JSON. Count the messages. `seqOk` is `true` when the `seq` of message `n` is `n`. `processes` is the list of the `process` values. `found` is `true` when a message has `process` `host`, `kind` `service`, `name` `webServer`, and `state` `up`. Stop when `found` is `true`, then call `abort()`. |
-| `page`, `pageType` | `fetch('trace')`. The status, and the `content-type` header. |
-| `postEmpty` | The status of a `POST` to `api/trace` with the body `[]` and the header `content-type: application/json`. |
-| `postBad` | The status of the same `POST` with the body `[{"process":"host"}]`. |
-| `error` | The text of a caught error, else absent. |
+| `status`, `type` | The status and the `content-type` header of the stream. |
+| `found` | `true` when the list has the `webServer` message. |
+| `page`, `pageType` | The status and the `content-type` header of `fetch('trace')`. |
+| `postEmpty`, `postBad`, `postMixed`, `postGood` | The status of each `POST`. |
+| `added` | The field `added` of the JSON body of the `postGood` answer, when its status is 200. |
+| `leak` | `true` when the list has a message with the name of the mixed message. |
+| `echoMain` | `true` when the list has a message with the name of the main message. Also, `JSON.stringify` of that message without `seq` must be equal to `JSON.stringify` of the main message. |
+| `echoClient` | The same test for the client message. |
+| `echoSeq` | `true` when the `seq` of the client copy is the `seq` of the main copy plus 1. |
+| `count` | The length of the list. |
+| `seqOk` | `true` when the `seq` of message `n` in the list is `n`. |
+| `processes` | The `process` values in the list, each one time. Do not count a message whose name starts with `smoke-trace-`. |
+| `error` | The text of a caught error, else absent. An abort of the signal is not an error. |
+
+Each try that sends the `POST` requests adds two test messages to the host list. A later try reads them again from the stream. The trace test expects this. The `smoke-trace-` names keep them out of `processes`.
 
 The spike function `spikeFetch` in `~/deepWidgets/.worktrees/rohan-spike-trace-sse/tools/smoke-desktop.mjs` reads a stream in the same way. You can read it. Do not edit that worktree, and do not copy its other spike code.
 
@@ -335,8 +413,78 @@ Check the rules in this order. The first rule that is false gives the reason.
 | `found` is `true` | `no host service webServer up in <count> messages` |
 | `page` is 200 and `pageType` starts with `text/html` | `page status <page>` |
 | `postEmpty` is 200 and `postBad` is 400 | `post status <postEmpty>,<postBad>` |
+| `postMixed` is 400 | `post mixed status <postMixed>` |
+| `postGood` is 200 and `added` is 2 | `post good status <postGood> added <added>` |
+| `leak` is `false` | `mixed batch added a message` |
+| `echoMain`, `echoClient`, and `echoSeq` are `true` | `posted messages not in stream <echoMain>,<echoClient>,<echoSeq>` |
 
-When `error` has text and no rule is false before `found`, the reason is `error <error>`.
+When `error` has text, and the first false rule is the `found` rule or a later rule, the reason is `error <error>`.
+
+A spike on `cbe90c51` ran this read and these rules in Node against a model of the host half. The correct model passed. A model that drops good messages failed with `posted messages not in stream false,false,false`. A model that adds the good items of a bad batch failed with `mixed batch added a message`. A model that copies `seq` from the `POST` failed with `seq out of order`.
+
+### Add the late row check `trace.host.steps.late_row`
+
+Write `tools/trace-late-row.mjs`. It proves the rescans of `floating_widget.sources.late_rows`. It uses Node built-in modules and the vendored Cordis and Loader. `trace.host.steps.build` builds them into `lib/`. Put these imports at the top:
+
+```js
+import { Context } from '../vendor/cordis/lib/index.js'
+import Loader from '../vendor/loader/lib/index.js'
+import * as trace from '../deepwidgets/trace/index.js'
+```
+
+The script does these steps in this order:
+
+1. Make `const ctx = new Context()`. Keep an array `routes`.
+
+2. Register two stub services on `ctx`. The host half needs them, because its `inject` names them:
+
+   ```js
+   ctx.provide('webServer', { register: () => () => {} })
+   ctx.provide('connection', { fetch: { register: (route) => { routes.push(route); return async () => {} } } })
+   ```
+
+3. Run `await ctx.plugin(Loader).await()`. Then get the Loader with `ctx.get('loader')`.
+
+4. Make three deferred imports with `Promise.withResolvers()`: `late`, `broken`, and `late2`.
+
+5. Set `loader.builtins.trace` to `trace`. Set `loader.builtins.late`, `loader.builtins.broken`, and `loader.builtins.late2` to the promise of each deferred import.
+
+6. Start the boot rows with `loader.root.update([{ id: 'trace', name: 'cordis:trace' }, { id: 'late', name: 'cordis:late' }, { id: 'broken', name: 'cordis:broken' }])`. Keep the promise. Do not await it yet.
+
+7. Wait until `routes` has one item, at most 1 second. The route shows that the host half made its snapshot.
+
+8. Wait 10 ms. Resolve `late` with `{ inject: ['deepwidgets-missing'], apply() {} }`. No plugin has this service, so the row stays `pending`.
+
+9. Wait 10 ms. Reject `broken` with an error. This import fails last, so the Loader fires no `loader` event after it.
+
+10. Await the promise of the boot rows. Then run `await loader.await()`, and wait 10 ms.
+
+11. Read the stream. The messages must have a good message for `late`.
+
+12. Run `loader.create({ id: 'late2', name: 'cordis:late2' })`. Keep the promise. Wait 10 ms. Resolve `late2` with the plugin of the step for `late`.
+
+13. Await the promise of `loader.create`. Then run `await loader.await()`, and wait 10 ms.
+
+14. Read the stream again. The messages must have a good message for `late2`. They must have only one `plugin` message whose `name` is `name:cordis:late`.
+
+To read the stream, call `routes[0].fetch(new Request('http://127.0.0.1/api/trace', { signal }))`. Make the signal with an `AbortController` that aborts after 200 ms. Read the body until it ends or aborts. Parse each `data: ` line as JSON.
+
+A good message for the row `<id>` has `kind` `plugin` and `name` `name:cordis:<id>`. It has `state` `pending` and `detail` `cordis:<id> waits for deepwidgets-missing`. It has no `snapshot` field. These rows have ids with no `include:` prefix, so the row key starts with `name:`.
+
+The script prints one result line on stdout. Then it exits with `process.exit`, because the ping timers keep the process alive. Check the rules in this order. The first rule that is false gives the result.
+
+| Rule | Result when false |
+|---|---|
+| `routes` gets one item in 1 second | `trace-late-row: fail: no trace route` |
+| In each read, the `seq` of message `n` is `n` | `trace-late-row: fail: seq out of order` |
+| The first read has a good message for `late` | `trace-late-row: fail: no pending message for name:cordis:late` |
+| The second read has a good message for `late2` | `trace-late-row: fail: no pending message for name:cordis:late2` |
+| The second read has one `plugin` message for `name:cordis:late` | `trace-late-row: fail: more than one message for name:cordis:late` |
+| The script ends in 10 seconds | `trace-late-row: fail: timeout` |
+
+When each rule is true, the result is `trace-late-row: pass`. The exit code is 0 for `pass` and 1 for each fail.
+
+A spike on `cbe90c51` ran this script against a model of the host half. It passed 15 times in 15 runs. Without the `loader` rescan, it printed the fail for `late2`. Without the `ctx.loader.await()` rescan, it printed the fail for `late`.
 
 ### Fill in `CLAUDE.md` `trace.host.steps.head`
 
@@ -357,10 +505,10 @@ Change only these parts of the root `CLAUDE.md`:
 3. In `head.status`, add this sentence at the end of the value of the row `Checks`:
 
    ```markdown
-   With `DSH_SMOKE_TRACE=1`, it also runs the trace test.
+   With `DSH_SMOKE_TRACE=1`, it also runs the trace test. `tools/trace-late-row.mjs` checks that the trace finds late rows.
    ```
 
-4. In `head.commands`, add `DSH_SMOKE_TRACE=1 node tools/smoke-desktop.mjs` after the line `DSH_SMOKE_PROBE=1 node tools/smoke-desktop.mjs`.
+4. In `head.commands`, add `DSH_SMOKE_TRACE=1 node tools/smoke-desktop.mjs` after the line `DSH_SMOKE_PROBE=1 node tools/smoke-desktop.mjs`. Then add `node tools/trace-late-row.mjs` after it.
 
 `head.why` gives the count of composed rows. The trace row makes it wrong. Do not change it in this unit. Write the new count under `Findings` (`trace.host.findings`).
 
@@ -385,6 +533,7 @@ The trim patch names rows by id. Thus it does not turn off the new trace row.
 Run each command in the worktree. Capture each exit code.
 
 ```bash
+node tools/trace-late-row.mjs ; echo "late row exit=$?"                                                # must print "trace-late-row: pass" and exit=0
 DSH_SMOKE_TRACE=1 node tools/smoke-desktop.mjs ; echo "trace exit=$?"                                  # must print pass and exit=0
 DSH_SMOKE_TRACE=1 DEEPWIDGETS_TRACE=off node tools/smoke-desktop.mjs ; echo "trace off exit=$?"        # must print "fail: trace: status 404" and exit=1
 DEEPWIDGETS_TRACE=off node tools/smoke-desktop.mjs ; echo "smoke trace off exit=$?"                    # must print pass and exit=0
@@ -398,6 +547,26 @@ git grep -c deepwidgets-trim -- packages/util/official-bundles/src/bundles.ts   
 The second command proves that the trace test can fail. `DEEPWIDGETS_TRACE=off` disables the trace host row. Thus `/api/trace` falls to the `/api` prefix of `client-connection`, which answers 404. The third command proves that the app still works without the trace row. The second command waits until the deadline, so it takes about 4 minutes.
 
 If `trim.profile` is in your base, also run its rows check from `head.commands`. It must print pass and exit 0.
+
+Then prove that the late row check can fail. Do these steps in the worktree:
+
+1. Run `cp deepwidgets/trace/index.js "$TMPDIR/deepwidgets-trace-host/index.js.keep"`.
+
+2. In `deepwidgets/trace/index.js`, put `//` at the start of the line with the rescan call in the `internal/service` listener.
+
+3. Run `node tools/trace-late-row.mjs ; echo "late row no event exit=$?"`. It must print `trace-late-row: fail: no pending message for name:cordis:late2` and `exit=1`.
+
+4. Copy the kept file back with `cp "$TMPDIR/deepwidgets-trace-host/index.js.keep" deepwidgets/trace/index.js`.
+
+5. Put `//` at the start of the line with the rescan call in the callback of `ctx.loader.await()`.
+
+6. Run `node tools/trace-late-row.mjs ; echo "late row no await exit=$?"`. It must print `trace-late-row: fail: no pending message for name:cordis:late` and `exit=1`.
+
+7. Copy the kept file back again. Run `cmp deepwidgets/trace/index.js "$TMPDIR/deepwidgets-trace-host/index.js.keep" ; echo "restore exit=$?"`. It must print `restore exit=0`.
+
+8. Run `node tools/trace-late-row.mjs ; echo "late row exit=$?"` again. It must print `trace-late-row: pass` and `exit=0`.
+
+If the file does not parse after you add `//`, the rescan call is not on its own line. Put each rescan call on its own line, as `trace.host.steps.host_half.rescan` tells. Then run all checks again.
 
 If a check gives a result that is not its expected result, use `tasks.protocol.stop`.
 
@@ -436,6 +605,8 @@ Put these items in the `Findings` section of the PR body. Write "unknown" when y
 - `pnpm-lock.yaml` (only the two trace entries)
 
 - `tools/smoke-desktop.mjs`
+
+- `tools/trace-late-row.mjs` (new)
 
 - `CLAUDE.md` (only the parts in `trace.host.steps.head`)
 
