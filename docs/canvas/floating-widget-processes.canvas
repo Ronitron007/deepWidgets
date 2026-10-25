@@ -1,0 +1,117 @@
+{
+  "nodes": [
+    {
+      "id": "intro",
+      "type": "text",
+      "x": 0,
+      "y": -340,
+      "width": 1300,
+      "height": 240,
+      "text": "# Processes and message paths of the trace window `floating_widget.processes`\n\nThis board shows the processes of the first draft of the floating widget. It also shows each path that a trace message takes. The spec is `docs/specs/floating-widget.md` (spec `floating_widget`).\n\nEach arrow is one path. The label of an arrow gives the request and the unit that adds it. An arrow with two heads is a request with its response."
+    },
+    {
+      "id": "page_main",
+      "type": "text",
+      "x": 0,
+      "y": -40,
+      "width": 600,
+      "height": 320,
+      "color": "6",
+      "text": "## Main window page\n\nURL `dsh-app://app/`.\n\n- The Cordis `client` Context, with `ctx.loader`.\n- The client half of `@deepwidgets/trace` (unit `trace.sources`). It sends a snapshot, then each plugin state change and each service change in the `client` Context.\n- The client half sets `window` from the URL query parameter `window`. Without it, the value is `main`."
+    },
+    {
+      "id": "page_trace",
+      "type": "text",
+      "x": 700,
+      "y": -40,
+      "width": 600,
+      "height": 320,
+      "color": "3",
+      "text": "## Trace window page\n\nURL `dsh-app://app/trace` (unit `trace.window`). No Cordis Context. No preload script.\n\n- It reads the stream with `EventSource('api/trace')`.\n- It shows one row for each message.\n- After an error, it makes a new `EventSource`."
+    },
+    {
+      "id": "electron_main",
+      "type": "text",
+      "x": 0,
+      "y": 420,
+      "width": 1300,
+      "height": 280,
+      "color": "4",
+      "text": "## Electron main\n\nIt runs no Cordis Context. It starts the host and opens the windows.\n\n- `protocol.handle` for `dsh-app://app/` in `apps/desktop/src/main.ts`. Before the host is ready, it answers 503.\n- `forwardWebRequest` in `apps/desktop/src/web-document.ts` sends each request to the host, with the host cookie. The response body passes through as a stream.\n- It keeps its start-up steps in a list until the host is ready (unit `trace.sources`)."
+    },
+    {
+      "id": "group_host",
+      "type": "group",
+      "x": 0,
+      "y": 860,
+      "width": 1300,
+      "height": 440,
+      "label": "host process"
+    },
+    {
+      "id": "host_ctx",
+      "type": "text",
+      "x": 40,
+      "y": 900,
+      "width": 520,
+      "height": 360,
+      "color": "5",
+      "text": "## Cordis `host` Context\n\nThe one Node child process that Electron main starts.\n\n- The Loader rows of DSH and of deepWidgets.\n- The DSH web server, with the `/api` prefix of `client-connection`.\n- Cordis fires `internal/status` for each fiber, and `internal/service` for each service of this scope."
+    },
+    {
+      "id": "host_trace",
+      "type": "text",
+      "x": 740,
+      "y": 900,
+      "width": 520,
+      "height": 360,
+      "color": "5",
+      "text": "## Host half of `@deepwidgets/trace`\n\nUnit `trace.host`.\n\n- It keeps all messages in memory, in order, and sets `seq`.\n- `GET /api/trace` and `POST /api/trace`: one `ctx.connection.fetch` route, with the cookie check and the Host and Origin check.\n- `GET /trace`: one `ctx.webServer` route for the page.\n- The stream sends all kept messages, then each new message."
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_page_main",
+      "fromNode": "page_main",
+      "fromSide": "bottom",
+      "toNode": "electron_main",
+      "toSide": "top",
+      "fromEnd": "arrow",
+      "label": "fetch: POST api/trace from the client half (trace.sources). GET api/trace from the trace test (trace.host)."
+    },
+    {
+      "id": "e_page_trace",
+      "fromNode": "page_trace",
+      "fromSide": "bottom",
+      "toNode": "electron_main",
+      "toSide": "top",
+      "fromEnd": "arrow",
+      "label": "EventSource: GET api/trace. The SSE stream comes back (trace.window)."
+    },
+    {
+      "id": "e_forward",
+      "fromNode": "electron_main",
+      "fromSide": "bottom",
+      "toNode": "host_trace",
+      "toSide": "top",
+      "fromEnd": "arrow",
+      "label": "forwardWebRequest: each dsh-app://app/ request, with the host cookie. The stream comes back as it is."
+    },
+    {
+      "id": "e_main_steps",
+      "fromNode": "electron_main",
+      "fromSide": "right",
+      "toNode": "host_trace",
+      "toSide": "right",
+      "label": "POST /api/trace: the start-up steps, by Node fetch with the host cookie (trace.sources)."
+    },
+    {
+      "id": "e_in_process",
+      "fromNode": "host_ctx",
+      "fromSide": "right",
+      "toNode": "host_trace",
+      "toSide": "left",
+      "label": "In process: internal/status and internal/service (trace.host)."
+    }
+  ]
+}
