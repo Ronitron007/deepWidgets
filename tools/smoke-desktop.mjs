@@ -1,6 +1,7 @@
 /**
  * Boot the unpackaged desktop app and check that the main renderer and host answer.
  * With DSH_SMOKE_PROBE=1, also check that the renderer shows the host process id.
+ * With DSH_SMOKE_TRACE=1, also read /api/trace from the main window and check the trace test.
  * Uses only Node built-in modules. Prints one result line.
  */
 
@@ -350,6 +351,7 @@ try {
       const host = await waitForHost(deadline)
       if (!host) failed = 'host timeout'
       else if (process.env.DSH_SMOKE_PROBE === '1') failed = await checkProbe(page, deadline)
+      if (failed === undefined && process.env.DSH_SMOKE_TRACE === '1') failed = await checkTrace(page, deadline)
     }
   }
 } catch (error) {
@@ -372,7 +374,7 @@ async function waitForRenderer(deadline) {
         if (Array.isArray(targets)) {
           const pages = targets.filter((target) => target?.type === 'page' && typeof target.url === 'string')
           note(`pages=${pages.map((target) => target.url).join(' | ')}`)
-          const match = pages.find((target) => target.url.startsWith('dsh-app://app/'))
+          const match = pages.find((target) => target.url === 'dsh-app://app/')
           if (match !== undefined && typeof match.webSocketDebuggerUrl === 'string') return match
         }
       }
@@ -407,7 +409,7 @@ async function waitUntilComplete(page, deadline) {
   return false
 }
 
-function evaluate(url, expression, deadline) {
+function evaluate(url, expression, deadline, awaitPromise = false) {
   const remaining = Math.max(1, deadline - Date.now())
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url)
@@ -420,7 +422,7 @@ function evaluate(url, expression, deadline) {
       socket.send(JSON.stringify({
         id,
         method: 'Runtime.evaluate',
-        params: { expression, returnByValue: true },
+        params: { expression, returnByValue: true, awaitPromise },
       }))
     })
     socket.addEventListener('message', (event) => {
@@ -428,6 +430,10 @@ function evaluate(url, expression, deadline) {
       if (message.id !== id) return
       clearTimeout(timer)
       socket.close()
+      if (message.result?.exceptionDetails) {
+        reject(new Error(message.result.exceptionDetails.text ?? 'evaluate failed'))
+        return
+      }
       resolve(message.result?.result?.value)
     })
     socket.addEventListener('error', () => {
@@ -445,7 +451,7 @@ async function notePages() {
     if (!Array.isArray(targets)) return
     const pages = targets.filter((target) => target?.type === 'page' && typeof target.url === 'string')
     note(`pages=${pages.map((target) => target.url).join(' | ')}`)
-    const match = pages.find((target) => target.url.startsWith('dsh-app://app/') && typeof target.webSocketDebuggerUrl === 'string')
+    const match = pages.find((target) => target.url === 'dsh-app://app/' && typeof target.webSocketDebuggerUrl === 'string')
     if (match === undefined) return
     const visibility = await evaluate(match.webSocketDebuggerUrl, 'document.visibilityState', Date.now() + 3000)
     note(`visibilityState=${String(visibility)}`)
@@ -499,4 +505,151 @@ async function checkProbe(page, deadline) {
   const shown = text === '' ? 'missing' : text
   note(`probe text=${shown} hostPid=${String(hostPid)}`)
   return `probe text: ${shown}`
+}
+
+function traceReadExpression() {
+  return `(async () => {
+  const id = \`\${Date.now().toString(36)}\${Math.random().toString(36).slice(2, 6)}\`
+  const prefix = \`smoke-trace-\${id}-\`
+  const T = Date.now()
+  const messages = []
+  const out = {}
+  const controller = new AbortController()
+  const timer = setTimeout(() => { controller.abort() }, 10000)
+  let reader
+  const decode = new TextDecoder()
+  let buffer = ''
+  const takeFrame = (frame) => {
+    const line = frame.split('\\n').find((item) => item.startsWith('data: '))
+    if (line === undefined) return
+    messages.push(JSON.parse(line.slice(6)))
+  }
+  const pull = async (done) => {
+    while (!done()) {
+      if (reader === undefined) return false
+      let step
+      try {
+        step = await reader.read()
+      } catch (error) {
+        if (error && error.name === 'AbortError') return false
+        throw error
+      }
+      if (step.done) return false
+      buffer += decode.decode(step.value, { stream: true })
+      let split = buffer.indexOf('\\n\\n')
+      while (split !== -1) {
+        takeFrame(buffer.slice(0, split))
+        buffer = buffer.slice(split + 2)
+        split = buffer.indexOf('\\n\\n')
+      }
+    }
+    return true
+  }
+  try {
+    const response = await fetch('api/trace', { signal: controller.signal })
+    out.status = response.status
+    out.type = response.headers.get('content-type')
+    if (response.status === 200) {
+      reader = response.body.getReader()
+      const hasWeb = () => messages.some((message) => message.process === 'host' && message.kind === 'service' && message.name === 'webServer' && message.state === 'up')
+      await pull(hasWeb)
+      out.found = hasWeb()
+      if (out.found === true) {
+        const page = await fetch('trace')
+        out.page = page.status
+        out.pageType = page.headers.get('content-type')
+        const mixed = { time: T, process: 'main', kind: 'step', name: prefix + 'mixed', state: 'done' }
+        const main = { time: T, process: 'main', kind: 'step', name: prefix + 'main', state: 'done', detail: 'smoke' }
+        const client = { time: T, process: 'client', window: 'main', kind: 'service', name: prefix + 'client', state: 'up' }
+        const post = async (body) => fetch('api/trace', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+        const empty = await post([])
+        out.postEmpty = empty.status
+        const bad = await post([{ process: 'host' }])
+        out.postBad = bad.status
+        const mixedAnswer = await post([mixed, { process: 'host' }])
+        out.postMixed = mixedAnswer.status
+        const good = await post([{ seq: 0, ...main }, client])
+        out.postGood = good.status
+        if (good.status === 200) out.added = (await good.json()).added
+        const hasClient = () => messages.some((message) => message.name === prefix + 'client')
+        await pull(hasClient)
+        const mainCopy = messages.find((message) => message.name === prefix + 'main')
+        const clientCopy = messages.find((message) => message.name === prefix + 'client')
+        const withoutSeq = (message) => {
+          const copy = { ...message }
+          delete copy.seq
+          return JSON.stringify(copy)
+        }
+        out.leak = messages.some((message) => message.name === prefix + 'mixed')
+        out.echoMain = mainCopy !== undefined && withoutSeq(mainCopy) === JSON.stringify(main)
+        out.echoClient = clientCopy !== undefined && withoutSeq(clientCopy) === JSON.stringify(client)
+        out.echoSeq = mainCopy !== undefined && clientCopy !== undefined && clientCopy.seq === mainCopy.seq + 1
+      }
+    }
+  } catch (error) {
+    if (!(error && error.name === 'AbortError')) out.error = error instanceof Error ? error.message : String(error)
+  } finally {
+    clearTimeout(timer)
+    controller.abort()
+    out.count = messages.length
+    out.seqOk = messages.every((message, index) => message.seq === index + 1)
+    const processes = []
+    for (const message of messages) {
+      if (typeof message.name === 'string' && message.name.startsWith('smoke-trace-')) continue
+      if (!processes.includes(message.process)) processes.push(message.process)
+    }
+    out.processes = processes
+    const web = messages.find((message) => message.process === 'host' && message.kind === 'service' && message.name === 'webServer' && message.state === 'up')
+    out.webSeq = web ? web.seq : undefined
+    out.snapshotPlugins = messages.filter((message) => message.snapshot === true && message.kind === 'plugin').length
+    out.snapshotServices = messages.filter((message) => message.snapshot === true && message.kind === 'service').length
+    if (reader !== undefined) {
+      try { await reader.cancel() } catch { /* the stream is already closed */ }
+    }
+  }
+  return JSON.stringify(out)
+})()`
+}
+
+function traceReason(result) {
+  const rules = [
+    [result.status === 200, `status ${String(result.status)}`],
+    [String(result.type ?? '').startsWith('text/event-stream'), `content type ${String(result.type)}`],
+    [result.seqOk === true, 'seq out of order'],
+    [result.found === true, `no host service webServer up in ${String(result.count)} messages`],
+    [result.page === 200 && String(result.pageType ?? '').startsWith('text/html'), `page status ${String(result.page)}`],
+    [result.postEmpty === 200 && result.postBad === 400, `post status ${String(result.postEmpty)},${String(result.postBad)}`],
+    [result.postMixed === 400, `post mixed status ${String(result.postMixed)}`],
+    [result.postGood === 200 && result.added === 2, `post good status ${String(result.postGood)} added ${String(result.added)}`],
+    [result.leak === false, 'mixed batch added a message'],
+    [result.echoMain === true && result.echoClient === true && result.echoSeq === true, `posted messages not in stream ${String(result.echoMain)},${String(result.echoClient)},${String(result.echoSeq)}`],
+  ]
+  for (let index = 0; index < rules.length; index += 1) {
+    if (rules[index][0]) continue
+    if (typeof result.error === 'string' && result.error !== '' && index >= 3) return `error ${result.error}`
+    return rules[index][1]
+  }
+  return undefined
+}
+
+async function checkTrace(page, deadline) {
+  let reason = 'missing'
+  while (Date.now() < deadline) {
+    const tryDeadline = Math.min(deadline, Date.now() + 15_000)
+    try {
+      const value = await evaluate(page.webSocketDebuggerUrl, traceReadExpression(), tryDeadline, true)
+      note(`trace try=${String(value)}`)
+      if (typeof value === 'string') {
+        const result = JSON.parse(value)
+        const next = traceReason(result)
+        if (next === undefined) return undefined
+        reason = next
+      }
+    } catch (error) {
+      note(`trace evaluate error=${error instanceof Error ? error.message : 'unknown'}`)
+    }
+    if (Date.now() >= deadline) break
+    await delay(500)
+  }
+  return `trace: ${reason}`
 }

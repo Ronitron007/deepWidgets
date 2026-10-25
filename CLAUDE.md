@@ -31,8 +31,8 @@ Code without a comment can still be off. A plugin row is off when a patch layer 
 | Item | State on 2026-10-24 |
 |---|---|
 | Rows that deepWidgets turns off | None yet. The unit `trim.profile` turns them off. DSH itself turns off some of the 196 rows, with `disabled: true` or a `!!js` condition. |
-| Our packages | `deepwidgets/probe` (merged). `deepwidgets/trim` and `deepwidgets/trace` (planned). |
-| Checks | `tools/smoke-desktop.mjs` boots the app. With `DSH_SMOKE_PROBE=1`, it also runs the probe test. |
+| Our packages | `deepwidgets/probe` (merged). `deepwidgets/trace` (host half merged). `deepwidgets/trim` (planned). |
+| Checks | `tools/smoke-desktop.mjs` boots the app. With `DSH_SMOKE_PROBE=1`, it also runs the probe test. With `DSH_SMOKE_TRACE=1`, it also runs the trace test. `tools/trace-late-row.mjs` checks that the trace finds late rows. |
 
 ## Where things are `head.map`
 
@@ -40,6 +40,7 @@ Code without a comment can still be off. A plugin row is off when a patch layer 
 |---|---|
 | `docs/specs/` | `fork-trim.md` (spec `fork_trim`), `floating-widget.md` (spec `floating_widget`) |
 | `docs/plans/` | One plan for each spec. Each plan unit is one PR. |
+| `docs/canvas/` | JSON Canvas boards that show how a system works, such as `floating-widget-processes.canvas`. |
 | `docs/tasks/` | The task file of a unit, written before the unit starts. `docs/tasks/README.md` is the task protocol. |
 | `deepwidgets/` | The `@deepwidgets/*` packages, in plain JavaScript. A widget bundle, such as `probe`, has a host half and a client half. |
 | `tools/` | deepWidgets scripts, such as the smoke check. |
@@ -89,4 +90,6 @@ corepack pnpm --filter @deepseek-ai/dsh-desktop run build
 corepack pnpm run start:desktop
 node tools/smoke-desktop.mjs
 DSH_SMOKE_PROBE=1 node tools/smoke-desktop.mjs
+DSH_SMOKE_TRACE=1 node tools/smoke-desktop.mjs
+node tools/trace-late-row.mjs
 ```
