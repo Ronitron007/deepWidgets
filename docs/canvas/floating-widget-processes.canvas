@@ -64,9 +64,9 @@
       "x": 740,
       "y": 900,
       "width": 520,
-      "height": 360,
+      "height": 390,
       "color": "5",
-      "text": "## Host half of `@deepwidgets/trace`\n\nUnit `trace.host`.\n\n- It keeps all messages in memory, in order, and sets `seq`.\n- `GET /api/trace` and `POST /api/trace`: one `ctx.connection.fetch` route, with the cookie check and the Host and Origin check.\n- `GET /trace`: one `ctx.webServer` route for the page.\n- The stream sends all kept messages, then each new message."
+      "text": "## Host half of `@deepwidgets/trace`\n\nUnit `trace.host`.\n\n- It rescans the Loader rows for a row that stays `pending` after the snapshot (`floating_widget.sources.late_rows`).\n- It keeps all messages in memory, in order, and sets `seq`.\n- `GET /api/trace` and `POST /api/trace`: one `ctx.connection.fetch` route, with the cookie check and the Host and Origin check.\n- `GET /trace`: one `ctx.webServer` route for the page.\n- The stream sends all kept messages, then each new message."
     }
   ],
   "edges": [
@@ -111,7 +111,7 @@
       "fromSide": "right",
       "toNode": "host_trace",
       "toSide": "left",
-      "label": "In process: internal/status and internal/service (trace.host)."
+      "label": "In process: internal/status and internal/service, and the rescan of the Loader rows (trace.host)."
     }
   ]
 }

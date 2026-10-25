@@ -33,13 +33,31 @@ After the snapshot, the trace plugins listen to the Cordis events `internal/stat
 
 - A listener gets `internal/service` only for the services of its own isolate scope. The trace listens without `{ global: true }`. Thus it sends the services of the `host` Context and of the `client` Context, not of isolated scopes.
 
-- The Loader fires `internal/service` for `loader` once for each row. A trace plugin sends a service message only when the state of a service changes between `up` and `down`.
+- The Loader fires `internal/service` for `loader` many times. After a row starts, `Entry.init` in `vendor/loader/src/config/entry.ts` fires it when no import and no state change is in progress. At this event, a trace plugin first does the rescan of `floating_widget.sources.late_rows`. Then it sends a service message only when the state of a service changes between `up` and `down`.
 
 - A listener that throws breaks the state change of the fiber (`vendor/cordis/src/fiber.ts`). Each trace listener catches its own errors.
 
 The client half sets the field `window`. When it starts, it reads the query parameter `window` of the page URL once. When the URL has no such parameter, the value is `main`. In this draft, no window URL has this parameter. Thus the only value is `main`.
 
 The reason for the query parameter: Electron main sends each request with the same host cookie. Thus the host cannot tell two pages apart. A later widget window can load `dsh-app://app/?window=widget`, and the host needs no change.
+
+### Late rows `floating_widget.sources.late_rows`
+
+A row can make its fiber after the snapshot. A new fiber starts in the state `pending` (`vendor/cordis/src/fiber.ts`). When a service that it needs does not exist, the fiber stays `pending`. Cordis emits `internal/status` only when the state changes (`_updateState` in the same file). Thus the listeners alone do not show this row.
+
+Each trace plugin finds these rows with a rescan:
+
+- The rescan reads `ctx.loader.entries()`. For each row root fiber that has no message yet, it sends one `plugin` message with the current state. This message has no `snapshot` field.
+
+- A trace plugin keeps a set of the fibers that have a message. The snapshot, the `internal/status` listener, and the rescan put fibers in this set. The set holds fibers, not row keys, because a row that starts again gets a new fiber.
+
+- A trace plugin rescans at each `internal/service` event for `loader`.
+
+- A trace plugin also rescans once when `ctx.loader.await()` resolves. The reason: when the last task to end is an import that fails, `Entry.init` fires no `loader` event.
+
+A row whose import fails has no fiber. The trace sends no message for it. After boot, one gap stays open. When a new row stays `pending` and an import fails last, the row gets its message only at the next `loader` event.
+
+A spike on `cbe90c51` ran a model of the host half with the vendored Cordis and Loader. Without the `loader` rescan, a pending row that the spike added after boot had no message. Without the `ctx.loader.await()` rescan, a late pending row had no message when the last import failed.
 
 ## Message `floating_widget.message`
 
