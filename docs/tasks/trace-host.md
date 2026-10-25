@@ -18,7 +18,7 @@ The host half does these things:
 
 - It serves `GET /api/trace`, `POST /api/trace`, and `GET /trace`.
 
-In this task, the "trace test" is the command `DSH_SMOKE_TRACE=1 node tools/smoke-desktop.mjs`. It boots the app like the smoke check. Then it reads `/api/trace` from the main window page. It passes only when it finds the host service `webServer` in the state `up`.
+In this task, the "trace test" is the command `DSH_SMOKE_TRACE=1 node tools/smoke-desktop.mjs`. It boots the app like the smoke check. Then it reads `/api/trace` from the main window page. It passes only when it finds the host service `webServer` in the state `up`. It also posts test messages. It passes only when the good test messages come back in the stream, and a bad batch adds no message.
 
 The "late row check" is the command `node tools/trace-late-row.mjs`. It runs the host half in a small Cordis tree, with no app. It passes only when the host half sends a message for each row that stays `pending` after the snapshot.
 
@@ -342,16 +342,62 @@ Change `tools/smoke-desktop.mjs` in these ways. Use only Node built-in modules.
 
 #### The page read `trace.host.steps.smoke.read`
 
-The expression does these things in the page, and returns these fields:
+The expression does these steps in the page, in this order:
+
+1. Make a test id, for example `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`. The prefix `<p>` is `smoke-trace-<id>-`. Keep `T = Date.now()`.
+
+2. Make an `AbortController` that aborts after 10 seconds. Call `fetch('api/trace', { signal })`. If the status is not 200, return the result at once.
+
+3. Read the body with a reader and a `TextDecoder`. Split frames on a blank line. Parse each `data: ` line as JSON, and keep each message in one list.
+
+4. Read until the list has a message with `process` `host`, `kind` `service`, `name` `webServer`, and `state` `up`. If the body ends or the signal aborts first, return the result.
+
+5. Call `fetch('trace')`.
+
+6. Send the four `POST` requests of the table below, in the order of the table. Send each one to `api/trace` with the header `content-type: application/json`. Await each answer before the next `POST`.
+
+7. Read the same body again, until the list has a message with the name of the client message. Stop also when the body ends or the signal aborts.
+
+8. Return the result.
+
+Use `try`, `catch`, and `finally`. In `finally`, call `abort()`, and set `count`, `seqOk`, and `processes` from the list.
+
+| `POST` | Body |
+|---|---|
+| `postEmpty` | `[]` |
+| `postBad` | `[{"process":"host"}]` |
+| `postMixed` | Two items: the mixed message, then `{"process":"host"}`. |
+| `postGood` | Two items: the main message with one more field `"seq": 0` at the start, then the client message. |
+
+These are the test messages. Write the fields in this order.
+
+| Test message | Value |
+|---|---|
+| mixed message | `{ time: T, process: 'main', kind: 'step', name: '<p>mixed', state: 'done' }` |
+| main message | `{ time: T, process: 'main', kind: 'step', name: '<p>main', state: 'done', detail: 'smoke' }` |
+| client message | `{ time: T, process: 'client', window: 'main', kind: 'service', name: '<p>client', state: 'up' }` |
+
+The field `"seq": 0` tests that the host sets `seq` (`trace.host.steps.host_half.post`). The text test of `echoMain` and `echoClient` also tests the field order of `trace.host.steps.host_half.list`.
+
+The expression returns these fields:
 
 | Field | How the expression gets it |
 |---|---|
-| `status`, `type` | `fetch('api/trace', { signal })` with an `AbortController` that aborts after 10 seconds. The status, and the `content-type` header. |
-| `count`, `seqOk`, `found`, `processes` | Read the body with a reader and a `TextDecoder`. Split frames on a blank line. Parse each `data: ` line as JSON. Count the messages. `seqOk` is `true` when the `seq` of message `n` is `n`. `processes` is the list of the `process` values. `found` is `true` when a message has `process` `host`, `kind` `service`, `name` `webServer`, and `state` `up`. Stop when `found` is `true`, then call `abort()`. |
-| `page`, `pageType` | `fetch('trace')`. The status, and the `content-type` header. |
-| `postEmpty` | The status of a `POST` to `api/trace` with the body `[]` and the header `content-type: application/json`. |
-| `postBad` | The status of the same `POST` with the body `[{"process":"host"}]`. |
-| `error` | The text of a caught error, else absent. |
+| `status`, `type` | The status and the `content-type` header of the stream. |
+| `found` | `true` when the list has the `webServer` message. |
+| `page`, `pageType` | The status and the `content-type` header of `fetch('trace')`. |
+| `postEmpty`, `postBad`, `postMixed`, `postGood` | The status of each `POST`. |
+| `added` | The field `added` of the JSON body of the `postGood` answer, when its status is 200. |
+| `leak` | `true` when the list has a message with the name of the mixed message. |
+| `echoMain` | `true` when the list has a message with the name of the main message. Also, `JSON.stringify` of that message without `seq` must be equal to `JSON.stringify` of the main message. |
+| `echoClient` | The same test for the client message. |
+| `echoSeq` | `true` when the `seq` of the client copy is the `seq` of the main copy plus 1. |
+| `count` | The length of the list. |
+| `seqOk` | `true` when the `seq` of message `n` in the list is `n`. |
+| `processes` | The `process` values in the list, each one time. Do not count a message whose name starts with `smoke-trace-`. |
+| `error` | The text of a caught error, else absent. An abort of the signal is not an error. |
+
+Each try that sends the `POST` requests adds two test messages to the host list. A later try reads them again from the stream. The trace test expects this. The `smoke-trace-` names keep them out of `processes`.
 
 The spike function `spikeFetch` in `~/deepWidgets/.worktrees/rohan-spike-trace-sse/tools/smoke-desktop.mjs` reads a stream in the same way. You can read it. Do not edit that worktree, and do not copy its other spike code.
 
@@ -367,8 +413,14 @@ Check the rules in this order. The first rule that is false gives the reason.
 | `found` is `true` | `no host service webServer up in <count> messages` |
 | `page` is 200 and `pageType` starts with `text/html` | `page status <page>` |
 | `postEmpty` is 200 and `postBad` is 400 | `post status <postEmpty>,<postBad>` |
+| `postMixed` is 400 | `post mixed status <postMixed>` |
+| `postGood` is 200 and `added` is 2 | `post good status <postGood> added <added>` |
+| `leak` is `false` | `mixed batch added a message` |
+| `echoMain`, `echoClient`, and `echoSeq` are `true` | `posted messages not in stream <echoMain>,<echoClient>,<echoSeq>` |
 
-When `error` has text and no rule is false before `found`, the reason is `error <error>`.
+When `error` has text, and the first false rule is the `found` rule or a later rule, the reason is `error <error>`.
+
+A spike on `cbe90c51` ran this read and these rules in Node against a model of the host half. The correct model passed. A model that drops good messages failed with `posted messages not in stream false,false,false`. A model that adds the good items of a bad batch failed with `mixed batch added a message`. A model that copies `seq` from the `POST` failed with `seq out of order`.
 
 ### Add the late row check `trace.host.steps.late_row`
 

@@ -143,6 +143,10 @@ The trace test is `DSH_SMOKE_TRACE=1 node tools/smoke-desktop.mjs`.
 
 - The trace test passes only when it finds the host service `webServer` in the state `up`.
 
+- The trace test posts its own test messages to `POST /api/trace`. Each good test message must come back in the stream. It must have its fields and a `seq` from the host. A batch with one bad item must add no message.
+
+- The names of the test messages start with `smoke-trace-`. The trace test does not count them when it looks for messages from each process.
+
 - A run with `DEEPWIDGETS_TRACE=off` must fail. This value disables the trace rows.
 
 ## Out of scope `floating_widget.out_of_scope`

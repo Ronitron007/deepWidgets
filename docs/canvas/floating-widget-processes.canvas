@@ -77,7 +77,7 @@
       "toNode": "electron_main",
       "toSide": "top",
       "fromEnd": "arrow",
-      "label": "fetch: POST api/trace from the client half (trace.sources). GET api/trace from the trace test (trace.host)."
+      "label": "fetch: POST api/trace from the client half (trace.sources). GET and POST api/trace from the trace test (trace.host)."
     },
     {
       "id": "e_page_trace",
