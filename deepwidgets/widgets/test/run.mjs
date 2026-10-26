@@ -14,7 +14,7 @@ try {
   check(results, 'registry lists sample widgets', ['faulty', 'groceries', 'weather'].every((slug) => slugs.includes(slug)), slugs.join(','))
 
   const program = await host.getJson('/api/widgets/groceries/program')
-  check(results, 'GET program', program.status === 200 && program.body.program.includes('Groceries') && program.body.actions.map((a) => a.name).join() === 'list,add,toggle,remove', `rev=${program.body.rev} actions=${program.body.actions.map((a) => a.name)}`)
+  check(results, 'GET program', program.status === 200 && program.body.program.includes('Groceries') && program.body.actions.map((a) => a.name).join() === 'list,add,update,remove', `rev=${program.body.rev} actions=${program.body.actions.map((a) => a.name)}`)
 
   // Push source: /call
   const groceries = openStream(host, 'groceries')
@@ -23,10 +23,10 @@ try {
   check(results, '/call add', add.status === 200 && add.body.ok && add.body.result.text === 'milk' && add.body.result.done === false, JSON.stringify(add.body))
   const pushCall = await groceries.next((f) => f.type === 'data' && f.rev > (hello.rev ?? -1))
   check(results, 'push from /call', pushCall.rev === add.body.rev, `rev ${pushCall.rev}`)
-  const toggled = await host.postJson('/api/widgets/groceries/call', { action: 'toggle', args: { id: add.body.result.id } })
-  check(results, 'toggle', toggled.body.result?.done === true)
+  const toggled = await host.postJson('/api/widgets/groceries/call', { action: 'update', args: { id: add.body.result.id, done: true } })
+  check(results, 'update (toggle)', toggled.body.result?.done === true)
   const listed = await host.postJson('/api/widgets/groceries/call', { action: 'list' })
-  check(results, 'list query', Array.isArray(listed.body.result) && listed.body.result.some((row) => row.text === 'milk' && row.done))
+  check(results, 'list query', Array.isArray(listed.body.result.rows) && listed.body.result.rows.some((row) => row.text === 'milk' && row.done))
 
   // Push source: another plugin
   const before = groceries.frames.length
@@ -44,7 +44,7 @@ try {
   check(results, 'weather refresh mutation', refresh.status === 200 && refresh.body.result !== null, JSON.stringify(refresh.body.result))
 
   // Program change
-  const setProgram = await host.postJson('/api/widgets/groceries/program', { text: 'root = TextContent("Groceries v2")' })
+  const setProgram = await host.postJson('/api/widgets/groceries/program', { text: 'root = Card([TextContent("Groceries v2")])' })
   const pushProgram = await groceries.next((f) => f.type === 'program')
   check(results, 'push program', setProgram.body.ok && pushProgram.rev === setProgram.body.rev, `rev ${pushProgram.rev}`)
 

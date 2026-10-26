@@ -156,7 +156,7 @@ export class WidgetsService extends Service {
    * Write a widget's state from any plugin (timers included). Runs in the
    * widget's mutation queue, so it never interleaves with an action.
    */
-  update(slug, fn, options = {}) { return this.root.update(slug, fn, { by: options.by ?? `plugin:${this.ctx.name ?? 'host'}` }) }
+  update(slug, fn, options = {}) { return this.root.update(slug, fn, { by: options.by ?? `plugin:${this.ctx.fiber?.name ?? 'host'}` }) }
 
   /** Run one action: { result, rev, replayed? }. Throws WidgetError. options: { caller, requestId } */
   call(slug, action, args, options = {}) { return this.root.call(slug, action, args, options) }

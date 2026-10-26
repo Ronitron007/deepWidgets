@@ -38,7 +38,7 @@ function reconnectingStream(base, slug, cookie) {
 let host = await startHost({ port, home, log: 'restart.log' })
 const cookie = host.cookie
 const add = await host.postJson('/api/widgets/groceries/call', { action: 'add', args: { text: 'eggs' } })
-await host.postJson('/api/widgets/groceries/program', { text: 'root = TextContent("persisted program")' })
+await host.postJson('/api/widgets/groceries/program', { text: 'root = Card([TextContent("persisted program")])' })
 const client = reconnectingStream(host.base, 'groceries', cookie)
 await sleep(500)
 const revBefore = add.body.rev
@@ -50,7 +50,7 @@ try {
   const oldCookie = await fetch(`${host.base}/api/widgets`, { headers: { cookie } })
   check(results, 'old cookie valid after restart', oldCookie.status === 200, `status ${oldCookie.status}`)
   const listed = await host.postJson('/api/widgets/groceries/call', { action: 'list' })
-  check(results, 'state survives restart', listed.body.result.some((row) => row.text === 'eggs'), `rows=${listed.body.result.length} rev=${listed.body.rev} (before ${revBefore}+)`)
+  check(results, 'state survives restart', listed.body.result.rows.some((row) => row.text === 'eggs'), `rows=${listed.body.result.rows.length} rev=${listed.body.rev} (before ${revBefore}+)`)
   const program = await host.getJson('/api/widgets/groceries/program')
   check(results, 'program edit survives restart (stored wins over package seed)', program.body.program.includes('persisted program'), `rev ${program.body.rev}`)
   await sleep(2500)

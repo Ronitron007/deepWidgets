@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { TABLE } from './groceries.js'
+import { crashSoon } from './crash.js'
 
 // Test-only plugin: a faulty widget, N bulk widgets, and dev control routes.
 export const name = 'deepwidgets-widget-playground'
@@ -155,6 +156,14 @@ export function apply(ctx) {
       try { inspect = ctx.widgets.inspect('swap') } catch (error) { inspect = { error: error.code } }
       return json({ ok: true, variant, op: op ?? 'load', fiberState: swaps.get(variant)?.state ?? null, title: inspect.title, standby: inspect.standby ?? 0, status: inspect.status, program: inspect.program })
     },
+  })
+
+  // An error outside every widget: fail-loud must still exit the host.
+  ctx.connection.fetch.register({
+    path: '/api/widgets-dev/crash',
+    methods: ['POST'],
+    requestBody: 'buffered',
+    fetch: async () => { crashSoon(100); return json({ ok: true }) },
   })
 
   ctx.connection.fetch.register({
