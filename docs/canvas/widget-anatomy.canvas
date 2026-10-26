@@ -1,0 +1,149 @@
+{
+  "nodes": [
+    {
+      "id": "intro",
+      "type": "text",
+      "x": 0,
+      "y": -460,
+      "width": 1700,
+      "height": 260,
+      "text": "# The parts that can make up a widget `floating_widget.anatomy`\n\nThis board lists each part that a deepWidgets widget can use, the process that runs it, and the code to read. The code is `main` at `5a0118e5`. It does not choose a definition of a widget. The operator makes that decision.\n\nFact: today a DSH package with a `dsh` field is the only unit that the code knows. A window is not part of a package. Electron main owns each window, and Electron main runs no Cordis."
+    },
+    {
+      "id": "bundle",
+      "type": "text",
+      "x": 0,
+      "y": -140,
+      "width": 540,
+      "height": 330,
+      "text": "## Bundle (the package)\n\nAn npm package with a `dsh` field. `dsh.bundle.patch` adds host rows. `dsh.client` declares a client half.\n\n- `deepwidgets/probe/package.json`, `deepwidgets/trace/package.json`\n- Read by `packages/boot/app-boot/src/profile.ts:49-56` and `:691`\n- Turned on by the profile list in `packages/util/official-bundles/src/bundles.ts:14-18`\n- Row file: `deepwidgets/probe/cordis.patch.yml`",
+      "color": "4"
+    },
+    {
+      "id": "host_half",
+      "type": "text",
+      "x": 0,
+      "y": 260,
+      "width": 540,
+      "height": 380,
+      "text": "## Host half (host Context, Node child process)\n\nThe only Cordis Context that is always on. It holds data and logic, serves HTTP routes, and registers tools for models.\n\n- `deepwidgets/probe/index.js:1-4` (one `webServer` route)\n- `deepwidgets/trace/index.js:7-9` (`inject`, `apply`), `:226` (`connection.fetch.register`), `:233` (`webServer.register`)\n- Routes: `packages/host/webserver/src/index.ts:445`, `packages/client/connection/src/rpc-host.ts:215-248`\n- Tools for models: `packages/core/tools/src/index.ts:128`, `schema.ts:555`",
+      "color": "4"
+    },
+    {
+      "id": "client_half",
+      "type": "text",
+      "x": 640,
+      "y": -140,
+      "width": 540,
+      "height": 330,
+      "text": "## Client half (a page's client Context)\n\nA plugin that runs in the page of a window. It puts UI into a slot.\n\n- `deepwidgets/probe/client.js:1` (`__ModuleLoader__.load`), `:20-22` (slot `shell.overlay`)\n- `deepwidgets/trace/client.js:7` (reads the window name)\n- Slots: `packages/client/ui-layout/src/client/index.ts:105`, `AppFrame.tsx:30` and `:249`, registry `packages/client/ui-renderer/src/client/registry.ts:160`",
+      "color": "4"
+    },
+    {
+      "id": "boot",
+      "type": "text",
+      "x": 640,
+      "y": 260,
+      "width": 540,
+      "height": 380,
+      "text": "## How a client half gets into a page\n\nThe host builds one boot graph from each host row that declares `dsh.client`. Each page at `dsh-app://app/` boots this whole graph.\n\n- `packages/client/modules/src/index.ts:899-913` (reads `dsh.client`), `:604` (`__ModuleLoader__`), `:633` (`__DSH_BOOT__`)\n- Page entry: `apps/web/src/main.ts:11-31`\n- Client Context: `packages/client/web/src/boot.ts:81`, `boot-client.ts:28-55` (Loader, one row per graph entry)",
+      "color": "4"
+    },
+    {
+      "id": "window",
+      "type": "text",
+      "x": 1280,
+      "y": -140,
+      "width": 420,
+      "height": 330,
+      "text": "## Window (Electron main, no Cordis)\n\nA `BrowserWindow` and the address that it loads.\n\n- Main window: `apps/desktop/src/main.ts:214-215`\n- Trace window: `apps/desktop/src/deepwidgets-trace.ts:95` (`openTraceWindow`), opened at `main.ts:606-614`\n- Page serving: `main.ts:706-721`",
+      "color": "4"
+    },
+    {
+      "id": "page",
+      "type": "text",
+      "x": 1280,
+      "y": 260,
+      "width": 420,
+      "height": 380,
+      "text": "## Page (what the window shows)\n\n- Full DSH client: `dsh-app://app/` boots every client half. The main window uses it.\n- Plain page: `dsh-app://app/trace` is `deepwidgets/trace/page.html`. It has no Cordis. It reads the host over HTTP and SSE.\n\nA widget page can be either kind. The board `widget-window-obstacles.canvas` shows what blocks a second full client page."
+    },
+    {
+      "id": "shape_a",
+      "type": "text",
+      "x": 0,
+      "y": 760,
+      "width": 540,
+      "height": 360,
+      "text": "## Shape A: bundle, one shared widget window\n\nEach widget is a host half and a client half. One floating window has one client Context. It shows the client half of each widget, as the DSH main window shows its plugins in slots.\n\nPrior art: the DSH main window and its slots.\n\nObstacles: `obstacles.socket_cookie`, `obstacles.full_graph` (once).",
+      "color": "5"
+    },
+    {
+      "id": "shape_b",
+      "type": "text",
+      "x": 640,
+      "y": 760,
+      "width": 540,
+      "height": 360,
+      "text": "## Shape B: bundle and its own window\n\nEach widget is a host half, a client half, and its own floating window with its own client Context. That Context holds only this widget.\n\nPrior art: none found in DSH.\n\nObstacles: `obstacles.socket_cookie` and `obstacles.full_graph` for each window. Each window boots a client Context.",
+      "color": "5"
+    },
+    {
+      "id": "shape_c",
+      "type": "text",
+      "x": 1280,
+      "y": 760,
+      "width": 420,
+      "height": 420,
+      "text": "## Shape C: host half and a plain page\n\nEach widget is a host half that serves its data and an HTML view. The window shows the view, with no Cordis in the window.\n\nPrior art: our trace window. `PC2005-cloud/dsh-pet`: a host half starts a separate Electron helper, whose pet pages read the host over HTTP. `sugarforever/dsh-mcp-apps`: an MCP tool with `ui://` HTML in a sandboxed iframe.\n\nObstacles: none of the socket ones. A widget gets no client plugin system.",
+      "color": "5"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_b_h",
+      "fromNode": "bundle",
+      "fromSide": "bottom",
+      "toNode": "host_half",
+      "toSide": "top",
+      "toEnd": "arrow",
+      "label": "dsh.bundle.patch adds the host row"
+    },
+    {
+      "id": "e_b_c",
+      "fromNode": "bundle",
+      "fromSide": "right",
+      "toNode": "client_half",
+      "toSide": "left",
+      "toEnd": "arrow",
+      "label": "dsh.client declares the client half"
+    },
+    {
+      "id": "e_h_boot",
+      "fromNode": "host_half",
+      "fromSide": "right",
+      "toNode": "boot",
+      "toSide": "left",
+      "toEnd": "arrow",
+      "label": "host rows with dsh.client form the boot graph"
+    },
+    {
+      "id": "e_boot_c",
+      "fromNode": "boot",
+      "fromSide": "top",
+      "toNode": "client_half",
+      "toSide": "bottom",
+      "toEnd": "arrow",
+      "label": "the page boots the graph"
+    },
+    {
+      "id": "e_w_p",
+      "fromNode": "window",
+      "fromSide": "bottom",
+      "toNode": "page",
+      "toSide": "top",
+      "toEnd": "arrow",
+      "label": "loads an address"
+    }
+  ]
+}
