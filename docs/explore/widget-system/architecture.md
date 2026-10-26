@@ -18,7 +18,17 @@ The design copies the DeepSeek Harness (DSH) architecture where it can. The file
 
 ## Status of the evidence `explore.widget.evidence`
 
-Six spikes proved the parts one at a time. An independent review found that the parts were not yet joined: the action queue, `requestId`, the quota, and the change feed existed only in the MCP stub, and the shell ran only against a fake host. A seventh spike joins them in the real DSH host. `spikes.md` (`spikes.integration`) gives its result.
+Six spikes proved the parts one at a time. An independent review found that the parts were not yet joined. A seventh spike joined them in the real DSH host (verified, all checks exit 0, `spikes.integration`):
+
+- The pinned shell runs in Electron 44.7.0. A `dsh-app://` handler forwards its requests to the real host with the host cookie.
+
+- An agent's `widget_call` through the official MCP client updates the open window over SSE: 20 of 20 times, 18 to 19 ms at the median.
+
+- A user click in the window shows in the agent's `widget_changes` with `by:"user"`.
+
+- A widget whose timer throws is put in quarantine. The other widgets keep working, and the host stays up.
+
+- After a host restart, the same cookie and the same MCP client keep working, and the window connects again in about 2.1 s.
 
 ## The parts `explore.widget.parts`
 
@@ -81,7 +91,15 @@ ctx.widgets.register({
 
 - `w` gives `slug`, `signal` (an `AbortSignal`), `state`, and `update(fn)`. A query cannot call `update`. A write after a timeout is refused (verified).
 
-- For a CRUD widget, `crudActions({ items: { text: 'string', done: 'boolean' } })` makes the actions `list`, `add`, `toggle`, and `remove`. Then the widget bundle has about five lines of code (verified).
+- For a CRUD widget, one descriptor, `crud.table`, makes four actions: `list`, `add`, `update`, and `remove`. The state is `{rows: [...]}`. The integration spike chose this shape and uses it in bundles and in data widgets that agents save (verified):
+
+  ```js
+  { kind: 'crud', table: { fields: {
+      text: { type: 'string', required: true },
+      done: { type: 'boolean', default: false } } } }
+  ```
+
+- The full service after the integration spike: `register` (returns a disposer with a `check` of the program against the actions), `list`, `inspect`, `get`, `update(slug, fn, {by})`, `call(slug, action, args, {caller, requestId})`, `setProgram`, `save`, `removeData`, `changes(since)`, `cursor`, and `guide`.
 
 - The registration belongs to the plugin that calls `register`. When that plugin stops, Cordis removes the widget and its routes. Open streams get `{type:"removed"}` (verified).
 

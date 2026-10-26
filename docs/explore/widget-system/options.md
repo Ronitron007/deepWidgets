@@ -133,7 +133,7 @@ Options for the creation surface:
 | B. Two paths: `widget_save` for data widgets (program plus CRUD actions as data, no code), bundles for logic widgets | Data widgets need no approval and apply at once (verified, MCP spike stub). Most widgets are CRUD. | Two mechanisms. `widget_save` supports only simple CRUD operations. |
 | C. Only data widgets, logic in a sandbox | No host code from agents | Needs a sandbox process with fetch and state only. Large work. |
 
-Recommendation: B for v1, and C as the later direction for logic widgets. Use one CRUD descriptor in both places: the data that `widget_save` takes and the `crudActions` helper of a bundle. The spikes used three different descriptors. The integration spike picks one.
+Recommendation: B for v1, and C as the later direction for logic widgets. Use one CRUD descriptor in both places. The spikes used three. The integration spike chose `crud.table` (`{kind:'crud', table:{fields:{name:{type, required?, default?}}}}`), the shape of the creation template. It is plain JSON that an agent writes and the runtime stores. `required` and `default` cover `add`, and one `update` action covers a toggle. Thus the action set is fixed, and drift is easy to check (verified, 31 of 31 contract checks).
 
 A logic widget bundle still holds text that the agent wrote, also when it has no handler code (reviewer, verified):
 
@@ -143,9 +143,15 @@ A logic widget bundle still holds text that the agent wrote, also when it has no
 
 Thus `widget_install` lints each bundle first: no `!!js`, no new dependencies, no `approvedBuilds` over MCP, and a source folder only inside the agent workspace.
 
-Replace must not lose the user's widget. Today a replace is remove, then install. If the install fails, the widget is gone. Options: check the new bundle before the remove, or keep the old bundle until the new one is `applied`. The integration spike tests this.
+Replace must not lose the user's widget. The integration spike built a safe replace in the runtime (verified):
 
-The stored program wins over the seed program in the package. After a reinstall, the stored program can name actions that no longer exist. Thus the runtime checks the stored program against the actions at each `register` and each save, and reports drift to the agent in `widget_inspect`.
+- A data widget is checked first, then replaced in place. Its rows stay.
+
+- For a package widget, a broken new version leaves the old one serving. A good new version waits as a standby and then takes over, with 0 failed requests during the switch.
+
+- Not run through the real plugin manager, because it refuses a second install of one name (`plugin-manager/src/index.ts:850-852`). The proposed path: install the new version under a second package name, let the runtime promote it, then remove the old package.
+
+The stored program wins over the seed program in the package. After a reinstall, the stored program can name actions that no longer exist. Thus the runtime checks the program against the actions with the OpenUI parser (verified): at `register`, drift shows in `widget_inspect`; at a program edit or a `widget_save`, a program with drift is refused with 422, and the old program keeps serving.
 
 Where an agent edit goes:
 
@@ -320,7 +326,15 @@ The reliability study found the largest risk (verified, read and ran):
 
 Options A and B cannot stop `installFailLoud`. Only C, D, E, or F can. E restarts the whole host: 360 to 410 ms on a fake host (verified, window spike), about 2 s on the real host with the runtime (verified, runtime spike). The full desktop profile is not measured.
 
-Recommendation: A, B, E, and F for v1. D as the direction for agent code. The integration spike tests F.
+Recommendation: A, B, E, and F for v1. D as the direction for agent code.
+
+The integration spike built F in `apps/cli/src/profile-boot.ts`, under the trim marker (verified, 14 of 14 checks). A throwing timer and an unhandled rejection both put the bad widget in quarantine. The other widgets keep serving, and the host stays up. An error outside each widget still makes the host exit. Limits:
+
+- Node says that to go on after an uncaught exception is unsafe. The handler claims an error when a widget file is anywhere in the stack. Thus an error in host code that widget code called can be swallowed in the middle of a host update. A stricter rule claims only when the top frame is in the widget file.
+
+- Widgets that share one source file map to the first of them.
+
+- A CPU loop and a change to globals are not isolated. A leaked raw timer keeps running. It is logged, not stopped.
 
 Other findings (verified):
 
