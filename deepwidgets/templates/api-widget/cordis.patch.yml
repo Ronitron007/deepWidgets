@@ -1,0 +1,13 @@
+# Tunables live in config so the user can change them without code.
+# A keyed API adds `credentials: [STOCKS_API_KEY]` here: a NAME, never a value.
+- insert:
+    - id: widget-weather
+      name: '@local/widget-weather'
+      config:
+        slug: weather
+        title: Weather
+        place: Berlin
+        latitude: 52.52
+        longitude: 13.41
+        refreshMinutes: 15
+        timeoutMs: 8000

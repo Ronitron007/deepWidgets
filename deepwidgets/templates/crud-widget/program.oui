@@ -1,0 +1,7 @@
+root = Card([header, list, form])
+header = CardHeader("To-do")
+todos = Query("list", {}, { rows: [] })
+add = Mutation("add", { title: $title })
+toggle = Mutation("update", { id: $id, done: $done })
+list = @Each(todos.rows, "t", Row([Checkbox(t.title, t.done, Action([@Set($id, t.id), @Set($done, !t.done), @Run(toggle), @Run(todos)]))]))
+form = Row([Input("title", "New task", "text", { required: true }, $title), Button("Add", Action([@Run(add), @Run(todos), @Reset($title)]))])
