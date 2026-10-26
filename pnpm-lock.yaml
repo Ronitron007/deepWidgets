@@ -532,6 +532,9 @@ importers:
       '@deepwidgets/trace':
         specifier: workspace:*
         version: link:../../deepwidgets/trace
+      '@deepwidgets/widgets':
+        specifier: workspace:*
+        version: link:../../deepwidgets/widgets
       commander:
         specifier: ^15.0.0
         version: 15.0.0
@@ -1207,6 +1210,18 @@ importers:
   deepwidgets/probe: {}
 
   deepwidgets/trace: {}
+
+  deepwidgets/widgets:
+    dependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:~
+        version: link:../../vendor/cordis
+      '@deepseek-ai/dsh-storage-domain':
+        specifier: workspace:*
+        version: link:../../packages/storage/storage-domain
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
 
   native/system:
     devDependencies:

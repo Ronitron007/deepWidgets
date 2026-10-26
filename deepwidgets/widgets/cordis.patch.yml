@@ -1,0 +1,27 @@
+# Playground rows for the host-side widget runtime. The runtime row provides
+# the `widgets` service; each sample widget is its own plugin row.
+- insert:
+    - id: deepwidgets-widgets
+      name: '@deepwidgets/widgets'
+      disabled: !!js "process.env.DEEPWIDGETS_WIDGETS === 'off'"
+
+    - id: deepwidgets-widget-groceries
+      name: '@deepwidgets/widgets/groceries'
+      disabled: !!js "process.env.DEEPWIDGETS_WIDGETS === 'off'"
+
+    - id: deepwidgets-widget-weather
+      name: '@deepwidgets/widgets/weather'
+      disabled: !!js "process.env.DEEPWIDGETS_WIDGETS === 'off'"
+      config:
+        latitude: 52.52
+        longitude: 13.41
+        intervalMs: 600000
+
+    # Test rows. They load only when DEEPWIDGETS_WIDGETS_DEV=1.
+    - id: deepwidgets-widget-playground
+      name: '@deepwidgets/widgets/playground'
+      disabled: !!js "process.env.DEEPWIDGETS_WIDGETS_DEV !== '1'"
+
+    - id: deepwidgets-widget-broken
+      name: '@deepwidgets/widgets/broken'
+      disabled: !!js "process.env.DEEPWIDGETS_WIDGETS_BROKEN !== '1'"
