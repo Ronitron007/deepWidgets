@@ -1,0 +1,147 @@
+{
+  "nodes": [
+    {
+      "type": "text",
+      "id": "intro",
+      "x": 0,
+      "y": -440,
+      "width": 1780,
+      "height": 240,
+      "text": "# The webServer and connection plugins `webserver_connection`\n\nThis board shows the design of two host plugins: `webServer` and `connection`. It also compares them with a usual server in an Electron app. The code is `main` at `6ce90cc4`.\n\nFact: `webServer` owns the HTTP listener and a table of routes. `connection` puts the `/api` routes on that listener and checks each request. Other plugins add their routes to these two services."
+    },
+    {
+      "type": "text",
+      "id": "webserver",
+      "x": 0,
+      "y": -160,
+      "width": 580,
+      "height": 620,
+      "color": "4",
+      "text": "## The parts of webServer `webserver_connection.webserver`\n\nFile `packages/host/webserver/src/index.ts`.\n\n| Part | What it does | Line |\n|---|---|---|\n| `declare module` | Adds the type of `ctx.webServer` and the event `webserver/index-inject`. | 30-46 |\n| `class WebServer extends Service` | The plugin is a service class. `super(ctx, 'webServer')` puts it on `ctx`. | 357, 398 |\n| `static Config` | A schema for `host`, `port`, `tls`, and gzip. It refuses an address that listens on all interfaces. | 358-375 |\n| `register` | Adds an exact route or a prefix route. A second route on the same path throws. It returns a disposer. | 445 |\n| `registerUpgrade` | Adds a WebSocket upgrade route. | 460 |\n| `registerFallback` | Takes the one seat for paths that no route matches. | 477 |\n| `readResource` | Reads a route in the same process, with no HTTP. | 500 |\n| `collectIndexInjections` | Emits `webserver/index-inject`. Plugins push page globals, such as `__DSH_BOOT__`. | 725 |\n| Dispatch | Exact route, then the longest prefix, then the fallback, then 404. A failed request gets 400. The process does not stop. | 542-560, 650-668 |"
+    },
+    {
+      "type": "text",
+      "id": "webserver_life",
+      "x": 680,
+      "y": -160,
+      "width": 520,
+      "height": 620,
+      "color": "4",
+      "text": "## The life of webServer `webserver_connection.webserver_life`\n\n- The row. `packages/bundle/web-app/cordis.patch.yml:170-179` loads the package. The row waits for the service `webStartup`. Its `!!js` config reads the host and the port from `webStartup`. The default is `127.0.0.1:3080`.\n\n- The start. Cordis makes the class and then runs `[Service.init]` (`index.ts:528`). This method makes the `node:http` server or the `node:https` server in `ctx.effect` and waits for `listen`.\n\n- Active. The fiber is active only after `listen` succeeds. Thus each plugin with `inject: ['webServer']` starts only when the port is open. A failed `listen` makes the fiber `failed`.\n\n- The stop. The cleanup of the effect closes the server and destroys each open socket (`index.ts:632-642`). Then each plugin that injects `webServer` stops too.\n\n- Routes. `webServer` does not remove the routes of a plugin by itself. Each caller puts the disposer in `ctx.effect`, for example `deepwidgets/probe/index.js:4`."
+    },
+    {
+      "type": "text",
+      "id": "connection_host",
+      "x": 1300,
+      "y": -160,
+      "width": 480,
+      "height": 620,
+      "color": "4",
+      "text": "## The host half of connection `webserver_connection.connection_host`\n\nFiles in `packages/client/connection/src/`. The plugin name is `client-connection`. It waits for `credentials`.\n\n- `HostConnectionService` (`rpc-host.ts:70`) gives `ctx.connection`.\n\n- `connection.rpc.handle` adds one RPC channel as a `webServer` route (`rpc-host.ts:253-277`).\n\n- `connection.fetch.register` adds an exact route under `/api` (`rpc-host.ts:234-251`). Only the owner principal can use it (`rpc-host.ts:221`).\n\n- `admit` checks the Host and Origin headers and the cookie. Then it gives a Peer (`rpc-host.ts:129-138`). A Peer is a caller identity with its own Cordis scope (`peer.ts`).\n\n- `BrowserAuth` makes the launch token and the cookie (`browser-auth.ts`).\n\n- When `webServer` exists, the plugin mounts the `/api` prefix route and the `/connect` route (`index.ts:141-166`). `http-bridge.ts` changes each `node:http` request to a Fetch `Request`."
+    },
+    {
+      "type": "text",
+      "id": "connection_client",
+      "x": 1300,
+      "y": 540,
+      "width": 480,
+      "height": 460,
+      "color": "4",
+      "text": "## The client half of connection `webserver_connection.connection_client`\n\nFile `packages/client/connection/src/client/index.ts`. Each page loads it at once. It waits for no service.\n\n- It gives the page its own `ctx.connection` (`index.ts:336`). This object is not the host service.\n\n- `rpc` sends a `fetch` to `/api/...`.\n\n- `openWebSocket` opens a WebSocket to `streamBaseUrl` (`socket.ts:56-66`).\n\n- It keeps the connection state and connects again after a break.\n\n- It reads the page globals `__DSH_TRANSPORT__` and `__DSH_CONNECTION_RECOVERY__` (`index.ts:343-352`)."
+    },
+    {
+      "type": "text",
+      "id": "consumers",
+      "x": 0,
+      "y": 540,
+      "width": 580,
+      "height": 460,
+      "text": "## Who adds routes `webserver_connection.consumers`\n\n| Plugin | What it adds | Code |\n|---|---|---|\n| `client-connection` | `/api` prefix, `/connect`, the global `__DSH_CONNECTION_RECOVERY__` | `connection/src/index.ts:141-166` |\n| `client-modules` | `/plugins` prefix for client bundles, the global `__DSH_BOOT__` | `modules/src/index.ts:232`, `:703-710` |\n| `frontend-static` | The fallback seat, which serves the web app files | `frontend-static/src/index.ts:152` |\n| `api-gateway` | The WebSocket stream upgrade route | `gateway/src/index.ts:307` |\n| `deepwidgets-probe` | One route | `deepwidgets/probe/index.js:4` |\n| `deepwidgets-trace` | `GET /trace` and the `/api/trace` fetch route | `deepwidgets/trace/index.js:226`, `:233` |"
+    },
+    {
+      "type": "text",
+      "id": "disposers",
+      "x": 680,
+      "y": 540,
+      "width": 520,
+      "height": 460,
+      "color": "5",
+      "text": "## Two ways to remove a route `webserver_connection.disposers`\n\n| Service | Who removes the route | Code |\n|---|---|---|\n| `webServer` | The caller. `register` returns a disposer. The caller puts it in `ctx.effect`, or yields it from a generator effect. | `webserver/src/index.ts:445-453`, `gateway/src/index.ts:307` |\n| `connection` | The service. The getters `rpc` and `fetch` read `this.ctx`, which is the context of the caller. The service puts each route in `owner.effect`. | `rpc-host.ts:105-119`, `:244` |\n\nThus `deepwidgets/trace/index.js:226` needs no `ctx.effect`, and `:233` needs one."
+    },
+    {
+      "type": "text",
+      "id": "desktop_path",
+      "x": 0,
+      "y": 1080,
+      "width": 880,
+      "height": 520,
+      "text": "## The path of a request in the desktop app `webserver_connection.desktop_path`\n\nHTTP from a page:\n\n- The page asks for `dsh-app://app/<path>`.\n\n- Electron main gets it in `protocol.handle` (`apps/desktop/src/main.ts:706-721`). It serves `/`, `/index.html`, and `/assets/` from the web app files itself. It sends each other path to the host with the host cookie (`forwardWebRequest`).\n\n- In the host, `webServer` finds the route. For `/api`, `connection.admit` checks the request, and then the route handler runs.\n\nPage globals:\n\n- The page asks Electron main over IPC (`main.ts:730-735`). The answer has the index injections and `streamBaseUrl`. The host made the injections with `collectIndexInjections` (`apps/desktop-host/src/index.ts:137`).\n\nWebSocket:\n\n- The page opens `ws://127.0.0.1:<port>` to the host. This does not go through `protocol.handle`.\n\n- Electron main adds the cookie only for the main window (`main.ts:755-766`)."
+    },
+    {
+      "type": "text",
+      "id": "vs_electron",
+      "x": 980,
+      "y": 1080,
+      "width": 800,
+      "height": 520,
+      "color": "6",
+      "text": "## Compared with a usual Electron server `webserver_connection.vs_electron`\n\nThe left column describes usual Electron apps in general. It does not describe code in this repository.\n\n| Topic | A usual Electron app | DSH desktop |\n|---|---|---|\n| Where the server runs | No server, with `ipcMain` and a preload script. Or an HTTP server in Electron main. | A separate Node process, the host. Electron main only sends requests on. |\n| How the page calls it | `ipcRenderer.invoke`, or `fetch` to localhost | `fetch` to `dsh-app://app/...` and a WebSocket to the host. IPC only for the start-up data and for desktop features. |\n| Routes | Written in one file at start-up | Each plugin adds its routes while it runs. Cordis removes them when the plugin stops. |\n| Server life | The life of the app | The life of one Cordis fiber. A change to its row starts it again, and each plugin that injects it starts again. |\n| Config | Code | A Loader row with `!!js` values |\n| Auth | Often none | A launch token, a cookie, and a Host and Origin check |\n| Clients | Only the Electron windows | The same host code also serves the web app in a browser. |"
+    },
+    {
+      "type": "text",
+      "id": "stale_doc",
+      "x": 0,
+      "y": 1680,
+      "width": 1780,
+      "height": 160,
+      "color": "1",
+      "text": "## A comment that does not match the code `webserver_connection.stale_doc`\n\nThe JSDoc at `packages/host/webserver/src/index.ts:1-10` says that Electron uses `file://` and IPC instead of this package. The desktop code sends `dsh-app://app/` requests to the host HTTP server (`apps/desktop/src/main.ts:706-721`). This is DSH code, and this board does not change it."
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_ws_life",
+      "fromNode": "webserver",
+      "fromSide": "right",
+      "toNode": "webserver_life",
+      "toSide": "left",
+      "toEnd": "arrow",
+      "label": "how it starts and stops"
+    },
+    {
+      "id": "e_conn_ws",
+      "fromNode": "connection_host",
+      "fromSide": "left",
+      "toNode": "webserver_life",
+      "toSide": "right",
+      "toEnd": "arrow",
+      "label": "mounts /api on webServer"
+    },
+    {
+      "id": "e_client_host",
+      "fromNode": "connection_client",
+      "fromSide": "top",
+      "toNode": "connection_host",
+      "toSide": "bottom",
+      "toEnd": "arrow",
+      "label": "fetch /api and WebSocket"
+    },
+    {
+      "id": "e_cons_ws",
+      "fromNode": "consumers",
+      "fromSide": "top",
+      "toNode": "webserver",
+      "toSide": "bottom",
+      "toEnd": "arrow",
+      "label": "register routes"
+    },
+    {
+      "id": "e_path_cmp",
+      "fromNode": "desktop_path",
+      "fromSide": "right",
+      "toNode": "vs_electron",
+      "toSide": "left",
+      "toEnd": "arrow"
+    }
+  ]
+}
