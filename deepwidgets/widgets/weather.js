@@ -4,10 +4,9 @@ export const name = 'deepwidgets-widget-weather'
 export const inject = ['widgets', 'timer']
 
 
-const PROGRAM = `root = Card([title, now])
-title = TextContent("Weather")
-current = Query("current", {}, {})
-now = TextContent(current.temperature)
+const PROGRAM = `root = Card([CardHeader("Weather"), Row([Stat("Temperature", w.temperature, w.observedAt), Stat("Wind", w.wind)]), Button("Refresh", Action([@Run(refresh), @Run(w)]), "outline", "sm")])
+w = Query("current", {}, {temperature: "-", wind: "-", observedAt: ""})
+refresh = Mutation("refresh", {})
 `
 
 async function fetchWeather(config, signal) {
@@ -50,7 +49,7 @@ export function apply(ctx, config = {}) {
     program: PROGRAM,
     initialState: null,
     actions: [
-      { name: 'current', kind: 'query', handler: (_args, w) => w.state },
+      { name: 'current', kind: 'query', description: 'Last reading: { temperature, wind, observedAt, error }.', handler: (_args, w) => w.state ?? {} },
       {
         name: 'refresh',
         kind: 'mutation',

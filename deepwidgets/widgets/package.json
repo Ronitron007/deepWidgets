@@ -10,14 +10,19 @@
     "./weather": "./weather.js",
     "./playground": "./playground.js",
     "./broken": "./broken.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./catalog/*": "./catalog/*",
+    "./bomb": "./bomb.js"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "workspace:~",
     "@deepseek-ai/dsh-storage-domain": "workspace:*",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "@openuidev/lang-core": "1.0.1"
   },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" }
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   }
 }

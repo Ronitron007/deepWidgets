@@ -27,6 +27,8 @@ import {
   PluginPackages,
   PROFILE_PATCH_FILENAME,
   resolveProfileDir,
+  type FailLoudEvent,
+  type FailLoudProcess,
   type ProfileContext,
   type Profile,
   type RuntimeResolution,
@@ -306,7 +308,9 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
     // complete; SIGINT is a user interrupt and reports 130.
     process.on('SIGTERM', () => { interrupt(0) })
     process.on('SIGINT', () => { interrupt(130) })
-    installFailLoud(NAME, process, async () => {
+    // deepwidgets-trim: playground fail-loud isolation lets the widgets runtime claim errors raised by one widget bundle.
+    // installFailLoud(NAME, process, async () => {
+    installFailLoud(NAME, claimableProcess(process), async () => {
       await app.current?.fiber.dispose()
     })
 
@@ -349,5 +353,44 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
       throw new AggregateError([error, cleanupError], 'dsh: profile startup and cleanup failed')
     }
     throw error
+  }
+}
+
+/**
+ * deepWidgets playground: the process slice given to `installFailLoud`, with
+ * one extra step. Before the fail-loud handler runs, each claimer registered
+ * under `Symbol.for('deepwidgets.failLoud.claimers')` may claim the error (the
+ * widgets runtime claims errors whose stack points into one widget's source
+ * file and quarantines that widget). An unclaimed error stays fatal.
+ */
+function claimableProcess(proc: NodeJS.Process): FailLoudProcess {
+  type Claimer = (err: unknown, event: FailLoudEvent) => boolean
+  const registry = globalThis as { [key: symbol]: Set<Claimer> | undefined }
+  const key = Symbol.for('deepwidgets.failLoud.claimers')
+  const claimers = registry[key] ??= new Set<Claimer>()
+  const wrapped = new Map<(err: unknown) => void, (err: unknown) => void>()
+  return {
+    on(event, handler) {
+      const guarded = (err: unknown): void => {
+        for (const claimer of claimers) {
+          try {
+            if (claimer(err, event)) {
+              proc.stderr.write(`${NAME}: ${event} claimed by a widget quarantine: ${err instanceof Error ? err.message : String(err)}\n`)
+              return
+            }
+          } catch {
+            // A failing claimer must not hide the original error.
+          }
+        }
+        handler(err)
+      }
+      wrapped.set(handler, guarded)
+      return proc.on(event, guarded)
+    },
+    off(event, handler) {
+      return proc.off(event, wrapped.get(handler) ?? handler)
+    },
+    stderr: proc.stderr,
+    exit: code => proc.exit(code),
   }
 }

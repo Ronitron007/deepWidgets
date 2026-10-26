@@ -25,3 +25,7 @@
     - id: deepwidgets-widget-broken
       name: '@deepwidgets/widgets/broken'
       disabled: !!js "process.env.DEEPWIDGETS_WIDGETS_BROKEN !== '1'"
+
+    - id: deepwidgets-widget-bomb
+      name: '@deepwidgets/widgets/bomb'
+      disabled: !!js "!process.env.DEEPWIDGETS_WIDGETS_BOMB"
