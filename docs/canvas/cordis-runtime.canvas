@@ -1,0 +1,127 @@
+{
+  "nodes": [
+    {
+      "type": "text",
+      "id": "intro",
+      "x": 0,
+      "y": -440,
+      "width": 1700,
+      "height": 240,
+      "text": "# Cordis in deepWidgets `cordis_runtime`\n\nThis board tells what Cordis does, why DSH and deepWidgets use it, and what Cordis needs to run. The code is `main` at `2ace8403`. Each claim names the file or the run that shows it.\n\nFact: Cordis is a plugin runtime. DSH runs one Cordis tree in the host process and one Cordis tree in each `dsh-app://app/` page. Electron main runs no Cordis."
+    },
+    {
+      "type": "text",
+      "id": "parts",
+      "x": 0,
+      "y": -160,
+      "width": 540,
+      "height": 520,
+      "color": "4",
+      "text": "## What Cordis gives `cordis_runtime.parts`\n\n| Part | What it does | Code |\n|---|---|---|\n| Context | The `ctx` object of a plugin. A property read on `ctx` finds a service by its name. | `vendor/cordis/src/context.ts` |\n| Fiber | One loaded plugin, with its state, its config, and its cleanups. | `vendor/cordis/src/fiber.ts:147` |\n| Effect | `ctx.effect` runs a setup at once and keeps its cleanup. At unload, Cordis runs each cleanup in reverse order. | `fiber.ts` |\n| Service | `ctx.provide` and the `Service` class put a named object on `ctx`. | `reflect.ts`, `service.ts` |\n| Inject | A plugin with `inject` starts only when each named service exists. It stops and starts again when one of them changes. | `registry.ts` |\n| Events | `ctx.on` and `ctx.emit`. Cordis also sends its own `internal/*` events. | `events.ts` |\n| Loader | It makes the plugin tree from rows. The `disabled` field turns a row off. | `vendor/loader/src/index.ts` |\n| Include | It reads `cordis.yml` and the patch files from the disk. | `vendor/include/src/index.ts` |\n\nThe skill `.agents/skills/cordis/SKILL.md` explains the API."
+    },
+    {
+      "type": "text",
+      "id": "dsh_use",
+      "x": 640,
+      "y": -160,
+      "width": 540,
+      "height": 520,
+      "color": "4",
+      "text": "## What DSH uses Cordis for `cordis_runtime.dsh_use`\n\nEach DSH feature is a Cordis plugin or a Cordis service. Examples are `webServer`, `connection`, the agent loop, and the tools service (`packages/core/tools/src/index.ts:128`).\n\n- Host tree. `boot` makes a `Context`, mounts the Loader, and mounts the root Include with the patch layers. See `packages/boot/app-boot/src/index.ts:1204-1229`. The desktop app composes 197 rows.\n\n- Ready message. After the boot, the host sends `ready` with its URL to Electron main. See `apps/desktop-host/src/index.ts:136-137`.\n\n- Page tree. `AppWebEntry.run` makes a `Context` and calls `bootClient`. See `packages/client/web/src/boot.ts:81-85`. `bootClient` mounts the Loader and makes one entry for each boot row. See `packages/client/web/src/boot-client.ts:36-54`.\n\n- Electron main. No file in `apps/desktop/src` has the word `cordis` (verified with `git grep`).\n\nThus code that uses a DSH service must be a Cordis plugin in a tree that has that service."
+    },
+    {
+      "type": "text",
+      "id": "trace_example",
+      "x": 1280,
+      "y": -160,
+      "width": 420,
+      "height": 520,
+      "color": "4",
+      "text": "## The trace bundle as an example `cordis_runtime.trace_example`\n\n- `deepwidgets/trace/index.js:7` declares `inject` with `webServer`, `connection`, and `loader`. Cordis starts the plugin only when the host has these three services.\n\n- `index.js:233` puts the `GET /trace` route in `ctx.effect`. When the plugin unloads, Cordis removes the route.\n\n- `index.js:239` closes each open stream at unload.\n\n- `deepwidgets/trace/cordis.patch.yml` adds the row. `DEEPWIDGETS_TRACE=off` turns the row off with no code change.\n\n- The trace data comes from the Cordis events `internal/status` and `internal/service`."
+    },
+    {
+      "type": "text",
+      "id": "packages",
+      "x": 0,
+      "y": 440,
+      "width": 1180,
+      "height": 520,
+      "text": "## What each package needs `cordis_runtime.packages`\n\nThe repository keeps a copy of Cordis in `vendor/`. `vendor/README.md` gives each upstream version and each local change. The imports come from a search of `vendor/*/src` for Node and npm imports. The line counts are the `.ts` lines in `src`.\n\n| Package | Lines | Imports from Node or npm | Runs in |\n|---|---|---|---|\n| `cordis` (core) | 2,725 | `cosmokit`. `@standard-schema/spec` gives only types. | Each JavaScript runtime |\n| `cosmokit` | 591 | None. It uses `Buffer` only when `Buffer` exists. | Each JavaScript runtime |\n| `schemastery` | 962 | `cosmokit` | Each JavaScript runtime |\n| `timer` | 153 | `cosmokit` | Each JavaScript runtime |\n| `group` | 3 | None | Each JavaScript runtime |\n| `loader` | 1,145 | `node:module`, `node:fs`, `node:path`, `node:url`. Optional `node-addon-require-builtin`. | Node, or a browser that gives its own module system |\n| `include` | 343 | `node:fs/promises`, `node:path`, `node:url`, `js-yaml` | Node only |\n| `hmr` | 463 | `chokidar`, `picomatch`, `@babel/code-frame`, `node:fs` | Node only. It reloads code during development. |\n| `logger-console` | 145 | `node:util`, `supports-color` | Node. The build also makes a browser entry. |"
+    },
+    {
+      "type": "text",
+      "id": "spike",
+      "x": 1280,
+      "y": 440,
+      "width": 420,
+      "height": 520,
+      "color": "5",
+      "text": "## Spike: Cordis core with no Node `cordis_runtime.spike`\n\nRun on 2026-10-26.\n\n- esbuild 0.21.5 bundled `vendor/cordis/lib/index.js` with `--platform=browser`. The exit code was 0. The bundle is 66.1 KB. Its inputs are only `cordis` and `cosmokit`.\n\n- A Node `vm` context with only `console` ran the bundle. This context has no `process`, no `Buffer`, no `setTimeout`, and no `require`.\n\n- In the test, one plugin gave a service, and a second plugin injected it. The second plugin ran. At dispose, both cleanups ran.\n\nResult: Cordis core needs only a JavaScript engine. The Loader, Include, and HMR add the Node needs."
+    },
+    {
+      "type": "text",
+      "id": "host_env",
+      "x": 0,
+      "y": 1040,
+      "width": 800,
+      "height": 480,
+      "text": "## What the host tree needs `cordis_runtime.host_env`\n\n- Runtime. Electron main starts the host with its own binary and `ELECTRON_RUN_AS_NODE=1`. See `apps/desktop/src/main.ts:161`, `apps/desktop/src/host-process.ts:201-212`, and `apps/desktop/src/node-environment.ts:15`.\n\n- Node version. In Electron 44.7.0, this binary is Node 24.21.0 (verified, ran). The root `package.json` needs Node 24.9.0 or later. The system Node on this Mac is 22.23.0.\n\n- Node internals. The host starts with `--expose-internals`. Thus the Loader can use the Node ESM loader to import and to reload modules. See `vendor/loader/src/internal.ts:104-145`.\n\n- Fallback. The internals code needs Node 22 or later. When it finds no Node loader, `fromInternal` returns nothing. Then the Loader works without the internals.\n\n- Disk. Include reads `cordis.yml` and the patch files. The host also serves the files of the page and the client half of each bundle."
+    },
+    {
+      "type": "text",
+      "id": "page_env",
+      "x": 900,
+      "y": 1040,
+      "width": 800,
+      "height": 480,
+      "text": "## What a page tree needs `cordis_runtime.page_env`\n\n- Cordis core and the Loader. The web build includes them. It replaces `node:module` with a stub and sets `process.versions.node` to `\"0.0.0\"`. See `apps/web/vite.config.ts:245-262` and `apps/web/src/node-module-stub.ts`.\n\n- A module system. `bootClient` sets `loader.internal` to the client module loader (`boot-client.ts:40`). Thus the Loader does not use its file resolver in the browser.\n\n- Page globals. The host page sets `__DSH_BOOT_READY__`, `__ModuleLoader__`, `__DSH_BOOT__`, and `__DSH_TRANSPORT__`. See `packages/client/web/src/boot.ts:57-72`.\n\n- A host for services. Client rows that need host data use the `connection` WebSocket. Electron main gives the host cookie to this WebSocket only for the main window (`apps/desktop/src/main.ts:755-766`).\n\nA page can also run Cordis core with no host, as the spike shows. That tree has no DSH services."
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_parts_pkg",
+      "fromNode": "parts",
+      "fromSide": "bottom",
+      "toNode": "packages",
+      "toSide": "top",
+      "toEnd": "arrow",
+      "label": "these parts come from these packages"
+    },
+    {
+      "id": "e_use_host",
+      "fromNode": "dsh_use",
+      "fromSide": "bottom",
+      "toNode": "host_env",
+      "toSide": "top",
+      "toEnd": "arrow",
+      "label": "host tree"
+    },
+    {
+      "id": "e_use_page",
+      "fromNode": "dsh_use",
+      "fromSide": "bottom",
+      "toNode": "page_env",
+      "toSide": "top",
+      "toEnd": "arrow",
+      "label": "page tree"
+    },
+    {
+      "id": "e_trace_use",
+      "fromNode": "trace_example",
+      "fromSide": "left",
+      "toNode": "dsh_use",
+      "toSide": "right",
+      "toEnd": "arrow",
+      "label": "one host plugin"
+    },
+    {
+      "id": "e_spike_page",
+      "fromNode": "spike",
+      "fromSide": "bottom",
+      "toNode": "page_env",
+      "toSide": "right",
+      "toEnd": "arrow",
+      "label": "core needs only JavaScript"
+    }
+  ]
+}
