@@ -18,4 +18,6 @@ export function apply(ctx) {
     else throw new Error('bomb: uncaught exception from a widget timer')
   }, delay)
   ctx.effect(() => () => clearTimeout(timer), 'bomb timer')
+  // A leaked raw interval (no effect): it keeps throwing after the plugin unloads.
+  if (process.env.DEEPWIDGETS_BOMB_LEAK === '1') setInterval(function leakedTimer() { throw new Error('bomb: leaked interval threw again') }, 1_000).unref()
 }

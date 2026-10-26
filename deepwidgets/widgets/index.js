@@ -683,11 +683,12 @@ export function apply(ctx, config = {}) {
     const stack = typeof error?.stack === 'string' ? error.stack : ''
     if (stack === '') return false
     for (const entry of widgets.values()) {
-      const file = entry.registration?.file
-      if (entry.status !== 'failed' && file !== undefined && stack.includes(file)) {
-        void quarantine(entry, error, event)
-        return true
-      }
+      const file = entry.registration?.file ?? entry.failure?.file
+      if (file === undefined || !stack.includes(file)) continue
+      // A quarantined widget's leftover timers may throw again: keep claiming them.
+      if (entry.status === 'failed') ctx.logger.warn(`widgets: ${entry.slug} threw again after quarantine (${event})`)
+      else void quarantine(entry, error, event)
+      return true
     }
     return false
   }

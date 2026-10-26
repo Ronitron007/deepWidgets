@@ -11,7 +11,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 for (const [mode, event] of [['throw', 'uncaughtException'], ['reject', 'unhandledRejection']]) {
   const log = `quarantine-${mode}.log`
-  const host = await startHost({ port, home: `${home}-${mode}`, env: { DEEPWIDGETS_WIDGETS_BOMB: mode, DEEPWIDGETS_BOMB_MS: '3000' }, log })
+  const host = await startHost({ port, home: `${home}-${mode}`, env: { DEEPWIDGETS_WIDGETS_BOMB: mode, DEEPWIDGETS_BOMB_MS: '3000', DEEPWIDGETS_BOMB_LEAK: mode === 'throw' ? '1' : '0' }, log })
   try {
     const before = await host.getJson('/api/widgets')
     const stream = openStream(host, 'bomb')
@@ -33,6 +33,11 @@ for (const [mode, event] of [['throw', 'uncaughtException'], ['reject', 'unhandl
     check(results, `${mode}: bomb routes 404`, route.status === 404)
     check(results, `${mode}: host alive, others serve + push`, host.child.exitCode === null && add.status === 200 && push !== null && weather.status === 200)
     check(results, `${mode}: claim logged`, text.includes('claimed by a widget quarantine'))
+    if (mode === 'throw') {
+      await sleep(2_500)
+      const again = readFileSync(join(NOTES, log), 'utf8')
+      check(results, 'throw: leaked interval keeps throwing, still claimed, host alive', again.includes('leaked interval threw again') && host.child.exitCode === null)
+    }
     groceries.close()
     stream.close()
   } finally {
