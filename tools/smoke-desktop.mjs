@@ -3,13 +3,16 @@
  * With DSH_SMOKE_PROBE=1, also check that the renderer shows the host process id.
  * With DSH_SMOKE_TRACE=1, also read /api/trace from the main window and check the trace test.
  * With DSH_SMOKE_HELLO=1, also check that the main window shows hello and that no welcome window opened.
+ * With DSH_SMOKE_ROWS set to a folder, also compare the loaded rows with the row lists in that folder.
+ * With DSH_SMOKE_ROWS_SAVE set to a path, also write the host row snapshot to that file.
+ * With DSH_SMOKE_ROWS_SNAPSHOT set to a path, compare that host snapshot with rows.host.txt and do not start the app.
  * The trace test also needs the start-up steps of Electron main and a message for each client row.
  * Then it reads the rows of the trace window page dsh-app://app/trace.
  * Uses only Node built-in modules. Prints one result line.
  */
 
 import { spawn, execFile } from 'node:child_process'
-import { appendFileSync, existsSync, openSync, readFileSync } from 'node:fs'
+import { appendFileSync, existsSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -101,6 +104,18 @@ try:
 except Exception:
     traceback.print_exc()
 `
+
+if ((process.env.DSH_SMOKE_ROWS_SNAPSHOT ?? '') !== '') {
+  let reason
+  try {
+    reason = compareHostSnapshot(process.env.DSH_SMOKE_ROWS_SNAPSHOT, process.env.DSH_SMOKE_ROWS ?? '')
+  } catch (error) {
+    reason = error instanceof Error ? error.message : 'snapshot failed'
+  }
+  const line = reason === undefined ? 'smoke-desktop: pass' : `smoke-desktop: fail: ${reason}`
+  console.log(line)
+  process.exit(reason === undefined ? 0 : 1)
+}
 
 const temp = await mkdtemp(join(tmpdir(), 'deepwidgets-smoke-desktop-'))
 const home = join(temp, 'home')
@@ -356,6 +371,7 @@ try {
       else if (process.env.DSH_SMOKE_PROBE === '1') failed = await checkProbe(page, deadline)
       if (failed === undefined && process.env.DSH_SMOKE_TRACE === '1') failed = await checkTrace(page, deadline)
       if (failed === undefined && process.env.DSH_SMOKE_HELLO === '1') failed = await checkHello(page, deadline)
+      if (failed === undefined && (process.env.DSH_SMOKE_ROWS ?? '') !== '') failed = await checkRows(page, deadline)
     }
   }
 } catch (error) {
@@ -729,4 +745,215 @@ async function checkTracePage(deadline) {
     await delay(500)
   }
   return `trace page: ${reason}`
+}
+
+function stripRowLine(line) {
+  const hash = line.indexOf('#')
+  return (hash === -1 ? line : line.slice(0, hash)).trim()
+}
+
+function readRowLists(folder) {
+  const hostLines = readFileSync(join(folder, 'rows.host.txt'), 'utf8').split('\n').map(stripRowLine).filter((line) => line !== '')
+  const client = new Set(readFileSync(join(folder, 'rows.client.txt'), 'utf8').split('\n').map(stripRowLine).filter((line) => line !== ''))
+  const host = new Set()
+  for (const line of hostLines) {
+    const pending = /^(\S+) pending (\S+)$/.exec(line)
+    if (pending !== null) {
+      host.add(`${pending[1]}=pending(${pending[2]})`)
+      continue
+    }
+    if (/^\S+$/.test(line)) {
+      host.add(`${line}=active`)
+      continue
+    }
+    return { bad: line, host, client }
+  }
+  return { host, client }
+}
+
+function isRootHostRow(row) {
+  return row.id === 'include' && row.name === 'cordis:include'
+}
+
+function keptHostRows(rows) {
+  return rows.filter((row) => !isRootHostRow(row) && row.disabled !== true)
+}
+
+function hostKey(row) {
+  return typeof row.id === 'string' && row.id.startsWith('include:') ? row.optionsId : `name:${row.name}`
+}
+
+function stateWord(row) {
+  const state = row.state
+  if (state === 0) return `pending(${(row.missing ?? []).join(',')})`
+  if (state === 1) return 'loading'
+  if (state === 2) return 'active'
+  if (state === 3) return 'failed'
+  if (state === 4) return 'disposed'
+  if (state === 5) return 'unloading'
+  if (state === null) return 'nofiber'
+  return `state${String(state)}`
+}
+
+function hostItem(row) {
+  return `${hostKey(row)}=${stateWord(row)}`
+}
+
+function diffSets(actual, expected) {
+  const extra = [...actual].filter((item) => !expected.has(item)).sort()
+  const missing = [...expected].filter((item) => !actual.has(item)).sort()
+  if (extra.length === 0 && missing.length === 0) return undefined
+  const extraText = extra.length === 0 ? 'none' : extra.join(' ')
+  const missingText = missing.length === 0 ? 'none' : missing.join(' ')
+  return `extra ${extraText}, missing ${missingText}`
+}
+
+function compareHostSnapshot(file, folder) {
+  const lists = readRowLists(folder)
+  if (lists.bad !== undefined) return `rows list: bad line ${lists.bad}`
+  const rows = JSON.parse(readFileSync(file, 'utf8'))
+  if (!Array.isArray(rows)) return 'host rows: snapshot is not an array'
+  const diff = diffSets(new Set(keptHostRows(rows).map((row) => hostItem(row))), lists.host)
+  return diff === undefined ? undefined : `host rows: ${diff}`
+}
+
+function cdpSession(url, deadline) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url)
+    const waiting = new Map()
+    let next = 0
+    const timer = setTimeout(() => {
+      socket.close()
+      for (const item of waiting.values()) item.reject(new Error('debugger timeout'))
+      reject(new Error('debugger timeout'))
+    }, Math.max(1, deadline - Date.now()))
+    socket.addEventListener('open', () => {
+      resolve({
+        send(method, params = {}) {
+          next += 1
+          const id = next
+          socket.send(JSON.stringify({ id, method, params }))
+          return new Promise((done, fail) => { waiting.set(id, { resolve: done, reject: fail }) })
+        },
+        close() {
+          clearTimeout(timer)
+          socket.close()
+        },
+      })
+    })
+    socket.addEventListener('message', (event) => {
+      const message = JSON.parse(String(event.data))
+      const item = waiting.get(message.id)
+      if (item === undefined) return
+      waiting.delete(message.id)
+      if (message.error) item.reject(new Error(message.error.message ?? 'cdp error'))
+      else if (message.result?.exceptionDetails) {
+        const details = message.result.exceptionDetails
+        item.reject(new Error(details.exception?.description ?? details.text ?? 'evaluate failed'))
+      }       else item.resolve(message.result)
+    })
+    socket.addEventListener('error', () => {
+      clearTimeout(timer)
+      for (const item of waiting.values()) item.reject(new Error('debugger connection failed'))
+      reject(new Error('debugger connection failed'))
+    })
+  })
+}
+
+async function cdpCall(session, method, params) {
+  try {
+    return await session.send(method, params)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'unknown'
+    throw new Error(`${method}: ${message}`)
+  }
+}
+
+async function readHostSnapshot(deadline) {
+  let targets
+  try {
+    const response = await fetch(`http://127.0.0.1:${String(hostInspectPort)}/json/list`, { signal: AbortSignal.timeout(3000) })
+    if (!response.ok) throw new Error(`status ${String(response.status)}`)
+    targets = await response.json()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'unknown'
+    throw new Error(`GET /json/list: ${message}`)
+  }
+  if (!Array.isArray(targets) || typeof targets[0]?.webSocketDebuggerUrl !== 'string') {
+    throw new Error('GET /json/list: no target')
+  }
+  const session = await cdpSession(targets[0].webSocketDebuggerUrl, deadline)
+  try {
+    const proto = await cdpCall(session, 'Runtime.evaluate', { expression: 'Function.prototype' })
+    const protoId = proto?.result?.objectId
+    if (typeof protoId !== 'string') throw new Error('Runtime.evaluate: no objectId')
+    const functions = await cdpCall(session, 'Runtime.queryObjects', { prototypeObjectId: protoId })
+    const functionId = functions?.objects?.objectId
+    if (typeof functionId !== 'string') throw new Error('Runtime.queryObjects: no objectId')
+    const loaderProto = await cdpCall(session, 'Runtime.callFunctionOn', {
+      objectId: functionId,
+      functionDeclaration: 'function () { const found = this.filter((fn) => fn.name === "Loader" && typeof fn.prototype?.showLog === "function" && typeof fn.prototype?.locate === "function"); if (found.length !== 1) throw new Error("Loader functions " + found.length); return found[0].prototype }',
+    })
+    const loaderProtoId = loaderProto?.result?.objectId
+    if (typeof loaderProtoId !== 'string') throw new Error('Runtime.callFunctionOn: no Loader prototype')
+    const loaders = await cdpCall(session, 'Runtime.queryObjects', { prototypeObjectId: loaderProtoId })
+    const loaderId = loaders?.objects?.objectId
+    if (typeof loaderId !== 'string') throw new Error('Runtime.queryObjects: no Loader objectId')
+    const rows = await cdpCall(session, 'Runtime.callFunctionOn', {
+      objectId: loaderId,
+      returnByValue: true,
+      functionDeclaration: 'function () { if (this.length !== 1) throw new Error("Loader instances " + this.length); const loader = this[0]; return [...loader.entries()].map((e) => { const state = e.fiber?.state ?? null; return { id: e.id, optionsId: e.options.id, name: e.options.name, disabled: e.disabled, state, missing: state === 0 ? Object.keys(e.fiber.inject).filter((service) => e.fiber.ctx.get(service) === undefined).sort() : [] } }) }',
+    })
+    if (!Array.isArray(rows?.result?.value)) throw new Error('Runtime.callFunctionOn: host rows are not an array')
+    return rows.result.value
+  } finally {
+    session.close()
+  }
+}
+
+async function readClientRows(page, deadline) {
+  let ids = []
+  while (Date.now() < deadline) {
+    try {
+      const value = await evaluate(page.webSocketDebuggerUrl,
+        'JSON.stringify((window.__DSH_BOOT__?.entries ?? []).map((entry) => entry.id))', deadline)
+      const parsed = JSON.parse(String(value))
+      if (Array.isArray(parsed)) {
+        ids = parsed.map((id) => String(id))
+        if (ids.length > 0) return ids
+      }
+    } catch (error) {
+      note(`client rows error=${error instanceof Error ? error.message : 'unknown'}`)
+    }
+    if (Date.now() >= deadline) break
+    await delay(250)
+  }
+  return ids
+}
+
+async function checkRows(page, deadline) {
+  const lists = readRowLists(process.env.DSH_SMOKE_ROWS ?? '')
+  if (lists.bad !== undefined) return `rows list: bad line ${lists.bad}`
+  let rows
+  let unsettled = []
+  do {
+    const started = Date.now()
+    rows = await readHostSnapshot(deadline)
+    note(`host rows read ms=${String(Date.now() - started)} count=${String(rows.length)}`)
+    unsettled = keptHostRows(rows).filter((row) => row.state === 1 || row.state === 5)
+    if (unsettled.length === 0 || Date.now() >= deadline) break
+    await delay(500)
+  } while (Date.now() < deadline)
+  const save = process.env.DSH_SMOKE_ROWS_SAVE ?? ''
+  if (save !== '') writeFileSync(save, JSON.stringify(rows))
+  if (unsettled.length > 0) return `host rows: not settled ${unsettled.map((row) => hostItem(row)).sort().join(' ')}`
+  const hostActual = new Set(keptHostRows(rows).map((row) => hostItem(row)))
+  const client = await readClientRows(page, deadline)
+  note(`host rows=${[...hostActual].sort().join(' ')}`)
+  note(`client rows=${[...client].sort().join(' ')}`)
+  const hostDiff = diffSets(hostActual, lists.host)
+  if (hostDiff !== undefined) return `host rows: ${hostDiff}`
+  const clientDiff = diffSets(new Set(client), lists.client)
+  if (clientDiff !== undefined) return `client rows: ${clientDiff}`
+  return undefined
 }

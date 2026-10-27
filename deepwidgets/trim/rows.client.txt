@@ -1,0 +1,19 @@
+# Client package ids that the trim keeps.
+@deepwidgets/probe
+@deepwidgets/trace
+@deepseek-ai/dsh-api-gateway
+@deepseek-ai/dsh-client-modules
+@deepseek-ai/dsh-cordis-client-runner
+@deepseek-ai/dsh-client-ui-theme
+@deepseek-ai/dsh-client-locale
+@deepseek-ai/dsh-client-shortcuts
+@deepseek-ai/dsh-client-ui-layout
+@deepseek-ai/dsh-client-ui-renderer
+@deepseek-ai/dsh-client-ui-session
+@deepseek-ai/dsh-client-ui-settings
+@deepseek-ai/dsh-api-remote-access
+@deepseek-ai/dsh-client-file-upload
+@deepseek-ai/dsh-api-remotes
+@deepseek-ai/dsh-typert-registry
+@deepseek-ai/dsh-client-connection
+@deepseek-ai/dsh-api-session-controller

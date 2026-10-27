@@ -91,6 +91,7 @@
     "@deepseek-ai/schemastery": "workspace:~",
     "@deepwidgets/probe": "workspace:*",
     "@deepwidgets/trace": "workspace:*",
+    "@deepwidgets/trim": "workspace:*",
     "commander": "^15.0.0",
     "js-yaml": "^4.3.2",
     "node-addon-require-builtin": "^0.1.9",

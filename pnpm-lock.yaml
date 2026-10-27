@@ -532,6 +532,9 @@ importers:
       '@deepwidgets/trace':
         specifier: workspace:*
         version: link:../../deepwidgets/trace
+      '@deepwidgets/trim':
+        specifier: workspace:*
+        version: link:../../deepwidgets/trim
       commander:
         specifier: ^15.0.0
         version: 15.0.0
@@ -1207,6 +1210,8 @@ importers:
   deepwidgets/probe: {}
 
   deepwidgets/trace: {}
+
+  deepwidgets/trim: {}
 
   native/system:
     devDependencies:
