@@ -62,6 +62,7 @@ The operator made these decisions. They outrank every other document.
 | `widget.program_delivery` | The host stores the program. The package file seeds it. Routes: `GET program`, `POST call`, `GET stream` under `/api/widgets/<slug>/`. |
 | `widget.refresh_hook` | The shell runs its queries again with the public OpenUI hook `useTriggerAction`. Pin `react-lang` 1.0.1 and keep a test for it. |
 | `widget.code_always` | Each widget has code that an agent writes. No widget is only data. The design has no CRUD descriptor kind. A to-do widget is a bundle with plain handlers. |
+| `widget.agent_code_v1` | In v1, agent code in the host has no guard: no approval, no lint, and no sandbox. Later iterations add the items in `standing.later`. |
 
 ## The design `standing.design`
 
@@ -181,42 +182,68 @@ These choices change what gets built. The widget spec waits for them.
 | Name | Question | Recommendation |
 |---|---|---|
 | `standing.waiting.isolation` | May deepWidgets change the DSH uncaught-error handler, so that it quarantines the failed widget and keeps the host up? | Yes, under the trim marker. Node says that to go on after an uncaught error is unsafe. A stricter rule claims only an error whose top stack frame is in widget code. |
-| `standing.waiting.agent_code` | What is the default policy for agent code in the host? | `ask`, with a lint of each bundle before install |
 | `standing.waiting.renderer` | One process for each widget, or a shared renderer? | Separate by default. A shared renderer as a user setting. |
 | `standing.waiting.main_desktop_only` | A panel window cannot stay on one desktop. Drop the setting "main desktop only", or use a normal window for such a widget? | Operator call |
 | `standing.waiting.tailwind` | The shell uses Tailwind v4 to map shadcn onto the DSH color tokens. DSH rules forbid Tailwind in DSH client packages. Allow it in the shell only? | Yes, only in the shell |
 | `standing.waiting.identity` | v1 tokens carry no identity that lasts. Drop the rules for each agent, and add a `locked` flag and a trash? | Yes |
-| `standing.waiting.create_tools` | Six create tools, or one tool with an `op` field? | Measure both, then choose |
+| `standing.waiting.create_tools` | Five create tools, or one tool with an `op` field? | Measured: 815 against 697 to 778 tokens (`standing.checked.create_tools`). The choice stays open. |
+
+## Later iterations `standing.later`
+
+The operator set these items for iterations after v1 on 2026-10-27.
+
+| Name | Item |
+|---|---|
+| `standing.later.permissions` | Permissioned plugins. A protected plugin needs a permission before a widget can use it. |
+| `standing.later.lint` | Linters that refuse known bad practices in a widget bundle. |
+| `standing.later.build_checks` | Checks at build time for each widget bundle. |
+| `standing.later.metrics` | Performance metrics for each plugin. They show when to stop a plugin, or when to tell the user to change its code. |
 
 ## Hard problems that stay open `standing.hard`
 
 | Name | Problem | Best option now |
 |---|---|---|
-| `standing.hard.agent_code` | Code that an agent writes runs in the host with full Node rights. It can read files, call any server, and block every widget with a CPU loop. | Each widget has agent code (`widget.code_always`). Thus each bundle needs approval and a lint. Later: a separate process with only fetch and state. |
+| `standing.hard.agent_code` | Code that an agent writes runs in the host with full Node rights. It can read files, call any server, and block every widget with a CPU loop. | v1 has no guard (`widget.agent_code_v1`). Later: the items in `standing.later`, and maybe a separate process with only fetch and state. |
 | `standing.hard.fail_loud` | The quarantine handler fixes most crashes. It can still swallow an error in host code that widget code called. A CPU loop is not isolated. | The stricter top-frame rule. Electron main restarts a dead host with backoff. |
-| `standing.hard.write_rate` | Each write rewrites one shared file. The limit is about 100 writes each second in total. | One record for each slug, or the sqlite backend, when timers write often |
+| `standing.hard.write_rate` | Each write rewrites one shared file. The limit is about 100 writes each second in total. | The sqlite backend: about 0.2 ms each write (`standing.checked.sqlite`). Or coalesce timer writes in the runtime (`standing.checked.coalesce`). |
 | `standing.hard.replace` | The DSH plugin manager refuses a second install of one name. Thus a safe replace of a package widget needs the new version under a second package name. | Install under a second name, let the runtime promote it, then remove the old package. Not built through the real plugin manager. |
 | `standing.hard.memory_only` | The `requestId` cache and the change log live in memory. A restart loses them. | Accept for v1, or store the change log in the `widgets` storage. |
 | `standing.hard.port_squat` | On macOS, another process can bind `0.0.0.0` on our fixed port. An agent can then talk to the wrong server. | A server nonce in the port file that the agent checks |
-| `standing.hard.push_to_agent` | Agents do not see user changes until they ask. | `widget_changes`, plus a count of pending changes in each tool result |
+| `standing.hard.push_to_agent` | Agents do not see user changes until they ask. Claude Code and Codex drop pushed notifications (`standing.checked.mcp_push`). | `widget_changes`, plus a count of pending changes in each tool result |
 | `standing.hard.openui_internals` | The refresh uses an action plan shape that OpenUI does not export. | Pin `react-lang` 1.0.1 and keep a test that fails when it changes. |
 | `standing.hard.react18_shadcn` | The OpenUI shadcn example breaks on React 18. | Our own forked set with patched components |
 | `standing.hard.quit_hang` | After a renderer crash, window teardown before `app.exit` hung Electron main in about 5 of 12 runs. | Call `app.exit` with no teardown first (4 of 4 clean). Test the DSH quit path. |
 | `standing.hard.eventsource_stop` | A browser `EventSource` stops for good on an answer that is not 200. | The shell opens the stream again itself, with backoff. |
 | `standing.hard.link_install` | A `link:` install breaks when the agent moves its folder (inferred). | Copy the package into a folder that the profile owns before the install. |
 
+## Facts checked on 2026-10-27 `standing.checked`
+
+Six agents checked the open facts on 2026-10-27. Each agent worked in its own detached worktree `.worktrees/rohan-facts-<name>` at `8c02df70`. Each wrote a `NOTES.md` with rerun commands in `/private/tmp/claude-501/-Users-rohanmalik-deepWidgets/fa304dae-13fc-42fa-a589-9447b230688d/scratchpad/facts/<name>/`. Each check below exits 0, unless the row says otherwise.
+
+| Name | Answer | Evidence |
+|---|---|---|
+| `standing.checked.component_extend` | Yes. `library.extend` adds, overrides, and removes components at runtime. The prompt lists an added component. | Verified, 12 of 12 checks (`components`). A component set loads as its own ES chunk with `import()`. The parser accepts the new component and refuses unknown names. The parser does not check where a component sits, for example a component in a slot that does not allow it. A set that fails to load leaves the base library in use. A component that throws hides only itself. |
+| `standing.checked.mcp_push` | No. Claude Code 2.1.311 refetches the tool list on `list_changed`. It drops `resources/updated`, logging messages, and custom notifications. | Verified, read the CLI bundle (`mcpfacts`). Claude Code issues #7252 and #3174 are closed as not planned. Codex does the same. Cursor is unknown. |
+| `standing.checked.create_tools` | Measured. Five separate tools: 815 tokens for `tools/list`. One tool with an `op` enum: 697 tokens. One tool with a schema for each op: 778 tokens. | Verified, 82 of 82 checks (`mcpfacts`). Separate tools let the schema catch a missing field and mark only `widget_remove` destructive. Call accuracy needs a model and is not measured. |
+| `standing.checked.sqlite` | Yes. The sqlite backend writes in about 0.2 ms, against about 10 ms for json. 20 slugs with one write each take 2 to 4 ms, against about 230 ms. | Verified (`storage`). The json per-record layout is not faster. A config patch alone fails: the `widgets` package must depend on `@deepseek-ai/dsh-storage-sqlite`. Sqlite as shipped does not use full fsync, so power loss is not proven safe. With full fsync, a write takes about 4 ms. 25 kills during writes gave no corrupt record on any backend. |
+| `standing.checked.coalesce` | storage-domain has no coalesced write. | Verified (`storage`). A runtime option `update(slug, fn, {coalesce: ms})` removed the timer backlog on json: 553 writes in the queue became 0. |
+| `standing.checked.pnpm_in_app` | Yes. The packaged app ships pnpm 11.28.5 and gives it to the host. | Verified, read `apps/desktop/src/main.ts:162-165` and ran the host command with no pnpm on PATH (`packaged`). A real packaged `.app` is not run, because the package build fails (`standing.checked.packaging`). |
+| `standing.checked.fence_import` | No. The import breaks in the packaged host. | Verified (`packaged`). The published `dsh-client-connection` has no `src/` files. Electron 44 refuses TypeScript files under `node_modules`. Use `localhostHostValidation` from `@modelcontextprotocol/node` 2.0.0, or copy the 40 lines into `@deepwidgets/mcp`. |
+| `standing.checked.message_port` | Yes. The host runs as an Electron `utilityProcess` with a shim and no host code change. A window and the host can then talk over a `MessagePort`. Electron main is not in the data path. | Verified (`msgport`). The smoke check passes with the host as a `utilityProcess`. Round trip p50: 0.1 ms on a `MessagePort`, 0.5 to 0.7 ms through main, and 2.2 to 2.8 ms through `dsh-app://` today. When the host stops, calls that wait for a reply never end, so the client must refuse them when the port closes. |
+| `standing.checked.full_profile` | The premise was wrong. The `web` profile and the desktop profile both have 207 rows. The timings stay the same. | Verified (`profile`). The real difference is the runtime: Node 24 in Electron against Node 22 in the CLI. On the desktop host: query p50 2.5 ms, mutation p50 14 ms, write to SSE p50 13 to 16 ms. `run.mjs` 21 of 21, `contract.mjs` 31 of 31. |
+| `standing.checked.sleep` | Partly. The host recovers. A real sleep and a real window are not tested. | Verified with SIGSTOP and SIGCONT, not a real sleep (`profile`). A late `ctx.interval` fires once, with no burst. After a stop of more than 300 s, the undici body timeout stops the SSE streams. `EventSource` opens them again. A reader with no retry stays closed. A stopped client gets all frames at once on resume, so the shell must merge the refetches. |
+| `standing.checked.packaging` | No. The fork cannot build a packaged app since `1a59a4ec`. | Verified, ran on `main` (`packbuild`). The release packer does not pack the private `@deepwidgets/*` packages. A small fix packs them the same way as the private desktop host (`package-target.ts:495`). Nothing today needs a packaged build. |
+| `standing.checked.lockfile` | The lockfile on `rohan/widget-exploration` has no entry for `deepwidgets/widgets-standin`. | Verified (`msgport`, `profile`). `pnpm install --frozen-lockfile` adds the entry. `main` is not affected. |
+
 ## Things that nobody checked yet `standing.unchecked`
 
 | Name | Question |
 |---|---|
-| `standing.unchecked.fence_import` | The MCP plugin imports the DSH request fence from TypeScript source. Does this work in a packaged build? (inferred: likely not) |
-| `standing.unchecked.pnpm_in_app` | Does the packaged desktop app ship pnpm for the plugin manager? |
 | `standing.unchecked.real_hands` | A real drag, real click-through, typing and copy and paste in a panel window, full-screen apps and Spaces, a Dock icon flash at launch, and real Tray clicks |
-| `standing.unchecked.sleep` | After the Mac sleeps, do timers and streams come back? The proposal is to reopen them on the Electron `resume` event. |
-| `standing.unchecked.full_profile` | All timings come from a small profile. The full desktop profile is not measured. |
-| `standing.unchecked.mcp_push` | Do MCP clients show `resources/updated` to the model? (inferred from docs: no) |
-| `standing.unchecked.sqlite` | Is the sqlite storage backend faster for small writes? |
-| `standing.unchecked.component_extend` | Does `library.extend` in `react-lang` 1.0.1 load a user component set? It was read, not run. |
+| `standing.unchecked.real_sleep` | A real sleep that stops the host, Electron main, and the windows together |
+| `standing.unchecked.power_loss` | Does the sqlite backend lose acknowledged writes when the power fails? |
+| `standing.unchecked.utility_control` | With the host as a `utilityProcess`: the graceful stop, the update and quit requests, and a signed packaged build |
+| `standing.unchecked.tool_accuracy` | Which shape of the create tools does a model call more accurately? This check needs a paid model run. |
 
 ## Work in other sessions `standing.other_work`
 
@@ -229,7 +256,7 @@ These choices change what gets built. The widget spec waits for them.
 
 ## Where the work is `standing.where`
 
-No branch is on the remote. Nobody merged this work.
+The branch `rohan/widget-exploration` is on the remote. It merges the three branches below and holds this document. Nobody merged this work into `main`.
 
 | Place | Content |
 |---|---|
@@ -238,6 +265,7 @@ No branch is on the remote. Nobody merged this work.
 | Branch `rohan/playground-creation` | The templates `crud-widget` and `api-widget` |
 | `/private/tmp/claude-501/-Users-rohanmalik-deepWidgets/eb10eeb1-4988-4412-b535-dd45a936ce19/scratchpad/overnight/` | Each spike folder with its `NOTES.md` |
 | `/private/tmp/claude-501/-Users-rohanmalik-deepWidgets/eb10eeb1-4988-4412-b535-dd45a936ce19/scratchpad/widget-spec/decisions.md` | The decisions record |
+| `/private/tmp/claude-501/-Users-rohanmalik-deepWidgets/fa304dae-13fc-42fa-a589-9447b230688d/scratchpad/facts/` | Each fact check of `standing.checked`, with its `NOTES.md` |
 | https://claude.ai/artifact/LHMQdAzMJ4qgksFP5GTK4r | The overnight summary page |
 
 If these branches merge, the `head.map` and `head.status` tables in `CLAUDE.md` need the new packages and `docs/explore/`.
