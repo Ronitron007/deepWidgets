@@ -1,0 +1,9 @@
+{
+  "name": "@deepwidgets/widgets-standin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Playground stand-in for the widgets runtime: a widget registry with list and call routes. Not the real runtime.",
+  "exports": { ".": "./index.js" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

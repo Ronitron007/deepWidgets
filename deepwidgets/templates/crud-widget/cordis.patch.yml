@@ -1,0 +1,11 @@
+# The agent edits only `config` (slug, title, table.fields) and program.oui.
+- insert:
+    - id: widget-todo
+      name: '@local/widget-todo'
+      config:
+        slug: todo
+        title: To-do
+        table:
+          fields:
+            title: { type: string, required: true }
+            done: { type: boolean, default: false }

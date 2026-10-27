@@ -1,0 +1,14 @@
+{
+  "name": "@local/widget-weather",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Current weather from Open-Meteo.",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": ["index.js", "cordis.patch.yml", "program.oui", "locale/*.json", "icon.svg"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

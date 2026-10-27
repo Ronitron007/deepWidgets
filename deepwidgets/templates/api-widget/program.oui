@@ -1,0 +1,6 @@
+root = Card([header, reading, footer])
+w = Query("current", {}, { place: "", current: null, error: null }, 300)
+header = CardHeader(w.place)
+reading = w.current ? TextContent(w.current.temperature + w.current.unit + " · wind " + w.current.wind) : TextContent("Loading…")
+refresh = Mutation("refresh", {})
+footer = Row([TextContent(w.error ? "Last update failed: " + w.error : "Updated " + w.fetchedAt), Button("Refresh", Action([@Run(refresh), @Run(w)]))])
