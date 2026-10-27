@@ -28,12 +28,12 @@ Code without a comment can still be off. A plugin row is off when a patch layer 
 
 ## Status `head.status`
 
-| Item | State on 2026-10-27 |
+| Item | State on 2026-10-28 |
 |---|---|
-| Rows that deepWidgets turns off | None yet. The unit `trim.profile` turns them off. DSH itself turns off some of the 196 rows, with `disabled: true` or a `!!js` condition. |
-| Our packages | `deepwidgets/probe` (merged). `deepwidgets/trace` (host half, client half, and trace window merged). `deepwidgets/trim` (planned). |
+| Rows that deepWidgets turns off | `deepwidgets/trim/cordis.patch.yml` turns off 162 of the 197 rows. Some kept rows stay pending, because the agent rows are off. |
+| Our packages | `deepwidgets/probe` (merged). `deepwidgets/trace` (host half, client half, and trace window merged). `deepwidgets/trim` (merged). |
 | Main window | The app opens the main window at once, with no welcome window. The main window shows only `hello` and the probe text. |
-| Checks | `tools/smoke-desktop.mjs` boots the app. With `DSH_SMOKE_PROBE=1`, it also runs the probe test. With `DSH_SMOKE_TRACE=1`, it also runs the trace test. With `DSH_SMOKE_HELLO=1`, it also runs the hello test. `tools/trace-late-row.mjs` checks that the trace finds late rows. `tools/trace-client-rows.mjs` checks the client half with no app. |
+| Checks | `tools/smoke-desktop.mjs` boots the app. With `DSH_SMOKE_PROBE=1`, it also runs the probe test. With `DSH_SMOKE_TRACE=1`, it also runs the trace test. With `DSH_SMOKE_HELLO=1`, it also runs the hello test. With `DSH_SMOKE_ROWS=<folder>`, it also compares the loaded rows with the row lists in that folder. `tools/trace-late-row.mjs` checks that the trace finds late rows. `tools/trace-client-rows.mjs` checks the client half with no app. |
 
 ## Where things are `head.map`
 
@@ -91,6 +91,7 @@ corepack pnpm --filter @deepseek-ai/dsh-desktop run build
 corepack pnpm run start:desktop
 node tools/smoke-desktop.mjs
 DSH_SMOKE_PROBE=1 node tools/smoke-desktop.mjs
+DSH_SMOKE_PROBE=1 DSH_SMOKE_ROWS=deepwidgets/trim node tools/smoke-desktop.mjs
 DSH_SMOKE_TRACE=1 node tools/smoke-desktop.mjs
 DSH_SMOKE_HELLO=1 node tools/smoke-desktop.mjs
 node tools/trace-late-row.mjs

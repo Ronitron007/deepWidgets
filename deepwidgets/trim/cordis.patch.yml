@@ -1,0 +1,669 @@
+# deepWidgets trim layer. It applies after dsh-base, dsh-web-app, @deepwidgets/probe, and @deepwidgets/trace.
+# Each entry turns off one DSH row. The row and its package stay in the tree.
+# Spec: fork_trim.method in docs/specs/fork-trim.md.
+
+# area: cordis-boot
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: authorization
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: command-compact
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: command-feedback
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: command-goal
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: commands
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: entry-customization
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: file-reference-local
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: goal
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: goal-round-driver
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: harness-dev-context
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: image-offload
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: jobs
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: office-to-pdf
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: open-in-app
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: otel
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: permission
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: plugin-inventory
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: plugin-package-inventory-deepseek
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: resources
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: schedule
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: spill-local
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: spill-policy
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: subprocess
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: timeout-policy
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: token-meter
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: tools
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: typert-loader
+  disabled: true
+
+# deepwidgets-trim: cordis boot row that the probe does not use
+- id: user-questions
+  disabled: true
+
+# area: host-web-transport
+
+# deepwidgets-trim: host web transport that the probe does not use
+- id: web
+  disabled: true
+
+# deepwidgets-trim: host web transport that the probe does not use
+- id: web-deepseek-api
+  disabled: true
+
+# deepwidgets-trim: host web transport that the probe does not use
+- id: web-fetch-http
+  disabled: true
+
+# deepwidgets-trim: host web transport that the probe does not use
+- id: web-search-deepseek
+  disabled: true
+
+# area: client-ui
+
+# deepwidgets-trim: DSH workspace screen
+- id: approval
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-approval
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-brand-official
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-chat
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-commands
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-conversation
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-cordis
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-deepseek-model-label-1017
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-file-drag
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-goal
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-input-trigger
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-jobs
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-model-selection
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-open-in-app
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-permission
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-plugin-manager
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-reference
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-schedule
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-secret-mask
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-settings-general
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-settings-models
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-settings-plugin-inventory
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-settings-plugins
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-settings-web-search
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-shortcuts
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-sidebar
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-sidebar-browser
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-sidebar-documentpreview
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-sidebar-files
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-sidebar-right
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-tool
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-user-questions
+  disabled: true
+
+# deepwidgets-trim: DSH workspace screen
+- id: ui-workflow-run
+  disabled: true
+
+# area: api-controllers
+
+# area: session-storage-workspace
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: attachment-local
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: compaction-basic
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: deliverable-file-references
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: message-feedback
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: message-quotes
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: plan-mode
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: session
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: session-checkpoint-policy
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: session-log-deepseek
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: session-log-download
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: session-persistence-jsonl
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: session-projection
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: session-projection-cache
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: session-query-sqlite
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: session-reference
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: session-stats
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: session-title
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: session-turn-outline
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: ui-attachment
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: ui-deliverables
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: ui-message-feedback
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: ui-plan
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: ui-settings-session-log
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: ui-trajectory
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: ui-workspace
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: workspace
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: workspace-changes
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: workspace-controller
+  disabled: true
+
+# deepwidgets-trim: session/storage/workspace, not needed for boot
+- id: workspace-files
+  disabled: true
+
+# area: sandbox-shell-fs
+
+# deepwidgets-trim: sandbox/shell/fs, out of scope
+- id: directory-picker
+  disabled: true
+
+# deepwidgets-trim: sandbox/shell/fs, out of scope
+- id: fs-observation-policy
+  disabled: true
+
+# deepwidgets-trim: sandbox/shell/fs, out of scope
+- id: fs-sandbox
+  disabled: true
+
+# deepwidgets-trim: sandbox/shell/fs, out of scope
+- id: pwsh-sandbox
+  disabled: true
+
+# deepwidgets-trim: sandbox/shell/fs, out of scope
+- id: sandbox
+  disabled: true
+
+# deepwidgets-trim: sandbox/shell/fs, out of scope
+- id: sandbox-policy
+  disabled: true
+
+# deepwidgets-trim: sandbox/shell/fs, out of scope
+- id: shell-env
+  disabled: true
+
+# deepwidgets-trim: sandbox/shell/fs, out of scope
+- id: ui-settings-shell
+  disabled: true
+
+# deepwidgets-trim: sandbox/shell/fs, out of scope
+- id: working-directory
+  disabled: true
+
+# area: telemetry-account-credentials
+
+# deepwidgets-trim: telemetry or account, not needed for boot
+- id: account-controller
+  disabled: true
+
+# deepwidgets-trim: telemetry or account, not needed for boot
+- id: deepseek-account
+  disabled: true
+
+# deepwidgets-trim: telemetry or account, not needed for boot
+- id: desktop-product-telemetry
+  disabled: true
+
+# deepwidgets-trim: telemetry or account, not needed for boot
+- id: product-analytics
+  disabled: true
+
+# deepwidgets-trim: telemetry or account, not needed for boot
+- id: session-telemetry-otel
+  disabled: true
+
+# deepwidgets-trim: telemetry or account, not needed for boot
+- id: ui-settings-account
+  disabled: true
+
+# area: agent-llm-tools
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: agent
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: agent-default-model
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: agent-instructions
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: agent-loop
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: agent-preset-registry
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: bash-sandbox
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: deepseek-llm-api-extensions
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: job-controller
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: llm
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: llm-deepseek
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: llm-deepseek-account
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: llm-pi-ai
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: llm-retry
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: preset-minimal
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: ptc-runtime
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: repeat-tool-reminder
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: session-title-llm
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: skill
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: skill-filesystem
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: subagent
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: subagent-fork-in-process
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: subagent-model-selection-settings
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: subagent-spawn-in-process
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: system-prompt
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: terminal-controller
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-bash
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-executor-native
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-executor-ptc
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-fs
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-fs-search
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-goal
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-jobs
+  disabled: true
+
+# deepwidgets-trim: DSH turns it off. The presets give the tool to agents (decisions.trim_creation).
+- id: tool-plugin-manager
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-pwsh
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-result-pruner
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-skill
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-subagent
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-subagent-control
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-subagent-fork
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-todo
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-web
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-workflow
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: tool-working-directory
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: ui-agent-preset
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: ui-settings-agent-loop
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: ui-settings-subagent
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: ui-sidebar-terminal
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: ui-skill
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: ui-subagent
+  disabled: true
+
+# deepwidgets-trim: agent plane, out of scope (fork_trim.out_of_scope)
+- id: workflow-ptc
+  disabled: true
+
+# area: settle
+
+# deepwidgets-trim: not needed: the boot test passes without it
+- id: client-hmr
+  disabled: true
+
+# deepwidgets-trim: not needed: the boot test passes without it
+- id: hmr
+  disabled: true
+
+# deepwidgets-trim: not needed: the boot test passes without it
+- id: timer
+  disabled: true

@@ -1,0 +1,36 @@
+# Host row keys that the trim keeps. Form: <key> or <key> pending <services>.
+deepwidgets-probe   # start keep set
+deepwidgets-trace   # start keep set
+mcp-resources pending tools   # tools: row tools, off
+settings   # start keep set
+config-editor   # start keep set
+settings-controller   # start keep set
+web-startup   # start keep set
+web-runtime   # start keep set
+typert   # start keep set
+ui-settings   # start keep set
+file-upload pending agents,attachments,commands   # agent rows off
+plugin-manager   # start keep set
+credentials   # start keep set
+storage   # start keep set
+storage-json   # start keep set
+storage-domain   # start keep set
+cordis-host-runner pending tools   # creation row. tools: row tools, off
+cordis-inspect-providers pending cordisInspect,tools   # creation row. cordisInspect: cordis-host-runner, pending on tools
+cordis-client-runner   # start keep set
+preset-cordis pending agentPresets   # creation row. agentPresets: row agent-preset-registry, off
+preset-standard pending agentPresets   # creation row. agentPresets: row agent-preset-registry, off
+preset-ptc pending agentPresets   # creation row. agentPresets: row agent-preset-registry, off
+webserver   # start keep set
+modules   # start keep set
+connection   # start keep set
+ui-layout   # start keep set
+session-controller pending agentDefaultModel,agents,attachments,fileUploads,fs,llm,sessionProjections,sessionQuery,sessions,workspaceRegistry   # agent rows off. fileUploads: file-upload, pending
+ui-session   # start keep set
+remote-access   # start keep set
+typert-gateway   # start keep set
+api-remotes   # start keep set
+ui-renderer   # start keep set
+ui-theme   # start keep set
+locale   # start keep set
+shortcuts   # start keep set
