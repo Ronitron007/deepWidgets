@@ -2454,7 +2454,9 @@ describe('desktop main startup', () => {
     expect(harness.hosts).toHaveLength(1)
   })
 
-  it('keeps recovery visible when the backend fails during the welcome preference read', async () => {
+  // deepwidgets-trim: trim.startup opens the main window at once. The start does not read the welcome state.
+  // it('keeps recovery visible when the backend fails during the welcome preference read', async () => {
+  it.skip('keeps recovery visible when the backend fails during the welcome preference read', async () => {
     const preferences = Promise.withResolvers<Response>()
     await import('../src/main.ts')
     await harness.preparing.promise

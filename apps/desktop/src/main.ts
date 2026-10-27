@@ -1243,18 +1243,21 @@ async function main(): Promise<void> {
   }
   const openInitialWindow = async (): Promise<void> => {
     if (quitting || recovery.active) return
-    const state = await readWelcomeState()
+    // deepwidgets-trim: trim.startup opens the main window at once. The welcome read calls llm, and the trim turns llm off.
+    // const state = await readWelcomeState()
+    // if (isQuitting() || backend.state.phase !== 'ready') return
+    // locale = resolveDesktopStartupLocale(state.localePreference, systemLanguages)
+    // windowsLanguage = locale.id
+    // refreshApplicationMenu()
+    // if (!enteredWorkspace && needsWelcome({ loggedIn: state.loggedIn, hasApiKey: state.hasApiKey })) {
+    //   // A later login must retain its own activation policy instead of replaying startup focus.
+    //   raiseAfterUpdate = false
+    //   await showWelcome()
+    // } else {
+    //   await enterWorkspace()
+    // }
     if (isQuitting() || backend.state.phase !== 'ready') return
-    locale = resolveDesktopStartupLocale(state.localePreference, systemLanguages)
-    windowsLanguage = locale.id
-    refreshApplicationMenu()
-    if (!enteredWorkspace && needsWelcome({ loggedIn: state.loggedIn, hasApiKey: state.hasApiKey })) {
-      // A later login must retain its own activation policy instead of replaying startup focus.
-      raiseAfterUpdate = false
-      await showWelcome()
-    } else {
-      await enterWorkspace()
-    }
+    await enterWorkspace()
   }
   focusPrimaryWindow = () => {
     if (quitting) return

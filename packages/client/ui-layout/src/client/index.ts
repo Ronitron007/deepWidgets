@@ -14,7 +14,11 @@ import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type { HostObservable, SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { PanelInfo } from './service.ts'
-import { AppFrame } from './AppFrame.tsx'
+// deepwidgets-trim: trim.startup shows only hello and the shell.overlay seat. AppFrame needs ui-session, a part of the DSH workspace screen.
+// import { AppFrame } from './AppFrame.tsx'
+import { createElement } from 'react'
+import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
+import css from './AppFrame.module.css'
 import { createLayoutStore } from './stores.ts'
 import { LayoutController } from './service.ts'
 import type { ShortcutCommandId } from '@deepseek-ai/dsh-client-shortcuts/client'
@@ -146,6 +150,17 @@ export interface RightbarOwnerProps {
   canShow: boolean
 }
 
+/**
+ * deepWidgets main window (trim.startup): the text hello and the shell.overlay seat that the probe uses.
+ * @param props - the render share of the shell.overlay seat.
+ * @returns the root content.
+ */
+function HelloFrame({ renderSlot }: PropsRenderSlots<'shell.overlay'>) {
+  return createElement('div', { className: css.frame },
+    createElement('div', { 'data-deepwidgets-hello': '' }, 'hello'),
+    createElement('div', { className: css.overlayLayer, 'data-shell-overlay': '' }, renderSlot('shell.overlay', {})))
+}
+
 /** Required services (cordis fiber inject — the loader passes all module exports as an object plugin). */
 export const inject = ['slots', 'theme', 'locale', 'shortcuts']
 
@@ -187,7 +202,9 @@ export function apply(ctx: ClientContext): void {
         'shell.leading': { kind: 'single', scope: 'root' },
       },
       store,
-    }, AppFrame)
+      // deepwidgets-trim: trim.startup registers HelloFrame in the root slot instead of AppFrame.
+      // }, AppFrame)
+    }, HelloFrame)
     const disposeShortcut = ctx.shortcuts.register({
       id: 'sidebar.left.toggle' as ShortcutCommandId, label: () => t('toggle'), aliases: ['sidebar', 'toggle left sidebar'],
       defaults: {
