@@ -21,8 +21,7 @@ Labels on claims:
 | program | The OpenUI Lang text that tells the shell what to show. It is data, not code. |
 | slug | The human-readable id of a widget, given at creation, for example `groceries`. |
 | action | A named operation of a widget, for example `add`. A query reads. A mutation writes. |
-| data widget | A widget that is only data: a program plus CRUD actions from a descriptor. No agent code. |
-| logic widget | A widget with handler code in its own bundle, for example a weather widget that calls an API. |
+| widget bundle | The package of one widget. It holds the handler code that an agent writes. Each widget has one bundle. |
 | agent | An outside MCP client, for example Claude Code. |
 | operator | Rohan. The operator makes each decision. |
 
@@ -62,10 +61,11 @@ The operator made these decisions. They outrank every other document.
 | `widget.live_updates` | Each slug has one SSE stream. Each write sends a signal. Each window then fetches again. |
 | `widget.program_delivery` | The host stores the program. The package file seeds it. Routes: `GET program`, `POST call`, `GET stream` under `/api/widgets/<slug>/`. |
 | `widget.refresh_hook` | The shell runs its queries again with the public OpenUI hook `useTriggerAction`. Pin `react-lang` 1.0.1 and keep a test for it. |
+| `widget.code_always` | Each widget has code that an agent writes. No widget is only data. The design has no CRUD descriptor kind. A to-do widget is a bundle with plain handlers. |
 
 ## The design `standing.design`
 
-The overnight run found the smallest set that works: four packages, and one bundle for each logic widget (verified).
+The overnight run found the smallest set that works: four packages, and one bundle for each widget (verified).
 
 | Package | Process | Job |
 |---|---|---|
@@ -73,7 +73,7 @@ The overnight run found the smallest set that works: four packages, and one bund
 | `@deepwidgets/mcp` | host | The MCP server, the token handshake, and the creation kit: skill text, templates, and the guide. |
 | `@deepwidgets/shell` | widget window | The pinned page. It renders a program with the component set `shadcn-widgets@1`. |
 | `@deepwidgets/windows` | host and Electron main | The window manager. The host half decides. The Electron main half obeys. |
-| `widget-<slug>` | host | One bundle for each logic widget. A data widget has no bundle. |
+| `widget-<slug>` | host | One bundle for each widget. An agent writes its code. |
 
 ```
                      ┌──────────── host process (one Cordis Context) ────────────┐
@@ -110,13 +110,7 @@ ctx.widgets.register({
 })
 ```
 
-A data widget uses one CRUD descriptor instead of handlers. The runtime makes the actions `list`, `add`, `update`, and `remove` from it:
-
-```js
-{ kind: 'crud', table: { fields: {
-    text: { type: 'string', required: true },
-    done: { type: 'boolean', default: false } } } }
-```
+A to-do widget has the same shape: a few plain handlers. The overnight runtime also has a CRUD descriptor kind (`kind: 'crud'`). The decision `widget.code_always` drops it from the design.
 
 The full service is `register`, `list`, `inspect`, `get`, `update`, `call`, `setProgram`, `save`, `removeData`, `changes`, `cursor`, and `guide` (verified).
 
@@ -125,8 +119,7 @@ The full service is `register`, `list`, `inspect`, `get`, `update`, `call`, `set
 | Mode | Tools |
 |---|---|
 | interact | `widget_list`, `widget_describe`, `widget_call`, `widget_changes` |
-| create a data widget | `widget_guide`, `widget_save`, `widget_inspect` |
-| create a logic widget | `widget_install`, `widget_reload`, `widget_remove` |
+| create or change a widget | `widget_guide`, `widget_inspect`, `widget_install`, `widget_reload`, `widget_remove` |
 
 With seven tools, `tools/list` costs 769 tokens for 1, 10, or 50 widgets (verified).
 
@@ -158,9 +151,7 @@ The agent learns about user changes from `widget_changes({since})`. MCP clients 
 
 ### An agent creates a widget `standing.flows.create`
 
-- Data widget: the agent calls `widget_save` with a program and a CRUD descriptor. No agent code runs. The widget is live at once.
-
-- Logic widget: the agent copies the template `api-widget`, writes the handlers, and calls `widget_install`. The DSH plugin manager installs the bundle. It is live in about 0.8 s with no restart (verified).
+The agent copies a template, writes the handlers, and calls `widget_install`. The DSH plugin manager installs the bundle. It is live in about 0.8 s with no restart (verified).
 
 ## The evidence `standing.evidence`
 
@@ -173,7 +164,7 @@ Seven spikes ran. An independent review found four blockers. The integration spi
 | A widget with a timer that throws | Goes into quarantine. The other widgets keep working. The host stays up. 14 of 14 checks. |
 | Host restart | Same cookie and same MCP client keep working. The window connects again in about 2.1 s. |
 | A program that names an action that does not exist | Refused with 422. The old program keeps serving. |
-| Replace of a data widget | Checked first, then replaced in place. Its rows stay. |
+| Replace of a data widget (dropped by `widget.code_always`) | Checked first, then replaced in place. Its rows stay. |
 | Replace of a package widget, in the runtime | A broken new version leaves the old one serving. A good one swaps in with 0 failed requests. |
 | Query call and mutation call | 2.5 ms and 12.3 ms at the median |
 | Shell first content | 114 to 126 ms. Size 160 KB gzip. |
@@ -189,7 +180,6 @@ These choices change what gets built. The widget spec waits for them.
 
 | Name | Question | Recommendation |
 |---|---|---|
-| `standing.waiting.data_widgets` | Do agents make CRUD widgets as data with `widget_save`, next to logic widgets as bundles? | Yes. Most widgets are CRUD, and a data widget needs no approval. |
 | `standing.waiting.isolation` | May deepWidgets change the DSH uncaught-error handler, so that it quarantines the failed widget and keeps the host up? | Yes, under the trim marker. Node says that to go on after an uncaught error is unsafe. A stricter rule claims only an error whose top stack frame is in widget code. |
 | `standing.waiting.agent_code` | What is the default policy for agent code in the host? | `ask`, with a lint of each bundle before install |
 | `standing.waiting.renderer` | One process for each widget, or a shared renderer? | Separate by default. A shared renderer as a user setting. |
@@ -202,7 +192,7 @@ These choices change what gets built. The widget spec waits for them.
 
 | Name | Problem | Best option now |
 |---|---|---|
-| `standing.hard.agent_code` | Code that an agent writes runs in the host with full Node rights. It can read files, call any server, and block every widget with a CPU loop. | Data widgets need no agent code. Logic widgets need approval and a lint. Later: a separate process with only fetch and state. |
+| `standing.hard.agent_code` | Code that an agent writes runs in the host with full Node rights. It can read files, call any server, and block every widget with a CPU loop. | Each widget has agent code (`widget.code_always`). Thus each bundle needs approval and a lint. Later: a separate process with only fetch and state. |
 | `standing.hard.fail_loud` | The quarantine handler fixes most crashes. It can still swallow an error in host code that widget code called. A CPU loop is not isolated. | The stricter top-frame rule. Electron main restarts a dead host with backoff. |
 | `standing.hard.write_rate` | Each write rewrites one shared file. The limit is about 100 writes each second in total. | One record for each slug, or the sqlite backend, when timers write often |
 | `standing.hard.replace` | The DSH plugin manager refuses a second install of one name. Thus a safe replace of a package widget needs the new version under a second package name. | Install under a second name, let the runtime promote it, then remove the old package. Not built through the real plugin manager. |

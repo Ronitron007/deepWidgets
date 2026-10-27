@@ -18,7 +18,7 @@ These choices change what gets built. Each line names the section with the evide
 
 | Name | Question | Recommendation |
 |---|---|---|
-| `explore.decisions.data_widgets` | Do agents make CRUD widgets as data (`widget_save`, no code, no approval), next to logic widgets as bundles? | Yes (`options.creation`, option B) |
+| `explore.decisions.data_widgets` | Do agents make CRUD widgets as data (`widget_save`, no code, no approval), next to logic widgets as bundles? | Decided no by the operator on 2026-10-27 (`widget.code_always`). Each widget has agent code in one bundle. |
 | `explore.decisions.isolation` | May the deepWidgets host change the DSH uncaught-error handler, so that it quarantines the widget that failed and keeps the host up? | Yes, under the trim marker (`options.isolation`, option F) |
 | `explore.decisions.agent_code` | Default policy for agent-written host code | `ask`, with a lint of each bundle (`options.creation`) |
 | `explore.decisions.renderer` | One process for each widget (about 20.6 MB each, crashes stay apart) or a shared renderer (about 1.8 MB each, one crash closes all)? | Separate by default. Shared as a user setting (`options.windows.memory`). |
