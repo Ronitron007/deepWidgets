@@ -178,7 +178,9 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-it.each([false, true])('starts welcome onboarding without carrying update focus into login or skip (Windows update=%s)', async (updated) => {
+// deepwidgets-trim: trim.startup opens the main window at once. The start does not read the welcome state.
+// it.each([false, true])('starts welcome onboarding without carrying update focus into login or skip (Windows update=%s)', async (updated) => {
+it.skip.each([false, true])('starts welcome onboarding without carrying update focus into login or skip (Windows update=%s)', async (updated) => {
   vi.resetModules()
   vi.clearAllMocks()
   state.preference = 'zh'

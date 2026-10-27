@@ -2,6 +2,7 @@
  * Boot the unpackaged desktop app and check that the main renderer and host answer.
  * With DSH_SMOKE_PROBE=1, also check that the renderer shows the host process id.
  * With DSH_SMOKE_TRACE=1, also read /api/trace from the main window and check the trace test.
+ * With DSH_SMOKE_HELLO=1, also check that the main window shows hello and that no welcome window opened.
  * The trace test also needs the start-up steps of Electron main and a message for each client row.
  * Then it reads the rows of the trace window page dsh-app://app/trace.
  * Uses only Node built-in modules. Prints one result line.
@@ -354,6 +355,7 @@ try {
       if (!host) failed = 'host timeout'
       else if (process.env.DSH_SMOKE_PROBE === '1') failed = await checkProbe(page, deadline)
       if (failed === undefined && process.env.DSH_SMOKE_TRACE === '1') failed = await checkTrace(page, deadline)
+      if (failed === undefined && process.env.DSH_SMOKE_HELLO === '1') failed = await checkHello(page, deadline)
     }
   }
 } catch (error) {
@@ -507,6 +509,24 @@ async function checkProbe(page, deadline) {
   const shown = text === '' ? 'missing' : text
   note(`probe text=${shown} hostPid=${String(hostPid)}`)
   return `probe text: ${shown}`
+}
+
+async function checkHello(page, deadline) {
+  let text = ''
+  while (Date.now() < deadline && text !== 'hello') {
+    try {
+      text = String(await evaluate(page.webSocketDebuggerUrl,
+        "document.querySelector('[data-deepwidgets-hello]')?.textContent ?? ''", deadline) ?? '')
+    } catch (error) {
+      note(`hello evaluate error=${error instanceof Error ? error.message : 'unknown'}`)
+    }
+    if (text !== 'hello') await delay(250)
+  }
+  const targets = await (await fetch(`http://127.0.0.1:${String(rendererPort)}/json/list`)).json()
+  const welcome = targets.map((target) => String(target?.url)).filter((url) => url.includes('welcome'))
+  note(`hello text=${text || 'missing'} welcome=${welcome.join(',') || 'none'}`)
+  if (text !== 'hello') return `hello text: ${text || 'missing'}`
+  return welcome.length === 0 ? undefined : `hello: welcome window ${welcome.join(',')}`
 }
 
 function traceReadExpression() {
