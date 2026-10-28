@@ -31,7 +31,7 @@ Code without a comment can still be off. A plugin row is off when a patch layer 
 | Item | State on 2026-10-28 |
 |---|---|
 | Rows that deepWidgets turns off | `deepwidgets/trim/cordis.patch.yml` turns off 162 of the 197 rows. Some kept rows stay pending, because the agent rows are off. |
-| Our packages | `deepwidgets/probe` (merged). `deepwidgets/trace` (host half, client half, and trace window merged). `deepwidgets/trim` (merged). |
+| Our packages | `deepwidgets/probe` (merged, TypeScript). `deepwidgets/trace` (host half, client half, and trace window merged, plain JavaScript). `deepwidgets/trim` (merged, no code). |
 | Main window | The app opens the main window at once, with no welcome window. The main window shows only `hello` and the probe text. |
 | Checks | `tools/smoke-desktop.mjs` boots the app. With `DSH_SMOKE_PROBE=1`, it also runs the probe test. With `DSH_SMOKE_TRACE=1`, it also runs the trace test. With `DSH_SMOKE_HELLO=1`, it also runs the hello test. With `DSH_SMOKE_ROWS=<folder>`, it also compares the loaded rows with the row lists in that folder. `tools/trace-late-row.mjs` checks that the trace finds late rows. `tools/trace-client-rows.mjs` checks the client half with no app. |
 
@@ -39,11 +39,11 @@ Code without a comment can still be off. A plugin row is off when a patch layer 
 
 | Path | Content |
 |---|---|
-| `docs/specs/` | `fork-trim.md` (spec `fork_trim`), `floating-widget.md` (spec `floating_widget`) |
+| `docs/specs/` | `fork-trim.md` (spec `fork_trim`), `floating-widget.md` (spec `floating_widget`), `ts-move.md` (spec `ts_move`) |
 | `docs/plans/` | One plan for each spec. Each plan unit is one PR. |
 | `docs/canvas/` | JSON Canvas boards that show how a system works, such as `floating-widget-processes.canvas`. |
 | `docs/tasks/` | The task file of a unit, written before the unit starts. `docs/tasks/README.md` is the task protocol. |
-| `deepwidgets/` | The `@deepwidgets/*` packages, in plain JavaScript. A widget bundle, such as `probe`, has a host half and a client half. |
+| `deepwidgets/` | The `@deepwidgets/*` packages. `probe` is in TypeScript. `build:artifacts` compiles it into `lib/`, and the app loads `lib/` (spec `ts_move`). `trace` is in plain JavaScript. A widget bundle, such as `probe`, has a host half and a client half. |
 | `tools/` | deepWidgets scripts, such as the smoke check. |
 | `.agents/skills/` | The skills. `.claude/skills` is a link to this folder. |
 | `.claude/hooks/` | Claude Code hooks for this repository. |
