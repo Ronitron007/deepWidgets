@@ -63,6 +63,7 @@ The operator made these decisions. They outrank every other document.
 | `widget.refresh_hook` | The shell runs its queries again with the public OpenUI hook `useTriggerAction`. Pin `react-lang` 1.0.1 and keep a test for it. |
 | `widget.code_always` | Each widget has code that an agent writes. No widget is only data. The design has no CRUD descriptor kind. A to-do widget is a bundle with plain handlers. |
 | `widget.one_kind` | Each widget gets the same treatment, whatever Cordis features it uses. The design has no tiers of widgets, for isolation or for any other purpose. |
+| `widget.typed` | Agents write widget code in TypeScript. `widget_install` compiles it before the install, and a type check runs first. A linter before the install is proposed, not decided. |
 | `widget.isolation` | Crash-only host. The code of each widget runs in the host with full Cordis. On an uncaught error, the runtime blames a widget, writes a crash record, and the host exits. It does not resume. A watchdog thread kills a host that a CPU loop holds, and blames the running widget. Electron main restarts the host with backoff. The restarted host keeps the blamed widget off. After 2 crashes in 60 s, the host starts in safe mode with every agent widget off. After 4 crashes, Electron main shows the DSH fatal dialog. Evidence: `standing.checked.crash_only`. |
 | `widget.agent_code_v1` | In v1, agent code in the host has no guard: no approval, no lint, and no sandbox. Later iterations add the items in `standing.later`. |
 
