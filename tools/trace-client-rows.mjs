@@ -1,6 +1,6 @@
 import { Context } from '../vendor/cordis/lib/index.js'
 import Loader from '../vendor/loader/lib/index.js'
-import * as trace from '../deepwidgets/trace/index.js'
+import * as trace from '../deepwidgets/trace/lib/index.js'
 
 const wait = (ms) => new Promise((resolve) => { setTimeout(resolve, ms) })
 
@@ -109,7 +109,7 @@ try {
     statuses.push(response.status)
     return response
   }
-  await import('../deepwidgets/trace/client.js')
+  await import('../deepwidgets/trace/lib/client.js')
   if (loaded?.id !== '@deepwidgets/trace') finish('trace-client-rows: fail: no client module', 1)
 
   const ctx = new Context()

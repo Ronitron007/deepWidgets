@@ -557,6 +557,7 @@
     { "path": "./packages/host/open-in-app" },
     { "path": "./packages/host/plugin-inventory" },
     { "path": "./deepwidgets/probe/tsconfig.host.json" },
+    { "path": "./deepwidgets/trace/tsconfig.host.json" },
     { "path": "./packages/boot/plugin-manager" },
     { "path": "./packages/boot/plugin-market" },
     { "path": "./packages/llm/plugin-package-inventory-deepseek" },
