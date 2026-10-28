@@ -63,6 +63,7 @@ The operator made these decisions. They outrank every other document.
 | `widget.refresh_hook` | The shell runs its queries again with the public OpenUI hook `useTriggerAction`. Pin `react-lang` 1.0.1 and keep a test for it. |
 | `widget.code_always` | Each widget has code that an agent writes. No widget is only data. The design has no CRUD descriptor kind. A to-do widget is a bundle with plain handlers. |
 | `widget.one_kind` | Each widget gets the same treatment, whatever Cordis features it uses. The design has no tiers of widgets, for isolation or for any other purpose. |
+| `widget.isolation` | Crash-only host. The code of each widget runs in the host with full Cordis. On an uncaught error, the runtime blames a widget, writes a crash record, and the host exits. It does not resume. A watchdog thread kills a host that a CPU loop holds, and blames the running widget. Electron main restarts the host with backoff. The restarted host keeps the blamed widget off. After 2 crashes in 60 s, the host starts in safe mode with every agent widget off. After 4 crashes, Electron main shows the DSH fatal dialog. Evidence: `standing.checked.crash_only`. |
 | `widget.agent_code_v1` | In v1, agent code in the host has no guard: no approval, no lint, and no sandbox. Later iterations add the items in `standing.later`. |
 
 ## The design `standing.design`
@@ -182,7 +183,6 @@ These choices change what gets built. The widget spec waits for them.
 
 | Name | Question | Recommendation |
 |---|---|---|
-| `standing.waiting.isolation` | Where does the code of a widget run: in the host with a quarantine, in a worker thread for each widget, or in a process for each widget? | Spikes decide. The operator reopened this choice on 2026-10-28. Each option must treat every widget the same (`widget.one_kind`). |
 | `standing.waiting.renderer` | One process for each widget, or a shared renderer? | Separate by default. A shared renderer as a user setting. |
 | `standing.waiting.main_desktop_only` | A panel window cannot stay on one desktop. Drop the setting "main desktop only", or use a normal window for such a widget? | Operator call |
 | `standing.waiting.tailwind` | The shell uses Tailwind v4 to map shadcn onto the DSH color tokens. DSH rules forbid Tailwind in DSH client packages. Allow it in the shell only? | Yes, only in the shell |
@@ -205,16 +205,16 @@ The operator set these items for iterations after v1 on 2026-10-27.
 | Name | Problem | Best option now |
 |---|---|---|
 | `standing.hard.agent_code` | Code that an agent writes runs in the host with full Node rights. It can read files, call any server, and block every widget with a CPU loop. | v1 has no guard (`widget.agent_code_v1`). Later: the items in `standing.later`. |
-| `standing.hard.fail_loud` | The quarantine handler fixes most crashes. It can still swallow an error in host code that widget code called. A CPU loop is not isolated. | Open (`standing.waiting.isolation`). Spikes compare the options. Electron main restarts a dead host with backoff in each option. |
+| `standing.hard.fail_loud` | The quarantine handler fixes most crashes. It can still swallow an error in host code that widget code called. A CPU loop is not isolated. | Decided: `widget.isolation`, a crash-only host. Each crash stops every widget for about 2 s. |
 | `standing.hard.write_rate` | Each write rewrites one shared file. The limit is about 100 writes each second in total. | The sqlite backend: about 0.2 ms each write (`standing.checked.sqlite`). Or coalesce timer writes in the runtime (`standing.checked.coalesce`). |
 | `standing.hard.replace` | The DSH plugin manager refuses a second install of one name. Thus a safe replace of a package widget needs the new version under a second package name. | Install under a second name, let the runtime promote it, then remove the old package. Not built through the real plugin manager. |
-| `standing.hard.memory_only` | The `requestId` cache and the change log live in memory. A restart loses them. | Accept for v1, or store the change log in the `widgets` storage. |
+| `standing.hard.memory_only` | The `requestId` cache and the change log live in memory. A restart loses them. | Store the `requestId` cache in the `widgets` storage. Under `widget.isolation`, a crash makes a retried call run twice (`standing.checked.crash_only`). |
 | `standing.hard.port_squat` | On macOS, another process can bind `0.0.0.0` on our fixed port. An agent can then talk to the wrong server. | A server nonce in the port file that the agent checks |
 | `standing.hard.push_to_agent` | Agents do not see user changes until they ask. Claude Code and Codex drop pushed notifications (`standing.checked.mcp_push`). | `widget_changes`, plus a count of pending changes in each tool result |
 | `standing.hard.openui_internals` | The refresh uses an action plan shape that OpenUI does not export. | Pin `react-lang` 1.0.1 and keep a test that fails when it changes. |
 | `standing.hard.react18_shadcn` | The OpenUI shadcn example breaks on React 18. | Our own forked set with patched components |
 | `standing.hard.quit_hang` | After a renderer crash, window teardown before `app.exit` hung Electron main in about 5 of 12 runs. | Call `app.exit` with no teardown first (4 of 4 clean). Test the DSH quit path. |
-| `standing.hard.eventsource_stop` | A browser `EventSource` stops for good on an answer that is not 200. | The shell opens the stream again itself, with backoff. |
+| `standing.hard.eventsource_stop` | A browser `EventSource` stops for good on an answer that is not 200. | The shell opens the stream again itself, with backoff. While the host is down, the `dsh-app://` handler must answer `Response.error()`, not 503 (`standing.checked.crash_only`). |
 | `standing.hard.link_install` | A `link:` install breaks when the agent moves its folder (inferred). | Copy the package into a folder that the profile owns before the install. |
 
 ## Facts checked on 2026-10-27 `standing.checked`
@@ -235,6 +235,7 @@ Six agents checked the open facts on 2026-10-27. Each agent worked in its own de
 | `standing.checked.sleep` | Partly. The host recovers. A real sleep and a real window are not tested. | Verified with SIGSTOP and SIGCONT, not a real sleep (`profile`). A late `ctx.interval` fires once, with no burst. After a stop of more than 300 s, the undici body timeout stops the SSE streams. `EventSource` opens them again. A reader with no retry stays closed. A stopped client gets all frames at once on resume, so the shell must merge the refetches. |
 | `standing.checked.packaging` | No. The fork cannot build a packaged app since `1a59a4ec`. | Verified, ran on `main` (`packbuild`). The release packer does not pack the private `@deepwidgets/*` packages. A small fix packs them the same way as the private desktop host (`package-target.ts:495`). Nothing today needs a packaged build. |
 | `standing.checked.lockfile` | The lockfile on `rohan/widget-exploration` has no entry for `deepwidgets/widgets-standin`. | Verified (`msgport`, `profile`). `pnpm install --frozen-lockfile` adds the entry. `main` is not affected. |
+| `standing.checked.crash_only` | Yes. The crash-only host works in the real Electron app. | Verified, branch `rohan/spike-crash-only` at `19039136`, notes in the scratchpad folder `crash-only/`. Blame is right in all cases but one: a host timer first made during a widget call blames that widget. The watchdog kills a looping host in about 2 s at a 2 s threshold, with no false kills under load. At 500 ms, a 150 MB JSON parse caused a false kill. A window shows fresh data about 2.1 s after a widget crash. The blamed widget comes back off, the other widgets come back live, and safe mode works. Needed for the real build: `Response.error()` in the gap, a fast exit after the crash record (DSH fail-loud cleanup takes about 2.9 s on the desktop host), a stored `requestId` cache, and `@sentry/node-native-stacktrace` for loops in raw timers or after `await`. That addon has no Electron prebuild. The main DSH window reloads on each restart. |
 
 ## Things that nobody checked yet `standing.unchecked`
 
