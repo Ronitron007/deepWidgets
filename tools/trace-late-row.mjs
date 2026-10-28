@@ -1,6 +1,6 @@
 import { Context } from '../vendor/cordis/lib/index.js'
 import Loader from '../vendor/loader/lib/index.js'
-import * as trace from '../deepwidgets/trace/index.js'
+import * as trace from '../deepwidgets/trace/lib/index.js'
 
 const wait = (ms) => new Promise((resolve) => { setTimeout(resolve, ms) })
 
