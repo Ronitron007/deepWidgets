@@ -62,6 +62,7 @@ The architect checked each fact below at the base. If a fact is false, stop and 
 | The spike lockfile has the numstat `17 1 pnpm-lock.yaml`, one hunk, and the sha256 of `ts.probe.steps.install`. | verified (ran `git diff` and `shasum` in the spike worktree) |
 | `start:desktop` prepares the runtime at each start. Thus this task has no `prepare:primary-runtime` step. | verified (read `apps/desktop/scripts/dev.ts` line 123) |
 | No test file names `deepwidgets`. The seven test files of `ts.probe.steps.base` read the real root files of this task. | verified (ran `git grep`, read the `root` of each test). Inferred (read a sample) for the other matches, which write their own copies. |
+| The `json` reporter of Vitest 4.1.11 (the `pnpm-lock.yaml` version) writes `name`, the absolute file path, for each file. It writes `fullName` and `status` for each test. Each of the seven test files runs in one project of `vitest.config.ts`. Thus a file path and a full test name identify one test. | verified (read `vitest/dist/chunks/index.UpGiHP7g.js` lines 3513-3615, and `vitest.config.ts` lines 193-233). Verified (ran the `names` lines and the `lost-tests.txt` line on synthetic reports). |
 | To delete `index.js` and `client.js` is not a trim, because the code moves to `src/`. The two new reference lines comment out no line, thus they need no marker (`head.trim`). | verified (read `ts_move.layout` and `CLAUDE.md`) |
 
 ## Steps `ts.probe.steps`
@@ -74,8 +75,9 @@ Run these commands before you change a file.
 corepack pnpm install --frozen-lockfile > "$L/base-install.log" 2>&1 ; echo "base install exit=$?" | tee -a "$L/exits.txt"   # base install exit=0
 ls apps/desktop/node_modules/electron/dist > /dev/null ; echo "electron exit=$?" | tee -a "$L/exits.txt"                    # read the exit code
 corepack pnpm run build:artifacts > "$L/base-artifacts.log" 2>&1 ; echo "base artifacts exit=$?" | tee -a "$L/exits.txt"   # base artifacts exit=0
-corepack pnpm exec vitest run scripts/build.spec.ts scripts/client-tsconfig.spec.ts scripts/request-input-types.spec.ts scripts/oxlint-contract.spec.ts apps/desktop/tests/prepare-runtime-patches.spec.ts packages/subagent/subagent-claude-code/tests/subagent-claude-code.spec.ts packages/subagent/subagent-codex/tests/subagent-codex.spec.ts > "$L/base-tests.log" 2>&1 ; echo "base tests exit=$?" | tee -a "$L/exits.txt"   # record it
-grep -E '^ *(Test Files|Tests) ' "$L/base-tests.log" > "$T/base-tests.txt" ; wc -l < "$T/base-tests.txt" | tr -d ' '       # 2
+corepack pnpm exec vitest run scripts/build.spec.ts scripts/client-tsconfig.spec.ts scripts/request-input-types.spec.ts scripts/oxlint-contract.spec.ts apps/desktop/tests/prepare-runtime-patches.spec.ts packages/subagent/subagent-claude-code/tests/subagent-claude-code.spec.ts packages/subagent/subagent-codex/tests/subagent-codex.spec.ts --reporter=default --reporter=json --outputFile.json="$T/base-tests.json" > "$L/base-tests.log" 2>&1 ; echo "base tests exit=$?" | tee -a "$L/exits.txt"   # record it
+python3 -c 'import json, sys; r = json.load(open(sys.argv[1])); print("\n".join(sorted(a["status"] + " " + f["name"] + " > " + a["fullName"] for f in r["testResults"] for a in f["assertionResults"])))' "$T/base-tests.json" > "$T/base-tests.txt" ; echo "base names exit=$?" | tee -a "$L/exits.txt"   # base names exit=0
+grep -c '^passed ' "$T/base-tests.txt"                                                                      # record it
 ```
 
 | Condition | Action |
@@ -84,8 +86,8 @@ grep -E '^ *(Test Files|Tests) ' "$L/base-tests.log" > "$T/base-tests.txt" ; wc 
 | `electron exit` is not 0 | Run `node apps/desktop/node_modules/electron/install.js` once, before the build. Record that you used this fallback. Then run the `ls` line again. If its exit is not 0, stop. Do not try another fix. |
 | You used the fallback | Run the Git hook checks of `fork.baseline.steps.install` in `docs/tasks/fork-baseline.md` again. If a check does not give its expected output, stop. |
 | `base artifacts exit` is not 0 | Stop. The base does not build. |
-| `base tests exit` is not 0 | Do not stop. The head must give the same two lines (`ts.probe.check`). |
-| The line count is not `2` | Stop, and report the last 40 lines of `base-tests.log`. |
+| `base tests exit` is not 0 | Do not stop. Each test that passed on the base must pass on the head (`ts.probe.check`). |
+| `base names exit` is not 0, or the `passed` count is `0` | Stop, and report the last 40 lines of `base-tests.log`. |
 
 ### Write the probe files `ts.probe.steps.files`
 
@@ -355,13 +357,14 @@ corepack pnpm run typecheck > "$L/typecheck.log" 2>&1 ; echo "typecheck exit=$?"
 grep -c 'run-gates: 5 passed, 0 failed' "$L/typecheck.log"                                                                              # 1
 corepack pnpm run constraints > "$L/constraints.log" 2>&1 ; echo "constraints exit=$?" | tee -a "$L/exits.txt"                            # constraints exit=0
 corepack pnpm run verify-tsconfig-paths > "$L/paths.log" 2>&1 ; echo "paths exit=$?" | tee -a "$L/exits.txt"                              # paths exit=0
-corepack pnpm exec vitest run scripts/build.spec.ts scripts/client-tsconfig.spec.ts scripts/request-input-types.spec.ts scripts/oxlint-contract.spec.ts apps/desktop/tests/prepare-runtime-patches.spec.ts packages/subagent/subagent-claude-code/tests/subagent-claude-code.spec.ts packages/subagent/subagent-codex/tests/subagent-codex.spec.ts > "$L/tests.log" 2>&1 ; echo "tests exit=$?" | tee -a "$L/exits.txt"   # the same exit as base tests exit
-grep -E '^ *(Test Files|Tests) ' "$L/tests.log" | diff "$T/base-tests.txt" - ; echo "tests diff exit=$?" | tee -a "$L/exits.txt"          # tests diff exit=0
+corepack pnpm exec vitest run scripts/build.spec.ts scripts/client-tsconfig.spec.ts scripts/request-input-types.spec.ts scripts/oxlint-contract.spec.ts apps/desktop/tests/prepare-runtime-patches.spec.ts packages/subagent/subagent-claude-code/tests/subagent-claude-code.spec.ts packages/subagent/subagent-codex/tests/subagent-codex.spec.ts --reporter=default --reporter=json --outputFile.json="$T/tests.json" > "$L/tests.log" 2>&1 ; echo "tests exit=$?" | tee -a "$L/exits.txt"   # the same exit as base tests exit
+python3 -c 'import json, sys; r = json.load(open(sys.argv[1])); print("\n".join(sorted(a["status"] + " " + f["name"] + " > " + a["fullName"] for f in r["testResults"] for a in f["assertionResults"])))' "$T/tests.json" > "$T/tests.txt" ; echo "names exit=$?" | tee -a "$L/exits.txt"   # names exit=0
+grep '^passed ' "$T/base-tests.txt" | grep -Fvx -f "$T/tests.txt" > "$T/lost-tests.txt" ; wc -l < "$T/lost-tests.txt" | tr -d ' '          # 0
 git diff --exit-code "$BASE" -- deepwidgets/probe/cordis.patch.yml deepwidgets/trace deepwidgets/trim ; echo "keep exit=$?" | tee -a "$L/exits.txt"   # keep exit=0
 git grep -c deepwidgets-trim -- tsdown.config.ts                                                                                       # tsdown.config.ts:1
 ```
 
-The `grep -h` line must print seven lines, in this order: `smoke-desktop: pass` five times, then `trace-late-row: pass` and `trace-client-rows: pass`. The install and build lines of `head.commands` ran in `ts.probe.steps`. The line `corepack pnpm run start:desktop` is not a check, because it runs the app until you quit it. The `keep` line covers each file that `ts_move.keep` names. If a check does not give its expected output, use `tasks.protocol.stop`.
+The `grep -h` line must print seven lines, in this order: `smoke-desktop: pass` five times, then `trace-late-row: pass` and `trace-client-rows: pass`. The install and build lines of `head.commands` ran in `ts.probe.steps`. The line `corepack pnpm run start:desktop` is not a check, because it runs the app until you quit it. The `keep` line covers each file that `ts_move.keep` names. If the `lost-tests.txt` count is not `0`, stop, and report each test in that file with its failure text. If a check does not give its expected output, use `tasks.protocol.stop`.
 
 ## Findings to record `ts.probe.findings`
 
@@ -371,7 +374,7 @@ Put these items in the `Findings` section of the PR body. Write "unknown" when y
 |---|---|
 | Node version, and the use of the Electron fallback | `node --version`, `ts.probe.steps.base` |
 | The time of the install and of each build command | your shell |
-| The base test lines and `base tests exit` | `$T/base-tests.txt`, `$L/exits.txt` |
+| Each base test that did not pass, and `base tests exit` | `grep -v '^passed ' "$T/base-tests.txt"`, `$L/exits.txt` |
 | The smoke log folder of the probe test | `ls -td "$TMPDIR"/deepwidgets-smoke-desktop-* \| head -1`, directly after that run |
 | Each case of `handoff2.reviewer.failure_cases` in `handoff-ts-trim.md` that the change can cause | your review of the diff |
 | One line for `tasks.protocol.look_before_you_build` | This task uses the reviewed spike files and the DSH build. It adds no package. |
