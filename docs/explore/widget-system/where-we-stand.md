@@ -62,6 +62,7 @@ The operator made these decisions. They outrank every other document.
 | `widget.program_delivery` | The host stores the program. The package file seeds it. Routes: `GET program`, `POST call`, `GET stream` under `/api/widgets/<slug>/`. |
 | `widget.refresh_hook` | The shell runs its queries again with the public OpenUI hook `useTriggerAction`. Pin `react-lang` 1.0.1 and keep a test for it. |
 | `widget.code_always` | Each widget has code that an agent writes. No widget is only data. The design has no CRUD descriptor kind. A to-do widget is a bundle with plain handlers. |
+| `widget.one_kind` | Each widget gets the same treatment, whatever Cordis features it uses. The design has no tiers of widgets, for isolation or for any other purpose. |
 | `widget.agent_code_v1` | In v1, agent code in the host has no guard: no approval, no lint, and no sandbox. Later iterations add the items in `standing.later`. |
 
 ## The design `standing.design`
@@ -181,7 +182,7 @@ These choices change what gets built. The widget spec waits for them.
 
 | Name | Question | Recommendation |
 |---|---|---|
-| `standing.waiting.isolation` | Where does the code of a widget run: in the host with a quarantine, in a worker thread for each widget, or in a process for each widget? | Spikes decide. The operator reopened this choice on 2026-10-28. The memory overhead is measured first. |
+| `standing.waiting.isolation` | Where does the code of a widget run: in the host with a quarantine, in a worker thread for each widget, or in a process for each widget? | Spikes decide. The operator reopened this choice on 2026-10-28. Each option must treat every widget the same (`widget.one_kind`). |
 | `standing.waiting.renderer` | One process for each widget, or a shared renderer? | Separate by default. A shared renderer as a user setting. |
 | `standing.waiting.main_desktop_only` | A panel window cannot stay on one desktop. Drop the setting "main desktop only", or use a normal window for such a widget? | Operator call |
 | `standing.waiting.tailwind` | The shell uses Tailwind v4 to map shadcn onto the DSH color tokens. DSH rules forbid Tailwind in DSH client packages. Allow it in the shell only? | Yes, only in the shell |
