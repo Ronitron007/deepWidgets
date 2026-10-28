@@ -1,7 +1,7 @@
 packages:
   - vendor/*
   - packages/*/*
-  # deepWidgets-owned plain-JS packages, outside the DSH TypeScript build globs.
+  # deepWidgets-owned packages. A package with its own tsdown.config.ts joins the DSH TypeScript build (spec ts_move).
   - deepwidgets/*
   # The Landlock launcher is developed with its harness consumers but keeps
   # its native build and publication scripts under native/system.
