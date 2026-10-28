@@ -63,7 +63,6 @@ The operator made these decisions. They outrank every other document.
 | `widget.refresh_hook` | The shell runs its queries again with the public OpenUI hook `useTriggerAction`. Pin `react-lang` 1.0.1 and keep a test for it. |
 | `widget.code_always` | Each widget has code that an agent writes. No widget is only data. The design has no CRUD descriptor kind. A to-do widget is a bundle with plain handlers. |
 | `widget.agent_code_v1` | In v1, agent code in the host has no guard: no approval, no lint, and no sandbox. Later iterations add the items in `standing.later`. |
-| `widget.isolation` | The code of each widget runs in its own worker thread. Host services reach the worker through RPC proxies. The host stops a worker on a crash, a CPU loop, or a memory limit. Electron main restarts a dead host with backoff. After repeated crashes, it starts the host in safe mode with no agent widgets. |
 
 ## The design `standing.design`
 
@@ -75,7 +74,7 @@ The overnight run found the smallest set that works: four packages, and one bund
 | `@deepwidgets/mcp` | host | The MCP server, the token handshake, and the creation kit: skill text, templates, and the guide. |
 | `@deepwidgets/shell` | widget window | The pinned page. It renders a program with the component set `shadcn-widgets@1`. |
 | `@deepwidgets/windows` | host and Electron main | The window manager. The host half decides. The Electron main half obeys. |
-| `widget-<slug>` | host | One bundle for each widget. An agent writes its code. The code runs in its own worker thread (`widget.isolation`). |
+| `widget-<slug>` | host | One bundle for each widget. An agent writes its code. |
 
 ```
                      ┌──────────── host process (one Cordis Context) ────────────┐
@@ -182,6 +181,7 @@ These choices change what gets built. The widget spec waits for them.
 
 | Name | Question | Recommendation |
 |---|---|---|
+| `standing.waiting.isolation` | Where does the code of a widget run: in the host with a quarantine, in a worker thread for each widget, or in a process for each widget? | Spikes decide. The operator reopened this choice on 2026-10-28. The memory overhead is measured first. |
 | `standing.waiting.renderer` | One process for each widget, or a shared renderer? | Separate by default. A shared renderer as a user setting. |
 | `standing.waiting.main_desktop_only` | A panel window cannot stay on one desktop. Drop the setting "main desktop only", or use a normal window for such a widget? | Operator call |
 | `standing.waiting.tailwind` | The shell uses Tailwind v4 to map shadcn onto the DSH color tokens. DSH rules forbid Tailwind in DSH client packages. Allow it in the shell only? | Yes, only in the shell |
@@ -203,8 +203,8 @@ The operator set these items for iterations after v1 on 2026-10-27.
 
 | Name | Problem | Best option now |
 |---|---|---|
-| `standing.hard.agent_code` | Code that an agent writes runs in the host with full Node rights. It can read files, call any server, and block every widget with a CPU loop. | v1 has no guard (`widget.agent_code_v1`). The worker thread of `widget.isolation` contains crashes, loops, and memory, but the code in it still has full Node rights. Later: the items in `standing.later`. |
-| `standing.hard.fail_loud` | The quarantine handler fixes most crashes. It can still swallow an error in host code that widget code called. A CPU loop is not isolated. | Decided: `widget.isolation`, one worker thread for each widget, plus host restart with backoff and safe mode. |
+| `standing.hard.agent_code` | Code that an agent writes runs in the host with full Node rights. It can read files, call any server, and block every widget with a CPU loop. | v1 has no guard (`widget.agent_code_v1`). Later: the items in `standing.later`. |
+| `standing.hard.fail_loud` | The quarantine handler fixes most crashes. It can still swallow an error in host code that widget code called. A CPU loop is not isolated. | Open (`standing.waiting.isolation`). Spikes compare the options. Electron main restarts a dead host with backoff in each option. |
 | `standing.hard.write_rate` | Each write rewrites one shared file. The limit is about 100 writes each second in total. | The sqlite backend: about 0.2 ms each write (`standing.checked.sqlite`). Or coalesce timer writes in the runtime (`standing.checked.coalesce`). |
 | `standing.hard.replace` | The DSH plugin manager refuses a second install of one name. Thus a safe replace of a package widget needs the new version under a second package name. | Install under a second name, let the runtime promote it, then remove the old package. Not built through the real plugin manager. |
 | `standing.hard.memory_only` | The `requestId` cache and the change log live in memory. A restart loses them. | Accept for v1, or store the change log in the `widgets` storage. |
