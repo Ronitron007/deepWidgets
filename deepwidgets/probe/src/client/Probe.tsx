@@ -6,10 +6,10 @@ import type { ReactElement } from 'react'
 export function Probe(): ReactElement {
   const [text, setText] = useState('probe pending')
   useEffect(() => {
-    fetch('api/probe')
+    void fetch('api/probe')
       .then(async (response) => {
         if (!response.ok) return `probe error ${String(response.status)}`
-        const body: { pid: number } = await response.json()
+        const body = (await response.json()) as { pid: number }
         return `probe pid ${String(body.pid)}`
       })
       .catch((error: unknown) => `probe error ${error instanceof Error ? error.message : 'fetch failed'}`)
