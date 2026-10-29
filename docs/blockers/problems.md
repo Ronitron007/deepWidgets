@@ -1,6 +1,6 @@
 # Open problems `blockers.problems`
 
-These problems do not block a unit. Each row gives the problem and the work that solves it. The source is the follow-up list of each handoff (`records.md`), unless the row names a different source. Nobody checked each item again against `96c77067`.
+These problems do not block a unit. Each row gives the problem and the work that solves it. The source is the follow-up list of each handoff (`records.md`), unless the row names a different source. Nobody checked each item again against `68ada597`.
 
 ## Problems outside the units `blockers.problems.pre_existing`
 
@@ -10,7 +10,7 @@ These problems do not block a unit. Each row gives the problem and the work that
 | `dev.restore_dialog` | The macOS crash-history restore dialog stops the Harness Dev app before it is ready. A smoke kill causes the dialog again. Each worktree bundle needs `defaults write ... ApplePersistenceIgnoreState -bool YES` as a workaround. | Add the launcher argument `-ApplePersistenceIgnoreState YES` to the desktop develop script, in a unit of its own. |
 | `test.desktop_publish_workflow` | The full desktop vitest suite fails at the base and at the head, because `.github/workflows/desktop-publish.yml` does not exist in the fork. | Decide to add the workflow file or to turn off the test in the fork. |
 | `test.login_shell_abort_timing` | The abort test in `apps/desktop/tests/login-shell-environment.spec.ts:179` fails when the login shell is slow, for example under machine load. | Give the test a longer wait, or run the suite under less load. |
-| `lint.coverage_gap` | Lint applies no rule to `deepwidgets/` or `tools/*.mjs`. The unit `ts.lint` covers only `deepwidgets/*/src`. | Finish `ts.lint`. Then decide about `tools/*.mjs`. |
+| `lint.coverage_gap` | Lint covers `deepwidgets/*/src` after `ts.lint`. It still applies no rule to `tools/*.mjs`. | Decide about `tools/*.mjs`. |
 | `build.packaged_deepwidgets` | The packaged desktop build does not include the `@deepwidgets/*` packages. The step `prepare:packages` most likely stops with an error. An investigator inferred this from the code. Nobody ran a packaging build. | If the fork must ship a packaged app, write a unit for packaging. Source: `RESEARCH/DEEPWIDGETS_PREEXISTING_LINT_PACKAGED_20261028.md` in the Buzz workspace. |
 | `smoke.temp_dirs` | Each smoke run leaves its temp folder. The folders used about 318 MB on 2026-10-25. Source: the lead ledger of `handoff`. | Remove the temp folder at the end of each smoke run. |
 | `design.ts.lint.self_wake_evidence` | Nobody knows if a Crusoe message that mentions Crusoe starts a new Crusoe turn. The spike read strings in a binary file, and that does not prove the runtime behavior. The lean flow needs this, because Crusoe goes from one build part to the next with no lead message. | Test it once with a real message. |
@@ -30,6 +30,7 @@ These items change no product behavior. A task author or a reviewer can fix them
 | `review.trim.profile.report_counts` | `trim.profile` | The PR body says 9 pending rows and a count of 196. The snapshot has 8 pending rows, and the task says 197. |
 | `review.trim.profile.settle_budget` | `trim.profile` | The ablation used a smoke timeout of 240000 ms, not 120000 ms. The lead accepted it. Write the real budget into the task. |
 | `review.trim_startup.appframe_description` (nit) | `trim.startup` | The layout module description still names `AppFrame`. |
+| `review.ts_lint.public_value_count` | `ts.lint` | Document that artifacts report 3 public values on a dirty tree and 2 on a clean tree. |
 
 ## Ideas `blockers.problems.ideas`
 

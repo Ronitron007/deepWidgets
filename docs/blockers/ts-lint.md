@@ -1,4 +1,4 @@
-# Blocker of `ts.lint` `blockers.ts_lint`
+# Record of `ts.lint` `blockers.ts_lint`
 
 The unit `ts.lint` adds the glob `"deepwidgets/*/src/**/*.{ts,tsx}"` to the two source override blocks of `.oxlintrc.json`. Then it fixes each lint error in the probe and trace source, with no change to behavior. The plan row `ts.lint` in `docs/plans/ts-move.md` and the spec section `ts_move.lint` give the scope.
 
@@ -10,9 +10,9 @@ The unit `ts.lint` adds the glob `"deepwidgets/*/src/**/*.{ts,tsx}"` to the two 
 | Spike | Done on `96c77067`. The lint found 19 errors in 7 rules. |
 | Design round 1 | `json_behavior` fixed. The lead added the rule `brief.ts_lint.change.erased`. |
 | Design round 2 | `emit_gate` fixed. `executable_task` narrowed to three records. |
-| Build, smoke, PR | Not started. |
-
-The spike worktree `.worktrees/rohan-spike-ts-lint` is at `96c77067`, with the patch applied and no commit. The dry-run worktree `.worktrees/rohan-ts-lint` is also at `96c77067`, with no commit. Source: the round 2 message of Crusoe and the review of Codeine.
+| Design round 3 | `executable_task` fixed. Codeine opened the design gate. |
+| Build, smoke, PR | Done. Code PR [Ronitron007/deepWidgets#42](https://github.com/Ronitron007/deepWidgets/pull/42) merged at `68ada597` (head `9b1a405f`). |
+| Open blocker | None. |
 
 ## Lint errors of the spike `blockers.ts_lint.errors`
 
@@ -40,35 +40,27 @@ A lint fix can change behavior when it removes a guard that the types call unnec
 
 The check `emit_diff` proves the rule. It compares the `.js` files of the base build and the head build with a saved expected diff. Any other difference makes it fail.
 
-## Open blocker `blockers.ts_lint.executable_task`
+## Closed blocker `blockers.ts_lint.executable_task`
 
-Codeine found this in `loop.design_verify` round 2. The task draft gives no correct expected last line for three records:
+Codeine found this in `loop.design_verify` round 2. The task draft gave no correct expected last line for three records (`component`, `sums`, `constraints`). Design round 3 fixed the lines. Codeine verified them. The blocker is closed.
 
-- `component`. The real last line is `]`. The draft shows `... "match": true ...`.
-
-- `sums`. The draft gives no last line.
-
-- `constraints`. The draft gives no last line.
-
-A worker who compares each last line cannot finish these records. The fix is small, but the unit used its two design rounds. Thus `handoff2.stop` sends it to the operator.
-
-## What must be solved `blockers.ts_lint.next`
+## What was solved `blockers.ts_lint.next`
 
 1. Done on 2026-10-29. The operator says that `ts.lint` runs.
 
 2. Done on 2026-10-29. The operator permits a third design round for the three lines.
 
-3. Crusoe fixes the three expected last lines.
+3. Done. Crusoe fixed the three expected last lines.
 
-4. Codeine does `loop.design_verify` round 3.
+4. Done. Codeine did `loop.design_verify` round 3. The design gate opened.
 
-5. Crusoe opens the docs PR of the task file and merges it with a merge commit.
+5. Done. Crusoe opened the docs PR of the task file and merged it ([Ronitron007/deepWidgets#41](https://github.com/Ronitron007/deepWidgets/pull/41), `f4fa60ef`).
 
-6. Crusoe does `loop.build`. Only one smoke run can run on the machine at a time.
+6. Done. Crusoe did `loop.build`. PR head `9b1a405f`.
 
-7. Codeine does `loop.review`, with the full desktop vitest suite on the base and then on the head.
+7. Done. Codeine did `loop.review` (issuecomment-6496975576). No code blocker.
 
-8. Otter merges the code PR and writes `handoff2.report`.
+8. Done. Otter merged the code PR ([Ronitron007/deepWidgets#42](https://github.com/Ronitron007/deepWidgets/pull/42), `68ada597`). Otter writes `handoff2.report` next.
 
 ## Evidence `blockers.ts_lint.evidence`
 
@@ -89,3 +81,7 @@ The source folders are in the Buzz workspace:
 - `RESEARCH/DEEPWIDGETS_TS_LINT_DESIGN_VERIFY_R1_20261028/` (verify round 1)
 
 - `RESEARCH/DEEPWIDGETS_TS_LINT_DESIGN_VERIFY_R2_20261028/` (verify round 2)
+
+- `RESEARCH/DEEPWIDGETS_TS_LINT_DESIGN_VERIFY_R3_20261029/` (verify round 3)
+
+- `RESEARCH/DEEPWIDGETS_TS_LINT_CODE_REVIEW_20261029/` (code review)
