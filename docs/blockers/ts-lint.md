@@ -6,7 +6,7 @@ The unit `ts.lint` adds the glob `"deepwidgets/*/src/**/*.{ts,tsx}"` to the two 
 
 | Item | State |
 |---|---|
-| Run decision | Open. `ts_move.lint` gives it to the operator. |
+| Run decision | Yes. The operator decided on 2026-10-29 that `ts.lint` runs. The operator also permitted the third design round. |
 | Spike | Done on `96c77067`. The lint found 19 errors in 7 rules. |
 | Design round 1 | `json_behavior` fixed. The lead added the rule `brief.ts_lint.change.erased`. |
 | Design round 2 | `emit_gate` fixed. `executable_task` narrowed to three records. |
@@ -54,9 +54,9 @@ A worker who compares each last line cannot finish these records. The fix is sma
 
 ## What must be solved `blockers.ts_lint.next`
 
-1. The operator says if `ts.lint` runs. If no, drop the unit, and Otter writes `handoff2.report`.
+1. Done on 2026-10-29. The operator says that `ts.lint` runs.
 
-2. If yes, the operator permits a third design round for the three lines.
+2. Done on 2026-10-29. The operator permits a third design round for the three lines.
 
 3. Crusoe fixes the three expected last lines.
 
