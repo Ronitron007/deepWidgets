@@ -35,6 +35,7 @@
       // Shared strict type-aware rules. Source/test differences stay in the short overrides below.
       "files": [
         "packages/*/*/src/**/*.{ts,tsx}",
+        "deepwidgets/*/src/**/*.{ts,tsx}",
         "packages/*/*/tests/**/*.{ts,tsx}",
         "apps/*/src/**/*.{ts,tsx}",
         "apps/*/tests/**/*.{ts,tsx}",
@@ -152,6 +153,7 @@
     {
       "files": [
         "packages/*/*/src/**/*.{ts,tsx}",
+        "deepwidgets/*/src/**/*.{ts,tsx}",
         "apps/*/src/**/*.{ts,tsx}",
         "examples/**/*.{ts,tsx}",
         "scripts/**/*.{ts,tsx}",

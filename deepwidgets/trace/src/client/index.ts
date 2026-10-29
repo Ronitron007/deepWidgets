@@ -1,5 +1,5 @@
 /** Client half of the trace: it sends the rows and services of one window to `POST api/trace`. */
-import type { Context, Fiber } from '@deepseek-ai/cordis'
+import type { Context, Fiber, FiberState } from '@deepseek-ai/cordis'
 import type { Entry } from '@deepseek-ai/cordis-plugin-loader'
 
 /** Fields of one new client message. */
@@ -46,8 +46,8 @@ export function apply(ctx: Context): void {
   }
 
   function pluginDetail(entry: Entry, fiber: Fiber): string {
-    const name = entry.options.name ?? ''
-    if (fiber.state !== 0) return name
+    const name = (entry.options.name as unknown as string | undefined) ?? ''
+    if (fiber.state !== (0 as FiberState.PENDING)) return name
     const missing = Object.keys(fiber.inject).filter((service) => fiber.ctx.get(service) === undefined).sort()
     if (missing.length === 0) return name
     return `${name} waits for ${missing.join(',')}`
@@ -63,7 +63,7 @@ export function apply(ctx: Context): void {
       body: JSON.stringify(batch),
     }).then((response) => {
       if (!stopped && !response.ok) ctx.logger.warn(`deepwidgets-trace: POST api/trace answered ${response.status}`)
-    }, (error) => {
+    }, (error: unknown) => {
       if (!stopped) ctx.logger.warn('deepwidgets-trace: POST api/trace failed', error)
     }).finally(() => {
       sending = false
@@ -86,7 +86,7 @@ export function apply(ctx: Context): void {
     queueMicrotask(sendLater)
   }
 
-  function addPlugin(entry: Entry, fiber: Fiber, snapshot: boolean): void {
+  function addPlugin(entry: Entry, fiber: Fiber, snapshot: boolean | undefined): void {
     const name = rowKey(entry)
     if (typeof name !== 'string' || name === '') return
     addMessage({
@@ -99,7 +99,7 @@ export function apply(ctx: Context): void {
     seen.add(fiber)
   }
 
-  function addService(name: string, state: string, snapshot: boolean): void {
+  function addService(name: string, state: string, snapshot: boolean | undefined): void {
     addMessage({ kind: 'service', name, state, snapshot: snapshot === true })
   }
 
@@ -132,7 +132,7 @@ export function apply(ctx: Context): void {
   ctx.on('internal/status', (fiber) => {
     try {
       if (fiber.entry === undefined) return
-      if (fiber.parent?.fiber?.entry === fiber.entry) return
+      if ((fiber as { parent?: { fiber?: { entry?: Entry } } }).parent?.fiber?.entry === fiber.entry) return
       if (fiber.entry.options.name === 'cordis:include') return
       addPlugin(fiber.entry, fiber, false)
     } catch (error) {
@@ -152,7 +152,7 @@ export function apply(ctx: Context): void {
     }
   })
 
-  ctx.loader.await().then(() => {
+  void ctx.loader.await().then(() => {
     try {
       if (stopped) return
       rescan()

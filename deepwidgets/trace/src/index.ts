@@ -1,6 +1,6 @@
 /** Host half of the trace: it keeps the trace messages and serves them on `/api/trace` and `/trace`. */
 import { readFileSync } from 'node:fs'
-import type { Context, Fiber } from '@deepseek-ai/cordis'
+import type { Context, Fiber, FiberState } from '@deepseek-ai/cordis'
 import type { Entry } from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-host-webserver'
@@ -73,8 +73,8 @@ export function apply(ctx: Context): void {
   }
 
   function pluginDetail(entry: Entry, fiber: Fiber): string {
-    const name = entry.options.name ?? ''
-    if (fiber.state !== 0) return name
+    const name = (entry.options.name as unknown as string | undefined) ?? ''
+    if (fiber.state !== (0 as FiberState.PENDING)) return name
     const missing = Object.keys(fiber.inject).filter((service) => fiber.ctx.get(service) === undefined).sort()
     if (missing.length === 0) return name
     return `${name} waits for ${missing.join(',')}`
@@ -98,7 +98,7 @@ export function apply(ctx: Context): void {
     return message
   }
 
-  function addPlugin(entry: Entry, fiber: Fiber, snapshot: boolean): void {
+  function addPlugin(entry: Entry, fiber: Fiber, snapshot: boolean | undefined): void {
     addMessage({
       time: Date.now(),
       process: 'host',
@@ -111,7 +111,7 @@ export function apply(ctx: Context): void {
     seen.add(fiber)
   }
 
-  function addService(name: string, state: string, snapshot: boolean): void {
+  function addService(name: string, state: string, snapshot: boolean | undefined): void {
     addMessage({
       time: Date.now(),
       process: 'host',
@@ -147,7 +147,7 @@ export function apply(ctx: Context): void {
   ctx.on('internal/status', (fiber) => {
     try {
       if (fiber.entry === undefined) return
-      if (fiber.parent?.fiber?.entry === fiber.entry) return
+      if ((fiber as { parent?: { fiber?: { entry?: Entry } } }).parent?.fiber?.entry === fiber.entry) return
       if (fiber.entry.options.name === 'cordis:include') return
       addPlugin(fiber.entry, fiber, false)
     } catch (error) {
@@ -167,7 +167,7 @@ export function apply(ctx: Context): void {
     }
   })
 
-  ctx.loader.await().then(() => {
+  void ctx.loader.await().then(() => {
     try {
       if (stopped) return
       rescan()
@@ -289,7 +289,7 @@ export function apply(ctx: Context): void {
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: '/trace',
-    resource: async () => new Response(PAGE, { headers: { 'content-type': 'text/html; charset=utf-8' } }),
+    resource: () => Promise.resolve(new Response(PAGE, { headers: { 'content-type': 'text/html; charset=utf-8' } })),
   }), 'deepwidgets-trace: GET /trace')
 
   ctx.effect(() => () => {

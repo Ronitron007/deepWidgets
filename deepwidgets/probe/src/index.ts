@@ -13,6 +13,6 @@ export function apply(ctx: Context): void {
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: '/api/probe',
-    resource: async () => Response.json({ ok: true, pid: process.pid }),
+    resource: () => Promise.resolve(Response.json({ ok: true, pid: process.pid })),
   }), 'deepwidgets-probe: GET /api/probe')
 }
