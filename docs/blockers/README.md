@@ -33,8 +33,7 @@ The PR [Ronitron007/deepWidgets#29](https://github.com/Ronitron007/deepWidgets/p
 
 | Blocker | Unit | What blocks | What must be solved | Who |
 |---|---|---|---|---|
-| `ts.lint.run_decision` | `ts.lint` | The spec section `ts_move.lint` gives the run decision to the operator. The operator did not answer yet. | The operator says yes or no. If no, the plan drops `ts.lint`. | operator |
-| `design.ts.lint.executable_task` | `ts.lint` | The task draft gives no correct expected last line for three records. The unit used its two design rounds (`handoff2.stop`). | The operator allows a third design round. Crusoe fixes the three lines. Codeine verifies them. | operator, then Crusoe and Codeine |
+| `design.ts.lint.executable_task` | `ts.lint` | The task draft gives no correct expected last line for three records. The unit used its two design rounds (`handoff2.stop`). | The operator allowed a third design round on 2026-10-29. Crusoe fixes the three lines. Codeine verifies them. | Crusoe and Codeine |
 | `handoff2.report` | `handoff2` | The final report waits for the end or the drop of `ts.lint`. | Otter writes the report. | Otter |
 
 ## Open problems that do not block `blockers.problems`
