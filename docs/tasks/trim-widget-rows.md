@@ -4,7 +4,7 @@ Read `docs/tasks/README.md` first. It holds the rules for every task.
 
 ## Goal `trim.widget_rows.goal`
 
-Turn the Cordis rows `hmr` and `timer` on again, and add a live install check. The design is `fork_trim.widget_rows.design` in `docs/specs/fork-trim.md`. The plan row is `trim.widget_rows` in `docs/plans/fork-trim.md`. The handoff is `handoff3` in `docs/handoffs/trim-widget-rows.md`. The unit is complete when each item of `fork_trim.widget_rows.proof` has a good record. The points in `fork_trim.widget_rows.open` stay out of this task.
+Turn the Cordis rows `hmr` and `timer` on again, and add a live install check. The design decisions are `widget_rows` in `docs/specs/widget-rows.md`. The unit row is `widget_rows.unit` in the same file. The unit is complete when each item of `widget_rows.proof` has a good record. The points in `widget_rows.open` stay out of this task.
 
 | Term | Meaning |
 |---|---|
@@ -16,7 +16,7 @@ Turn the Cordis rows `hmr` and `timer` on again, and add a live install check. T
 
 ## Check form `trim.widget_rows.check_form`
 
-This task decides `fork_trim.widget_rows.open.check_form`. The install check uses form A of the spike:
+This task decides `widget_rows.open.check_form`. The install check uses form A of the spike:
 
 - `tools/smoke-desktop.mjs` gets the flag `DSH_SMOKE_INSTALL`. The new function `withHostLoader` holds the `Loader` lookup of `readHostSnapshot`. The new function `checkInstall` uses it to call `installBundle` over the host inspector.
 
@@ -53,11 +53,11 @@ The comment after a command gives its expected record. When the comment has no t
 
 ## Read first `trim.widget_rows.read`
 
-Read `fork_trim.widget_rows` in the spec, `handoff3.decisions`, and `handoff3.stop`. Read `readHostSnapshot` in `tools/smoke-desktop.mjs`. The architect checked each fact below. If a fact is false, stop and report.
+Read `docs/specs/widget-rows.md`, with `widget_rows.decisions` and `widget_rows.stop`. Read `readHostSnapshot` in `tools/smoke-desktop.mjs`. The architect checked each fact below. If a fact is false, stop and report.
 
 | Fact | Evidence |
 |---|---|
-| The `files` script of `trim.widget_rows.steps.files` writes the six files of the spike, with two parts removed. These parts are the `DSH_SMOKE_INSTALL_EXPECT` branch and the comment "Spike fixture". On a copy of the base, `git diff` then has the sha256 `3d6378cfe0e0b014d65fc943089b09156d228f2879e4d872d6ad89386612e5ea`. This diff is the reviewed spike diff `b24b58f89d92f554d89c475fc839d2327857fb858b805b1d3efb6152cc6152a8` without the two parts. | verified (ran the script, `shasum -c`, `git diff`, and `diff` with the spike patch) |
+| The `files` script of `trim.widget_rows.steps.files` writes the six files of the spike, with two parts removed. These parts are the `DSH_SMOKE_INSTALL_EXPECT` branch and the comment "Spike fixture". On a copy of the base, `git add -N .` and then `git diff` give the sha256 `04547e7bde8f97cfeca40c741e472a2b8594416e1efe44ac4825e2d16e98b269`. This diff is the reviewed spike diff `b24b58f89d92f554d89c475fc839d2327857fb858b805b1d3efb6152cc6152a8` without the two parts, and with the marker text `widget_rows` in place of `fork_trim.widget_rows`. | verified (ran the script on a copy of `8f7324bb`. The script before the rename gives the old sha256 `3d6378cf…`, and the new script differs only in the two marker files.) |
 | The spike base `f4fa60ef` differs from `8319ffe3` only in the `ts.lint` files and `docs/`. The spike patch applies to `8319ffe3`. | verified (ran `git diff --name-only` and `git apply --check`) |
 | The plugin manager returns `applied` only when the service `hmr` exists. Otherwise it returns `restart-required` with `no-hmr`. | verified (read `packages/boot/plugin-manager/src/index.ts` line 1221) |
 | The base row `timer` has no condition. The base row `hmr` loads only when `profileContext` exists, with `root: []`. | verified (read `packages/bundle/base/cordis.patch.yml` lines 24-32) |
@@ -112,15 +112,15 @@ The spike did not run this block. The expected lines of `node`, `pnpm`, `base_in
 
 ### Write the files `trim.widget_rows.steps.files`
 
-Start `trim.widget_rows.part.change` here. The `files` script changes three files and writes the three fixture files. Each `edit` replaces one text that occurs exactly once, and each new text is literal. The script follows `fork_trim.widget_rows.design`:
+Start `trim.widget_rows.part.change` here. The `files` script changes three files and writes the three fixture files. Each `edit` replaces one text that occurs exactly once, and each new text is literal. The script follows `widget_rows.design`:
 
-- It comments out the entries `id: hmr` and `id: timer` at the end of `deepwidgets/trim/cordis.patch.yml`, with the marker line `# deepwidgets-trim: on again for the widget system (fork_trim.widget_rows)`. It deletes no entry. It adds no config, so the DSH base config stays.
+- It comments out the entries `id: hmr` and `id: timer` at the end of `deepwidgets/trim/cordis.patch.yml`, with the marker line `# deepwidgets-trim: on again for the widget system (widget_rows)`. It deletes no entry. It adds no config, so the DSH base config stays.
 
-- It adds `hmr` and `timer` to `deepwidgets/trim/rows.host.txt` as active rows, after `plugin-manager`, with the reason `on again (fork_trim.widget_rows)`.
+- It adds `hmr` and `timer` to `deepwidgets/trim/rows.host.txt` as active rows, after `plugin-manager`, with the reason `on again (widget_rows)`.
 
 - It adds the install check of `trim.widget_rows.check_form` to `tools/smoke-desktop.mjs`, and it writes the fixture.
 
-The rows `client-hmr`, `tools`, `system-prompt`, and `tool-plugin-manager` stay off (`handoff3.decisions.scope`). The task uses the plugin manager only to prove the install (`fork_trim.out_of_scope`).
+The rows `client-hmr`, `tools`, `system-prompt`, and `tool-plugin-manager` stay off (`widget_rows.decisions.scope`). The task uses the plugin manager only to prove the install (`fork_trim.out_of_scope`).
 
 ```bash
 rec change_start date -u +%T
@@ -134,10 +134,10 @@ def edit(name, pairs):  # each old text occurs exactly once
     path.write_text(s)
 OFF = '# deepwidgets-trim: not needed: the boot test passes without it\n- id: {}\n  disabled: true\n'
 edit('deepwidgets/trim/cordis.patch.yml', [(OFF.format('hmr') + '\n' + OFF.format('timer'),
-     '# deepwidgets-trim: on again for the widget system (fork_trim.widget_rows)\n'
+     '# deepwidgets-trim: on again for the widget system (widget_rows)\n'
      '# - id: hmr\n#   disabled: true\n# - id: timer\n#   disabled: true\n')])
 KEEP = 'plugin-manager   # start keep set\n'
-edit('deepwidgets/trim/rows.host.txt', [(KEEP, KEEP + 'hmr   # on again (fork_trim.widget_rows)\ntimer   # on again (fork_trim.widget_rows)\n')])
+edit('deepwidgets/trim/rows.host.txt', [(KEEP, KEEP + 'hmr   # on again (widget_rows)\ntimer   # on again (widget_rows)\n')])
 SNAP = ' * With DSH_SMOKE_ROWS_SNAPSHOT set to a path, compare that host snapshot with rows.host.txt and do not start the app.\n'
 ROWS = "      if (failed === undefined && (process.env.DSH_SMOKE_ROWS ?? '') !== '') failed = await checkRows(page, deadline)\n"
 LOADER = "    if (typeof loaderId !== 'string') throw new Error('Runtime.queryObjects: no Loader objectId')\n"
@@ -230,8 +230,8 @@ rec sums tee "$T/widget-rows.sha256" <<'EOF'                                    
 72b21b6167ca877996c41de4e61db900bdbc8311c2fc5b6edab7b79eb00db69f  deepwidgets/trim/fixtures/widget-rows-install/cordis.patch.yml
 4e7b9f25575d3cc2a963cc4b2ccfabf642720355d8e2c3a47da591a72697e92a  deepwidgets/trim/fixtures/widget-rows-install/index.js
 171a72db7ee31b3523f4a6f9e101b945bfab974b4b6e0b1d55d3f25493934af4  deepwidgets/trim/fixtures/widget-rows-install/package.json
-cd2eebf7cefcdd9b610de08dbec55ee69c97911e644dd2b2105e566d0cf109cd  deepwidgets/trim/cordis.patch.yml
-59d1a1ba01f2778fc3d7e2878d02e5d4a8bfc37eab8eb06c929c0d806c3f36df  deepwidgets/trim/rows.host.txt
+c126e02b23a05d53e880102195362696e20ccd7b5feed749ab14058d955da1ad  deepwidgets/trim/cordis.patch.yml
+e7a1e267429a53edebb5bc021746b255921b7c8d3c558f8985ee1c40c2fd6733  deepwidgets/trim/rows.host.txt
 fcdf1723ba9ae63591132fce582ce8fe7c8023ee3ca10659471169051f4bcaf7  tools/smoke-desktop.mjs
 EOF
 rec hash shasum -a 256 -c "$T/widget-rows.sha256"                                        # hash exit=0 tools/smoke-desktop.mjs: OK
@@ -252,7 +252,7 @@ HELLO = 'DSH_SMOKE_HELLO=1 node tools/smoke-desktop.mjs\n'
 ROWS = 'it also compares the loaded rows with the row lists in that folder.'
 for old, new in (
     ('| Item | State on 2026-10-28 |', '| Item | State on ' + datetime.date.today().isoformat() + ' |'),
-    ('turns off 162 of the 197 rows.', 'turns off 160 of the 197 rows. The rows `hmr` and `timer` are on again for the widget system (`fork_trim.widget_rows`).'),
+    ('turns off 162 of the 197 rows.', 'turns off 160 of the 197 rows. The rows `hmr` and `timer` are on again for the widget system (`widget_rows`).'),
     ('`deepwidgets/trim` (merged, no code).', '`deepwidgets/trim` (merged). It holds the trim patch, the row lists, and the test bundle `fixtures/widget-rows-install` of the install check.'),
     (ROWS, ROWS + ' With `DSH_SMOKE_INSTALL=<absolute bundle folder>`, it also installs that bundle into the running host. The bundle must apply at once, and its plugin must run.'),
     (HELLO, HELLO + 'DSH_SMOKE_INSTALL="$PWD/deepwidgets/trim/fixtures/widget-rows-install" node tools/smoke-desktop.mjs\n'),
@@ -338,7 +338,7 @@ Source of each expected line:
 
 - The spike did not run the records of the index, the edit, and the hash. The architect ran them on a copy of the base.
 
-Stop at the first smoke run that fails. Report the last 40 lines of its log and the newest smoke folder. If a check with both rows on fails, use `handoff3.stop`. Do not turn off more rows. The install and build lines of `head.commands` ran in the earlier parts. The line `corepack pnpm run start:desktop` is not a check, because it runs the app until you quit it. The record `untracked_end` proves that the install wrote no file into the worktree.
+Stop at the first smoke run that fails. Report the last 40 lines of its log and the newest smoke folder. If a check with both rows on fails, use `widget_rows.stop`. Do not turn off more rows. The install and build lines of `head.commands` ran in the earlier parts. The line `corepack pnpm run start:desktop` is not a check, because it runs the app until you quit it. The record `untracked_end` proves that the install wrote no file into the worktree.
 
 ## Findings to record `trim.widget_rows.findings`
 
