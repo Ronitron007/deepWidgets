@@ -660,10 +660,8 @@
 - id: client-hmr
   disabled: true
 
-# deepwidgets-trim: not needed: the boot test passes without it
-- id: hmr
-  disabled: true
-
-# deepwidgets-trim: not needed: the boot test passes without it
-- id: timer
-  disabled: true
+# deepwidgets-trim: on again for the widget system (widget_rows)
+# - id: hmr
+#   disabled: true
+# - id: timer
+#   disabled: true
