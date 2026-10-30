@@ -48,10 +48,14 @@ export function desktopTargetBuildPaths(target: DesktopBuildTarget, environment?
  * @param target - Supported Desktop target name.
  * @returns Platform and architecture of the prepared payload.
  */
-export function desktopTargetPlatform(target: DesktopBuildTarget): {
-  readonly platform: 'darwin' | 'win32' | 'linux'
-  readonly arch: 'arm64' | 'x64'
-}
+export function desktopTargetPlatform(target: DesktopAutoUpdateTarget): { readonly platform: 'darwin' | 'win32', readonly arch: 'arm64' | 'x64' }
+/**
+ * Return the platform and architecture of the payload one release target prepares.
+ * Windows is prepared as x64 only, so this differs from the build host on an arm64 Windows machine.
+ * @param target - Supported Desktop target name.
+ * @returns Platform and architecture of the prepared payload.
+ */
+export function desktopTargetPlatform(target: DesktopBuildTarget): { readonly platform: 'darwin' | 'win32' | 'linux', readonly arch: 'arm64' | 'x64' }
 
 /**
  * Resolve the paths owned by the target selected in a packaging environment.
