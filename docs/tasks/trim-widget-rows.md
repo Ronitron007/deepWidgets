@@ -24,7 +24,7 @@ This task decides `fork_trim.widget_rows.open.check_form`. The install check use
 
 - Give the fixture folder as an absolute path. The plugin manager resolves a relative path from the smoke temporary folder. Thus the spike discarded its relative-path run.
 
-- The flag `DSH_SMOKE_INSTALL_EXPECT=restart-required` comes with the spike code. No check of this task uses it.
+- The spike code also had the flag `DSH_SMOKE_INSTALL_EXPECT`. No check uses it. Thus this task removes it.
 
 ## Setup `trim.widget_rows.setup`
 
@@ -57,7 +57,7 @@ Read `fork_trim.widget_rows` in the spec, `handoff3.decisions`, and `handoff3.st
 
 | Fact | Evidence |
 |---|---|
-| The `files` script of `trim.widget_rows.steps.files` writes the six files of the spike, byte for byte. On a copy of the base, `git diff` then gives the spike patch, sha256 `b24b58f89d92f554d89c475fc839d2327857fb858b805b1d3efb6152cc6152a8`. | verified (ran the script, `shasum -c`, and `git diff`) |
+| The `files` script of `trim.widget_rows.steps.files` writes the six files of the spike, with two parts removed. These parts are the `DSH_SMOKE_INSTALL_EXPECT` branch and the comment "Spike fixture". On a copy of the base, `git diff` then has the sha256 `3d6378cfe0e0b014d65fc943089b09156d228f2879e4d872d6ad89386612e5ea`. This diff is the reviewed spike diff `b24b58f89d92f554d89c475fc839d2327857fb858b805b1d3efb6152cc6152a8` without the two parts. | verified (ran the script, `shasum -c`, `git diff`, and `diff` with the spike patch) |
 | The spike base `f4fa60ef` differs from `8319ffe3` only in the `ts.lint` files and `docs/`. The spike patch applies to `8319ffe3`. | verified (ran `git diff --name-only` and `git apply --check`) |
 | The plugin manager returns `applied` only when the service `hmr` exists. Otherwise it returns `restart-required` with `no-hmr`. | verified (read `packages/boot/plugin-manager/src/index.ts` line 1221) |
 | The base row `timer` has no condition. The base row `hmr` loads only when `profileContext` exists, with `root: []`. | verified (read `packages/bundle/base/cordis.patch.yml` lines 24-32) |
@@ -108,7 +108,7 @@ rec base_end date -u +%T
 
 The records `base` and `docs_only` stop the task on a wrong base. If one of them is different, stop and report. Do not branch from another commit.
 
-The spike did not run this block. The expected lines of `node`, `pnpm`, `base_install`, `electron`, and `base_artifacts` come from `ts.trace.steps.base`. The lines `electron_install` and `electron_again` are the Electron fallback of that step. If a fallback record is different, stop. For `node`, write the version under `Findings`. Write the `base_tests` exit and the `base_passed` count under `Findings`. If the count is `0`, stop and report the last 40 lines of `$L/base_tests.log`.
+The spike did not run this block. The expected lines of `node`, `pnpm`, `base_install`, `electron`, and `base_artifacts` come from `ts.trace.steps.base`. The lines `electron_install` and `electron_again` are the Electron fallback of that step. If a fallback record is different, stop. For `node`, write the version under `Findings`. The test list is the `trim.profile` list, an inferred choice (`trim.widget_rows.read`). Nobody ran it at this base. Write the `base_tests` exit, the `base_passed` count, and the test run time under `Findings`. If the count is `0`, stop and report the last 40 lines of `$L/base_tests.log`.
 
 ### Write the files `trim.widget_rows.steps.files`
 
@@ -142,8 +142,7 @@ SNAP = ' * With DSH_SMOKE_ROWS_SNAPSHOT set to a path, compare that host snapsho
 ROWS = "      if (failed === undefined && (process.env.DSH_SMOKE_ROWS ?? '') !== '') failed = await checkRows(page, deadline)\n"
 LOADER = "    if (typeof loaderId !== 'string') throw new Error('Runtime.queryObjects: no Loader objectId')\n"
 edit('tools/smoke-desktop.mjs', [
-    (SNAP, SNAP + ' * With DSH_SMOKE_INSTALL set to a local bundle path, also call pluginManager.installBundle over the host Loader.\n'
-     ' * With DSH_SMOKE_INSTALL_EXPECT=restart-required, the install must return restart-required with restartReason no-hmr.\n'),
+    (SNAP, SNAP + ' * With DSH_SMOKE_INSTALL set to a local bundle path, also call pluginManager.installBundle over the host Loader.\n'),
     (ROWS, ROWS + "      if (failed === undefined && (process.env.DSH_SMOKE_INSTALL ?? '') !== '') failed = await checkInstall(deadline)\n"),
     ('async function readHostSnapshot(deadline) {\n  let targets\n', 'async function withHostLoader(deadline, run) {\n  let targets\n'),
     (LOADER, LOADER + '''    return await run(session, loaderId)
@@ -163,7 +162,6 @@ async function checkInstall(deadline) {
   const fixture = process.env.DSH_SMOKE_INSTALL ?? ''
   if (fixture === '') return 'install: empty DSH_SMOKE_INSTALL'
   if (!existsSync(fixture)) return `install: missing fixture ${fixture}`
-  const expect = process.env.DSH_SMOKE_INSTALL_EXPECT ?? 'applied'
   const spec = fixture.startsWith('file:') || fixture.includes(':') ? fixture : `file:${fixture}`
   const started = Date.now()
   const result = await withHostLoader(deadline, async (session, loaderId) => {
@@ -197,15 +195,6 @@ async function checkInstall(deadline) {
   if (install === undefined || typeof install !== 'object' || install === null) {
     return `install: bad result ${JSON.stringify(result)}`
   }
-  if (expect === 'restart-required') {
-    if (install.application !== 'restart-required') {
-      return `install: want restart-required got ${JSON.stringify(install)}`
-    }
-    if (install.restartReason !== 'no-hmr') {
-      return `install: want restartReason no-hmr got ${JSON.stringify(install)}`
-    }
-    return undefined
-  }
   if (install.application !== 'applied') {
     return `install: want applied got ${JSON.stringify(install)}`
   }
@@ -219,7 +208,7 @@ async function checkInstall(deadline) {
 fix = pathlib.Path('deepwidgets/trim/fixtures/widget-rows-install')
 fix.mkdir(parents=True)
 (fix / 'cordis.patch.yml').write_text('- insert:\n    - id: deepwidgets-widget-rows-install\n      name: deepwidgets-widget-rows-install\n')
-(fix / 'index.js').write_text('''/** Spike fixture: proves a live install applied and the plugin ran. */
+(fix / 'index.js').write_text('''/** Install check fixture: the marker service exists only when the install applied at once and this plugin ran. */
 export function apply(ctx) {
   ctx.provide('widgetRowsInstallMarker', 'ran')
 }
@@ -237,13 +226,13 @@ export function apply(ctx) {
 }
 ''')
 EOF
-rec sums tee "$T/widget-rows.sha256" <<'EOF'                                             # sums exit=0 814154b5f387fa15d89b94f7e282bdb324df2264e7b2e368ed4aeb9a674d973d  tools/smoke-desktop.mjs
+rec sums tee "$T/widget-rows.sha256" <<'EOF'                                             # sums exit=0 fcdf1723ba9ae63591132fce582ce8fe7c8023ee3ca10659471169051f4bcaf7  tools/smoke-desktop.mjs
 72b21b6167ca877996c41de4e61db900bdbc8311c2fc5b6edab7b79eb00db69f  deepwidgets/trim/fixtures/widget-rows-install/cordis.patch.yml
-734a059b4c9b5034ca6506be7ca24ec5519c3545d04fa05f608a79ed792ff531  deepwidgets/trim/fixtures/widget-rows-install/index.js
+4e7b9f25575d3cc2a963cc4b2ccfabf642720355d8e2c3a47da591a72697e92a  deepwidgets/trim/fixtures/widget-rows-install/index.js
 171a72db7ee31b3523f4a6f9e101b945bfab974b4b6e0b1d55d3f25493934af4  deepwidgets/trim/fixtures/widget-rows-install/package.json
 cd2eebf7cefcdd9b610de08dbec55ee69c97911e644dd2b2105e566d0cf109cd  deepwidgets/trim/cordis.patch.yml
 59d1a1ba01f2778fc3d7e2878d02e5d4a8bfc37eab8eb06c929c0d806c3f36df  deepwidgets/trim/rows.host.txt
-814154b5f387fa15d89b94f7e282bdb324df2264e7b2e368ed4aeb9a674d973d  tools/smoke-desktop.mjs
+fcdf1723ba9ae63591132fce582ce8fe7c8023ee3ca10659471169051f4bcaf7  tools/smoke-desktop.mjs
 EOF
 rec hash shasum -a 256 -c "$T/widget-rows.sha256"                                        # hash exit=0 tools/smoke-desktop.mjs: OK
 rec untracked_new sh -c 'git status --short --untracked-files=all | grep -c "^??"'       # untracked_new exit=0 3
@@ -313,7 +302,7 @@ rec install_note sh -c 'grep -c "\"application\":\"applied\".*\"marker\":\"ran\"
 
 ### Off run `trim.widget_rows.check.off`
 
-The off run turns the `hmr` entry off again. `off_edit` uncomments only the two `hmr` lines, and the row `timer` stays on. The off run uses the same install command, with no `DSH_SMOKE_INSTALL_EXPECT`.
+The off run turns the `hmr` entry off again. `off_edit` uncomments only the two `hmr` lines, and the row `timer` stays on. The off run uses the same install command.
 
 ```bash
 rec off_edit python3 -I -c 'import pathlib; p = pathlib.Path("deepwidgets/trim/cordis.patch.yml"); s = p.read_text(); old = "# - id: hmr\n#   disabled: true\n"; assert s.count(old) == 1, old; p.write_text(s.replace(old, "- id: hmr\n  disabled: true\n"))' # off_edit exit=0
@@ -343,7 +332,7 @@ rec checks_end date -u +%T
 
 Source of each expected line:
 
-- The spike recorded `install`, `install_off`, `rows`, `smoke`, `probe`, `trace`, and `hello` with these lines. The patterns of `install_note` and `off_reason` match the spike logs.
+- The spike recorded `install`, `install_off`, `rows`, `smoke`, `probe`, `trace`, and `hello` with these lines. The two removed parts do not run in these checks (inferred). The patterns of `install_note` and `off_reason` match the spike logs.
 
 - The spike did not run `late_row` and `client_rows`. Their lines come from `ts.trace.check.pass`.
 
@@ -360,6 +349,7 @@ Put these items in the `Findings` section of the PR body. Write "unknown" when y
 | Node version, and the use of the Electron fallback | the records `node` and `electron` |
 | The time of each part | the `<part>_start` and `<part>_end` records |
 | The `base_tests` exit, the `base_passed` count, and each base test that did not pass | `$L/exits.txt`, and `grep -v '^passed ' "$T/base-tests.txt"` |
+| The run time of `base_tests` and `tests` | the `Duration` line of `$L/base_tests.log` and `$L/tests.log` |
 | The install time and the smoke folder of the install check | the `install ms=` line in `desktop.log` of the folder of the record `install_folder` |
 | One line for `tasks.protocol.look_before_you_build` | `trim.widget_rows.read` |
 
@@ -370,7 +360,7 @@ Put these items in the `Findings` section of the PR body. Write "unknown" when y
 | `deepwidgets/trim/cordis.patch.yml` | only the `hmr` and `timer` entries at the end |
 | `deepwidgets/trim/rows.host.txt` | only two new lines after `plugin-manager` |
 | `deepwidgets/trim/fixtures/widget-rows-install/package.json`, `cordis.patch.yml`, `index.js` | new |
-| `tools/smoke-desktop.mjs` | only two header lines, one line in the check chain, `withHostLoader`, `readHostSnapshot`, and `checkInstall` |
+| `tools/smoke-desktop.mjs` | only one header line, one line in the check chain, `withHostLoader`, `readHostSnapshot`, and `checkInstall` |
 | `CLAUDE.md` | only the `head.status` header date, the `head.status` rows `Rows that deepWidgets turns off`, `Our packages`, and `Checks`, and one new line in `head.commands` |
 
 The scripts of this task make each change. Do not change another file. This includes `deepwidgets/trim/rows.client.txt`, `deepwidgets/trim/package.json`, `deepwidgets/probe/`, `deepwidgets/trace/`, `packages/`, and `pnpm-lock.yaml`. Write each other change to `CLAUDE.md` under `Findings` (`head.rules`).
