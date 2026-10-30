@@ -1,4 +1,4 @@
-/** Shell source of the watcher that reports the listening ports of a Linux process group. */
+/** Python 3 source of the Linux process-group watcher. Same contract as the macOS watcher in tools/smoke-desktop.mjs: argv[1] is an output file; it prints "ready", reads one root pid from stdin, then appends each new process group id of the root and its descendants, one per line. */
 export const linuxGroupWatcherSource: string
 
 /**
