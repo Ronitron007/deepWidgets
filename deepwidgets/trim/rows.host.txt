@@ -11,6 +11,8 @@ typert   # start keep set
 ui-settings   # start keep set
 file-upload pending agents,attachments,commands   # agent rows off
 plugin-manager   # start keep set
+hmr   # on again (widget_rows)
+timer   # on again (widget_rows)
 credentials   # start keep set
 storage   # start keep set
 storage-json   # start keep set
