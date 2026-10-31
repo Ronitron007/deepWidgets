@@ -9,6 +9,7 @@
  * Needs `corepack pnpm run build:artifacts` first.
  */
 import { spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { createWriteStream, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { createRequire } from 'node:module'
@@ -34,6 +35,9 @@ function check(name, ok, detail = '') {
   results.push({ name, ok: Boolean(ok) })
   console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail === '' ? '' : `: ${detail}`}`)
 }
+
+/** A token request challenge (widget_phase2.mcp_port): 16 random bytes as base64url. */
+const challenge = () => randomBytes(16).toString('base64url')
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -136,9 +140,9 @@ const CALL_ROUTE = `
   })
   return {
     lanMcp: await call('/mcp', '192.168.1.5', HOST, '{}'),
-    lanToken: await call('/mcp/token', '192.168.1.5', HOST, JSON.stringify({ agent: 'lan' })),
+    lanToken: await call('/mcp/token', '192.168.1.5', HOST, JSON.stringify({ agent: 'lan', challenge: CHALLENGE })),
     mappedMcp: await call('/mcp', '::ffff:127.0.0.1', HOST, '{}'),
-    mappedToken: await call('/mcp/token', '::ffff:127.0.0.1', HOST, JSON.stringify({ agent: 'mapped' })),
+    mappedToken: await call('/mcp/token', '::ffff:127.0.0.1', HOST, JSON.stringify({ agent: 'mapped', challenge: CHALLENGE })),
   }
 `
 
@@ -208,7 +212,7 @@ async function main() {
   // The bundles load after the URL prints; wait for the /mcp route.
   let tokenAnswer
   for (let i = 0; i < 60; i += 1) {
-    tokenAnswer = await fetch(`${base}/mcp/token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agent: 'Check Agent' }) })
+    tokenAnswer = await fetch(`${base}/mcp/token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agent: 'Check Agent', challenge: challenge() }) })
     if (tokenAnswer.status !== 404) break
     await new Promise((resolve) => setTimeout(resolve, 500))
   }
@@ -289,7 +293,7 @@ async function main() {
   const inspector = await connectInspector(inspectPort)
   let peers
   try {
-    peers = await inspector.run(CALL_ROUTE.replaceAll('HOST', JSON.stringify(`127.0.0.1:${String(port)}`)))
+    peers = await inspector.run(CALL_ROUTE.replaceAll('HOST', JSON.stringify(`127.0.0.1:${String(port)}`)).replaceAll('CHALLENGE', JSON.stringify(challenge())))
   } finally {
     inspector.close()
   }
@@ -299,7 +303,7 @@ async function main() {
   // token.unbounded: the file keeps the newest 64 agents; the oldest token is dropped.
   const more = []
   for (let i = 0; i < 64; i += 1) {
-    const answer = await fetch(`${base}/mcp/token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agent: `cap-${String(i)}` }) })
+    const answer = await fetch(`${base}/mcp/token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agent: `cap-${String(i)}`, challenge: challenge() }) })
     more.push((await answer.json().catch(() => null))?.token)
   }
   let rows
