@@ -2,10 +2,14 @@
  * The MCP server for widgets (`widget_mvp.mcp`). One `webServer` prefix route owns `/mcp` and
  * `/mcp/token`. Each tool calls `ctx.widgets` in this process, so the action contract (queue,
  * timeout, `requestId`, change feed) stays in the runtime.
+ *
+ * The port file (`widget_phase2.mcp_port`) tells agents the listening port and a random server
+ * nonce. Each `/mcp/token` answer carries the nonce, so an agent can refuse a server on the port
+ * that is not this host (`standing.hard.port_squat`).
  * @module @deepwidgets/mcp
  */
 import { createHash, randomBytes } from 'node:crypto'
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -121,6 +125,35 @@ async function readSmallBody(req: IncomingMessage): Promise<string | undefined> 
 export interface Config {
   /** The token file. Defaults to `$DSH_HOME/deepwidgets/mcp-tokens.json`. */
   tokenFile?: string
+  /** The port file `{ port, nonce }` for agents. Defaults to `$DSH_HOME/deepwidgets/mcp.json`. */
+  portFile?: string
+}
+
+/** The port file: the port of the host web server and the nonce of this host start. */
+export interface PortFile {
+  port: number
+  nonce: string
+}
+
+/** Replace `path` in one rename with `text`, with mode 0600 in a folder of mode 0700. */
+async function writeFileAtomic(path: string, text: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+  const temp = `${path}.${randomBytes(4).toString('hex')}.tmp`
+  await writeFile(temp, text, { mode: 0o600 })
+  await chmod(temp, 0o600)
+  await rename(temp, path)
+}
+
+/** Remove the port file when it still names `nonce`; a later host start may have replaced it. */
+async function removePortFile(portFile: string, nonce: string): Promise<void> {
+  let current: unknown
+  try {
+    current = JSON.parse(await readFile(portFile, 'utf8'))
+  } catch {
+    // A missing or unreadable file names no host; there is nothing of this host to remove.
+    return
+  }
+  if ((current as Partial<PortFile> | null)?.nonce === nonce) await unlink(portFile)
 }
 
 /**
@@ -149,19 +182,16 @@ async function loadTokens(tokenFile: string): Promise<Map<string, TokenRow>> {
 
 export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const tokenFile = config.tokenFile ?? dshHomePath('deepwidgets', 'mcp-tokens.json')
+  const portFile = config.portFile ?? dshHomePath('deepwidgets', 'mcp.json')
   const tokens = await loadTokens(tokenFile)
+  /** New for each host start (each plugin start), so a stale port file or another server does not match. */
+  const nonce = randomBytes(16).toString('base64url')
 
   // One write at a time; each write replaces the file in one rename, with mode 0600.
   let writes: Promise<void> = Promise.resolve()
   function persist(): Promise<void> {
     const text = JSON.stringify(Object.fromEntries(tokens))
-    const next = writes.then(async () => {
-      await mkdir(dirname(tokenFile), { recursive: true, mode: 0o700 })
-      const temp = `${tokenFile}.${randomBytes(4).toString('hex')}.tmp`
-      await writeFile(temp, text, { mode: 0o600 })
-      await chmod(temp, 0o600)
-      await rename(temp, tokenFile)
-    })
+    const next = writes.then(() => writeFileAtomic(tokenFile, text))
     writes = next.catch(() => undefined)
     return next
   }
@@ -319,7 +349,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       send(res, 500, { error: 'the token was not saved; retry later' })
       return
     }
-    send(res, 200, { token, agentId })
+    send(res, 200, { token, agentId, nonce })
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -353,4 +383,18 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     }),
   }), 'mcp: the /mcp route')
   ctx.effect(() => () => modern.close(), 'mcp: close the MCP handler')
+  // The route is live before the file names the port, so an agent that reads the file finds /mcp.
+  await ctx.effect(async () => {
+    const port = ctx.webServer.port
+    if (port === undefined) throw new Error('mcp: the web server has no listening port; the port file was not written')
+    const content: PortFile = { port, nonce }
+    await writeFileAtomic(portFile, `${JSON.stringify(content)}\n`)
+    return async () => {
+      try {
+        await removePortFile(portFile, nonce)
+      } catch (error) {
+        ctx.logger.warn(`mcp: the port file ${portFile} was not removed`, error)
+      }
+    }
+  }, 'mcp: the port file')
 }

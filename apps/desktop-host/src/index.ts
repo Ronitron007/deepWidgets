@@ -15,6 +15,7 @@ import { installDesktopUpdateTaskControl } from './update-tasks.ts'
 import { installDesktopQuitInspection } from './quit-inspection.ts'
 import { installPlatformSessionPublisher } from './platform-session.ts'
 import { installOfficeEngineResolution } from './office-engine.ts'
+import { resolveMcpPort } from './mcp-port.ts'
 
 async function main(): Promise<void> {
   const runtimeDir = process.argv[2] as string
@@ -23,12 +24,19 @@ async function main(): Promise<void> {
   const installAnchor = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
   const profile = loadProfileDirectory('dsh', projectDir, installAnchor)
   reportSkippedBundles('dsh', profile)
+  // deepwidgets-trim: the web server binds the fixed port setting, not an OS-picked port (widget_phase2.mcp_port).
+  // const application = runProfile({
+  //   environment: loadLayeredEnv('dsh'),
+  //   args: ['--no-open', '--host', '127.0.0.1', '--port', '0'],
+  // Load the layered .env first: `$DSH_HOME/.env` may set the port.
+  const environment = loadLayeredEnv('dsh')
+  const port = resolveMcpPort(process.env)
   const application = runProfile({
-    environment: loadLayeredEnv('dsh'),
+    environment,
     profile: 'desktop',
     resolvedProfile: { profile, installAnchor },
     patchFiles: [],
-    args: ['--no-open', '--host', '127.0.0.1', '--port', '0'],
+    args: ['--no-open', '--host', '127.0.0.1', '--port', String(port)],
     ...(process.argv[5] === undefined ? {} : {
       packageManager: {
         command: process.execPath,
