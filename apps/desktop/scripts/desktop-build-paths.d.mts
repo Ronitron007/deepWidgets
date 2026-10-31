@@ -32,6 +32,8 @@ export function resolveDesktopBuildTarget(
   env?: NodeJS.ProcessEnv,
   hostPlatform?: NodeJS.Platform,
   hostArch?: string,
+// deepwidgets-trim: linux-x64 development target; old line:
+// ): DesktopAutoUpdateTarget
 ): DesktopBuildTarget
 
 /**
@@ -40,6 +42,8 @@ export function resolveDesktopBuildTarget(
  * @param environment - Packaging environment with an optional absolute cache directory.
  * @returns Target paths plus shared download and package caches.
  */
+// deepwidgets-trim: linux-x64 development target; old line:
+// export function desktopTargetBuildPaths(target: DesktopAutoUpdateTarget, environment?: NodeJS.ProcessEnv): DesktopTargetBuildPaths
 export function desktopTargetBuildPaths(target: DesktopBuildTarget, environment?: NodeJS.ProcessEnv): DesktopTargetBuildPaths
 
 /**
@@ -48,6 +52,11 @@ export function desktopTargetBuildPaths(target: DesktopBuildTarget, environment?
  * @param target - Supported Desktop target name.
  * @returns Platform and architecture of the prepared payload.
  */
+// deepwidgets-trim: linux-x64 development target; old lines:
+// export function desktopTargetPlatform(target: DesktopAutoUpdateTarget): {
+//   readonly platform: 'darwin' | 'win32'
+//   readonly arch: 'arm64' | 'x64'
+// }
 export function desktopTargetPlatform(target: DesktopAutoUpdateTarget): { readonly platform: 'darwin' | 'win32', readonly arch: 'arm64' | 'x64' }
 /**
  * Return the platform and architecture of the payload one release target prepares.

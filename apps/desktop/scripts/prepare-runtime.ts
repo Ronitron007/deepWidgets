@@ -17,6 +17,8 @@ import { prepareCommandLink } from './prepare-command-link.ts'
 const BUILD_PATHS = resolveDesktopTargetBuildPaths()
 const RUNTIME_ROOT = BUILD_PATHS.runtime
 
+// deepwidgets-trim: linux-x64 development target; old line:
+// type DesktopTarget = ReturnType<typeof desktopTargetPlatform>
 type DesktopTarget = { readonly platform: 'darwin' | 'win32'; readonly arch: 'arm64' | 'x64' }
 
 /** Extract the target Electron distribution and return its embedded Node version. */
@@ -50,6 +52,8 @@ function prepareCli({ platform, arch }: DesktopTarget): void {
 
 async function main(): Promise<void> {
   const { values } = parseArgs({ options: { 'defer-primary-runtime-smoke': { type: 'boolean', default: false } } })
+  // deepwidgets-trim: linux-x64 development target; old line:
+  // const target = desktopTargetPlatform(resolveDesktopBuildTarget())
   const targetName = resolveDesktopBuildTarget()
   if (targetName === 'linux-x64') throw new Error('desktop runtime: linux-x64 is a development target only; it has no packaged runtime')
   const target = desktopTargetPlatform(targetName)
