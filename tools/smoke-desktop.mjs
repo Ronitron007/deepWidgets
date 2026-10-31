@@ -6,6 +6,7 @@
  * With DSH_SMOKE_ROWS set to a folder, also compare the loaded rows with the row lists in that folder.
  * With DSH_SMOKE_ROWS_SAVE set to a path, also write the host row snapshot to that file.
  * With DSH_SMOKE_ROWS_SNAPSHOT set to a path, compare that host snapshot with rows.host.txt and do not start the app.
+ * With DSH_SMOKE_INSTALL set to a local bundle path, also call pluginManager.installBundle over the host Loader.
  * The trace test also needs the start-up steps of Electron main and a message for each client row.
  * Then it reads the rows of the trace window page dsh-app://app/trace.
  * Uses only Node built-in modules. Prints one result line.
@@ -373,6 +374,7 @@ try {
       if (failed === undefined && process.env.DSH_SMOKE_TRACE === '1') failed = await checkTrace(page, deadline)
       if (failed === undefined && process.env.DSH_SMOKE_HELLO === '1') failed = await checkHello(page, deadline)
       if (failed === undefined && (process.env.DSH_SMOKE_ROWS ?? '') !== '') failed = await checkRows(page, deadline)
+      if (failed === undefined && (process.env.DSH_SMOKE_INSTALL ?? '') !== '') failed = await checkInstall(deadline)
     }
   }
 } catch (error) {
@@ -872,7 +874,7 @@ async function cdpCall(session, method, params) {
   }
 }
 
-async function readHostSnapshot(deadline) {
+async function withHostLoader(deadline, run) {
   let targets
   try {
     const response = await fetch(`http://127.0.0.1:${String(hostInspectPort)}/json/list`, { signal: AbortSignal.timeout(3000) })
@@ -902,6 +904,14 @@ async function readHostSnapshot(deadline) {
     const loaders = await cdpCall(session, 'Runtime.queryObjects', { prototypeObjectId: loaderProtoId })
     const loaderId = loaders?.objects?.objectId
     if (typeof loaderId !== 'string') throw new Error('Runtime.queryObjects: no Loader objectId')
+    return await run(session, loaderId)
+  } finally {
+    session.close()
+  }
+}
+
+async function readHostSnapshot(deadline) {
+  return withHostLoader(deadline, async (session, loaderId) => {
     const rows = await cdpCall(session, 'Runtime.callFunctionOn', {
       objectId: loaderId,
       returnByValue: true,
@@ -909,9 +919,53 @@ async function readHostSnapshot(deadline) {
     })
     if (!Array.isArray(rows?.result?.value)) throw new Error('Runtime.callFunctionOn: host rows are not an array')
     return rows.result.value
-  } finally {
-    session.close()
+  })
+}
+
+async function checkInstall(deadline) {
+  const fixture = process.env.DSH_SMOKE_INSTALL ?? ''
+  if (fixture === '') return 'install: empty DSH_SMOKE_INSTALL'
+  if (!existsSync(fixture)) return `install: missing fixture ${fixture}`
+  const spec = fixture.startsWith('file:') || fixture.includes(':') ? fixture : `file:${fixture}`
+  const started = Date.now()
+  const result = await withHostLoader(deadline, async (session, loaderId) => {
+    const call = await cdpCall(session, 'Runtime.callFunctionOn', {
+      objectId: loaderId,
+      awaitPromise: true,
+      returnByValue: true,
+      arguments: [{ value: spec }],
+      functionDeclaration: `async function (spec) {
+        if (this.length !== 1) throw new Error("Loader instances " + this.length);
+        const loader = this[0];
+        const manager = loader.ctx?.get?.("pluginManager") ?? loader.ctx?.pluginManager;
+        if (manager === undefined || typeof manager.installBundle !== "function") {
+          throw new Error("no pluginManager on Loader ctx");
+        }
+        const install = await manager.installBundle(spec);
+        const marker = loader.ctx?.get?.("widgetRowsInstallMarker");
+        return { install, marker: marker === undefined ? null : marker };
+      }`,
+    })
+    if (call?.exceptionDetails) {
+      const text = call.exceptionDetails.exception?.description
+        ?? call.exceptionDetails.text
+        ?? 'install call failed'
+      throw new Error(String(text))
+    }
+    return call?.result?.value
+  })
+  note(`install ms=${String(Date.now() - started)} result=${JSON.stringify(result)}`)
+  const install = result?.install
+  if (install === undefined || typeof install !== 'object' || install === null) {
+    return `install: bad result ${JSON.stringify(result)}`
   }
+  if (install.application !== 'applied') {
+    return `install: want applied got ${JSON.stringify(install)}`
+  }
+  if (result.marker !== 'ran') {
+    return `install: plugin did not run marker=${JSON.stringify(result.marker)}`
+  }
+  return undefined
 }
 
 async function readClientRows(page, deadline) {

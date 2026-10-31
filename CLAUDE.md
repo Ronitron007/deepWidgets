@@ -28,12 +28,12 @@ Code without a comment can still be off. A plugin row is off when a patch layer 
 
 ## Status `head.status`
 
-| Item | State on 2026-10-28 |
+| Item | State on 2026-10-31 |
 |---|---|
-| Rows that deepWidgets turns off | `deepwidgets/trim/cordis.patch.yml` turns off 162 of the 197 rows. Some kept rows stay pending, because the agent rows are off. |
-| Our packages | `deepwidgets/probe` (merged, TypeScript). `deepwidgets/trace` (host half, client half, and trace window merged, TypeScript). `deepwidgets/trim` (merged, no code). |
+| Rows that deepWidgets turns off | `deepwidgets/trim/cordis.patch.yml` turns off 160 of the 197 rows. The rows `hmr` and `timer` are on again for the widget system (`widget_rows`). Some kept rows stay pending, because the agent rows are off. |
+| Our packages | `deepwidgets/probe` (merged, TypeScript). `deepwidgets/trace` (host half, client half, and trace window merged, TypeScript). `deepwidgets/trim` (merged). It holds the trim patch, the row lists, and the test bundle `fixtures/widget-rows-install` of the install check. |
 | Main window | The app opens the main window at once, with no welcome window. The main window shows only `hello` and the probe text. |
-| Checks | `tools/smoke-desktop.mjs` boots the app. With `DSH_SMOKE_PROBE=1`, it also runs the probe test. With `DSH_SMOKE_TRACE=1`, it also runs the trace test. With `DSH_SMOKE_HELLO=1`, it also runs the hello test. With `DSH_SMOKE_ROWS=<folder>`, it also compares the loaded rows with the row lists in that folder. `tools/trace-late-row.mjs` checks that the trace finds late rows. `tools/trace-client-rows.mjs` checks the client half with no app. |
+| Checks | `tools/smoke-desktop.mjs` boots the app. With `DSH_SMOKE_PROBE=1`, it also runs the probe test. With `DSH_SMOKE_TRACE=1`, it also runs the trace test. With `DSH_SMOKE_HELLO=1`, it also runs the hello test. With `DSH_SMOKE_ROWS=<folder>`, it also compares the loaded rows with the row lists in that folder. With `DSH_SMOKE_INSTALL=<absolute bundle folder>`, it also installs that bundle into the running host. The bundle must apply at once, and its plugin must run. `tools/trace-late-row.mjs` checks that the trace finds late rows. `tools/trace-client-rows.mjs` checks the client half with no app. |
 
 ## Where things are `head.map`
 
@@ -94,6 +94,7 @@ DSH_SMOKE_PROBE=1 node tools/smoke-desktop.mjs
 DSH_SMOKE_PROBE=1 DSH_SMOKE_ROWS=deepwidgets/trim node tools/smoke-desktop.mjs
 DSH_SMOKE_TRACE=1 node tools/smoke-desktop.mjs
 DSH_SMOKE_HELLO=1 node tools/smoke-desktop.mjs
+DSH_SMOKE_INSTALL="$PWD/deepwidgets/trim/fixtures/widget-rows-install" node tools/smoke-desktop.mjs
 node tools/trace-late-row.mjs
 node tools/trace-client-rows.mjs
 ```
