@@ -265,6 +265,16 @@ async function firstHost(host) {
   check('slug stream: data { rev }', data !== null, JSON.stringify(stream.frames.filter((f) => f.type === 'data').at(-1)))
 
   const slugs = await host.inspector.run(CHECK_WIDGET)
+  const described = await host.inspector.run(`
+    const unknown = (() => { try { wc.ctx.widgets.describe('ghost'); return null } catch (error) { return error.code } })()
+    return { sample: wc.ctx.widgets.describe('sample'), unknown }`)
+  const getAction = described?.sample?.actions?.find((a) => a.name === 'get')
+  const addAction = described?.sample?.actions?.find((a) => a.name === 'add')
+  check('describe: sample lists get (query, args null) and add (mutation, args with by: number); unknown slug gives unknown-widget',
+    described?.sample?.slug === 'sample' && typeof described.sample.rev === 'number' && typeof described.sample.programRev === 'number'
+      && getAction?.kind === 'query' && getAction.args === null && getAction.timeoutMs === 5000
+      && addAction?.kind === 'mutation' && addAction.args?.properties?.by?.type === 'number' && described.unknown === 'unknown-widget',
+    JSON.stringify(described))
   check('register from a plugin fiber', Array.isArray(slugs) && slugs.includes('check'), JSON.stringify(slugs))
   const added = await events.next((f) => f.type === 'added' && f.slug === 'check')
   check('events stream: added', added !== null)

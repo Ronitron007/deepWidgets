@@ -90,6 +90,21 @@ export interface WidgetDef<S, T extends readonly unknown[] = readonly unknown[]>
   actions: { readonly [K in keyof T]: WidgetAction<S, T[K]> }
 }
 
+/** One action in `describe()`. */
+export interface WidgetActionDescription {
+  name: string
+  kind: 'query' | 'mutation'
+  /** The JSON Schema of `args` (from `z.toJSONSchema`), or null when the action takes no args schema. */
+  args: unknown
+  /** The timeout that applies: the action value, else the widget value, else 5 s. */
+  timeoutMs: number
+}
+
+/** The answer of `describe()`. */
+export interface WidgetDescription extends WidgetSummary {
+  actions: WidgetActionDescription[]
+}
+
 /** One item of `list()`. */
 export interface WidgetSummary {
   slug: string
@@ -163,6 +178,7 @@ interface Registration {
 interface Runtime {
   add(registration: Registration): () => Promise<void>
   list(): WidgetSummary[]
+  describe(slug: string): WidgetDescription
   get(slug: string): { rev: number, data: unknown }
   call(slug: string, action: string, args: unknown, options: CallOptions): Promise<CallOutcome>
   update(slug: string, fn: (state: unknown) => unknown, by: string): Promise<unknown>
@@ -225,6 +241,15 @@ export class WidgetsService extends Service {
   /** @returns `{ slug, title, rev, programRev }` for each live widget. */
   list(): WidgetSummary[] {
     return this.runtime.list()
+  }
+
+  /**
+   * @param slug - a live widget.
+   * @returns the summary of the widget and its actions, with the JSON Schema of each `args`.
+   * @throws {WidgetError} `unknown-widget`.
+   */
+  describe(slug: string): WidgetDescription {
+    return this.runtime.describe(slug)
   }
 
   /**
@@ -775,6 +800,18 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
   const list = (): WidgetSummary[] => [...widgets.values()].map(summary)
+  function describe(slug: string): WidgetDescription {
+    const entry = liveEntry(slug)
+    return {
+      ...summary(entry),
+      actions: [...entry.registration.actions.values()].map((action) => ({
+        name: action.name,
+        kind: action.kind,
+        args: action.args === undefined ? null : z.toJSONSchema(action.args),
+        timeoutMs: timeoutOf(entry, action),
+      })),
+    }
+  }
 
   ctx.connection.fetch.register({
     path: '/api/widgets',
@@ -794,6 +831,7 @@ export function apply(ctx: Context, config: Config): void {
   new WidgetsService(ctx, {
     add,
     list,
+    describe,
     get: (slug) => {
       liveEntry(slug)
       return stateOf(slug) ?? { rev: 0, data: widgets.get(slug)?.registration.initialState ?? null }
