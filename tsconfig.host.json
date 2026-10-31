@@ -560,6 +560,7 @@
     { "path": "./deepwidgets/trace/tsconfig.host.json" },
     { "path": "./deepwidgets/widgets/tsconfig.host.json" },
     { "path": "./deepwidgets/widget-sample/tsconfig.host.json" },
+    { "path": "./deepwidgets/mcp/tsconfig.host.json" },
     { "path": "./packages/boot/plugin-manager" },
     { "path": "./packages/boot/plugin-market" },
     { "path": "./packages/llm/plugin-package-inventory-deepseek" },

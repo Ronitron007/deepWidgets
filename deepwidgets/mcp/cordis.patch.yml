@@ -1,0 +1,3 @@
+- insert:
+    - id: deepwidgets-mcp
+      name: '@deepwidgets/mcp'
