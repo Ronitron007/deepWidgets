@@ -565,10 +565,13 @@ export function apply(ctx: Context): void {
       if (!checked.success) throw new WidgetError('invalid-args', z.prettifyError(checked.error))
       parsed = checked.data
     }
-    await entry.seeded
-    if (action.kind === 'query' || requestId === undefined) return runAction(entry, action, parsed, caller)
+    if (action.kind === 'query' || requestId === undefined) {
+      await entry.seeded
+      return runAction(entry, action, parsed, caller)
+    }
 
     // Idempotent mutation: one real run for each (caller, requestId), kept in storage for 10 minutes.
+    // The in-flight entry is set before the first await, so parallel retries share one run.
     const key = hashOf([caller, requestId])
     const hash = hashOf([slug, name, parsed])
     const pending = inflight.get(key)
@@ -576,6 +579,18 @@ export function apply(ctx: Context): void {
       if (pending.hash !== hash) throw new WidgetError('idempotency-conflict', `the requestId ${requestId} was used for a different call`)
       return { ...(await pending.promise), replayed: true }
     }
+    const promise = runOnce(entry, action, parsed, caller, requestId, key, hash)
+    inflight.set(key, { hash, promise })
+    try {
+      return await promise
+    } finally {
+      inflight.delete(key)
+    }
+  }
+
+  /** The stored outcome of an earlier run of the key, or one new run whose outcome is stored. */
+  async function runOnce(entry: Entry, action: WidgetAction<unknown>, parsed: unknown, caller: string, requestId: string, key: string, hash: string): Promise<CallOutcome> {
+    await entry.seeded
     const requests = (await ready).table('requests')
     const stored = requests.get(key)
     if (stored !== undefined && Date.now() - stored.at <= REQUEST_TTL_MS) {
@@ -583,10 +598,8 @@ export function apply(ctx: Context): void {
       if (stored.outcome.ok) return { result: stored.outcome.result, rev: stored.outcome.rev, replayed: true }
       throw new WidgetError(stored.outcome.code, stored.outcome.message)
     }
-    const promise = runAction(entry, action, parsed, caller)
-    inflight.set(key, { hash, promise })
     try {
-      const outcome = await promise
+      const outcome = await runAction(entry, action, parsed, caller)
       await remember(requests, key, { hash, at: Date.now(), outcome: { ok: true, result: outcome.result, rev: outcome.rev } })
       return outcome
     } catch (error) {
@@ -596,8 +609,6 @@ export function apply(ctx: Context): void {
         await remember(requests, key, { hash, at: Date.now(), outcome: { ok: false, code: error.code, message: error.message } })
       }
       throw error
-    } finally {
-      inflight.delete(key)
     }
   }
 

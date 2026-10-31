@@ -308,6 +308,11 @@ async function firstHost(host) {
   const repeat = await host.post('/api/widgets/sample/call', { action: 'add', args: { by: 1 }, requestId: 'k1' })
   check('idempotency-conflict 409', first.status === 200 && reused.status === 409 && reused.body.error?.code === 'idempotency-conflict', JSON.stringify(reused.body))
   check('a replayed requestId in one host gives replayed and runs once', repeat.body.replayed === true && repeat.body.rev === first.body.rev, JSON.stringify(repeat.body))
+  const parallel = await host.inspector.run(`
+    const before = wc.ctx.widgets.get('check').data.n
+    const outs = await Promise.all([1, 2, 3].map(() => wc.ctx.widgets.call('check', 'add', {}, { caller: 'check', requestId: 'same' })))
+    return { before, after: wc.ctx.widgets.get('check').data.n, revs: outs.map((o) => o.rev), replayed: outs.filter((o) => o.replayed === true).length }`)
+  check('3 parallel calls with one requestId run once; two are replayed', parallel.after === parallel.before + 1 && parallel.replayed === 2 && new Set(parallel.revs).size === 1, JSON.stringify(parallel))
   const conflict = await host.inspector.run(`try { wc.ctx.widgets.register(wc.def); return null } catch (error) { return { code: error.code, status: error.status } }`)
   check('conflict 409 on a second live register', conflict?.code === 'conflict' && conflict.status === 409, JSON.stringify(conflict))
 
