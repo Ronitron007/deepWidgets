@@ -64,9 +64,13 @@ import { DesktopQuitConfirmation } from './quit-confirmation.ts'
 import { DesktopTray } from './tray.ts'
 import { DesktopBackgroundNotice } from './background-notice.ts'
 import { DesktopTraceSteps, openTraceWindow } from './deepwidgets-trace.ts'
+// deepwidgets-trim: widget_mvp.windows opens one panel window for each widget.
+import { DesktopWidgetWindows } from './deepwidgets-windows.ts'
 
 /** deepWidgets trace: the start-up steps for `POST /api/trace` (`floating_widget.sources`). */
 const traceSteps = new DesktopTraceSteps()
+// deepwidgets-trim: widget_mvp.windows. One panel window for each widget of the ready Host.
+const widgetWindows = new DesktopWidgetWindows(slug => `${SCHEME}://app/widget/?slug=${encodeURIComponent(slug)}`)
 
 let focusPrimaryWindow = (): void => {}
 let stopForRecovery = async (): Promise<void> => {}
@@ -543,6 +547,9 @@ async function main(): Promise<void> {
   }, (state) => {
     if (state.phase === 'ready' && hostUrl !== undefined && hostCookie !== undefined) traceSteps.hostReady(hostUrl, hostCookie)
     if (state.phase !== 'ready') traceSteps.hostGone()
+    // deepwidgets-trim: widget_mvp.windows reads GET /api/widgets/events of each ready Host. The windows stay open in the gap.
+    if (state.phase === 'ready' && hostUrl !== undefined && hostCookie !== undefined && !quitting) widgetWindows.hostReady(hostUrl, hostCookie)
+    if (state.phase !== 'ready') widgetWindows.hostGone()
     if (state.phase === 'error') reportFatal(state.failure, 'host')
     else if (!shuttingDown) backendReady = state.phase === 'ready'
   })
@@ -612,15 +619,6 @@ async function main(): Promise<void> {
       })
       if (backend.host !== undefined) await openInitialWindow()
       if (backend.host !== undefined && !isQuitting()) openTraceWindow(() => { traceSteps.step('trace-window-open') })
-      // deepwidgets-trim: test only. The smoke check DSH_SMOKE_WIDGET sets DSH_DESKTOP_WIDGET_SMOKE to open one widget page.
-      // The real widget windows come in widget.windows (apps/desktop/src/deepwidgets-windows.ts).
-      const smokeWidget = process.env.DSH_DESKTOP_WIDGET_SMOKE
-      if (backend.host !== undefined && !isQuitting() && smokeWidget !== undefined && smokeWidget !== '') {
-        const widget = new BrowserWindow({ width: 320, height: 300, show: false, frame: false, alwaysOnTop: true,
-          webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true } })
-        void widget.loadURL(`${SCHEME}://app/widget/?slug=${encodeURIComponent(smokeWidget)}`)
-          .then(() => { widget.showInactive() }, (error: unknown) => { console.warn('deepwidgets: the smoke widget page did not load', error) })
-      }
       if (backend.host !== undefined) updateJournal?.action('workspace-ready')
       // The existing Web document resumes through the boot IPC response.
     })().catch((error: unknown) => {
@@ -1310,6 +1308,8 @@ async function main(): Promise<void> {
   if (process.platform !== 'win32') powerMonitor.on('shutdown', () => { sessionEnding = true })
   const finishQuit = (): void => {
     quitting = true
+    // deepwidgets-trim: widget_mvp.windows stops its stream at once. It awaits nothing, so it cannot hold the quit.
+    widgetWindows.stop()
     shuttingDown = true
     updateJournal?.action('quit-requested')
     quitConfirmation.dispose()
@@ -1330,6 +1330,8 @@ async function main(): Promise<void> {
   app.on('before-quit', (event) => {
     if (shellInstallerOwnsQuit) {
       shuttingDown = true
+      // deepwidgets-trim: widget_mvp.windows stops its stream at once.
+      widgetWindows.stop()
       quitConfirmation.dispose()
       backgroundNotice?.dispose()
       updateJournal?.action('quit-requested')

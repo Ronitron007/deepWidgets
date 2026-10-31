@@ -7,8 +7,10 @@
  * With DSH_SMOKE_ROWS_SAVE set to a path, also write the host row snapshot to that file.
  * With DSH_SMOKE_ROWS_SNAPSHOT set to a path, compare that host snapshot with rows.host.txt and do not start the app.
  * With DSH_SMOKE_INSTALL set to a local bundle path, also call pluginManager.installBundle over the host Loader.
- * With DSH_SMOKE_WIDGET set to a widget slug, Electron main also opens dsh-app://app/widget/?slug=<slug> (test only).
- * The check finds the count in that page, posts add from the main window, and finds the new count in the page.
+ * With DSH_SMOKE_WIDGET set to a widget slug, the check finds the widget window dsh-app://app/widget/?slug=<slug>.
+ * It finds the count in that page, posts add from the main window, and finds the new count in the page.
+ * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://app/widget/?slug=sample.
+ * It turns the sample row off through the host plugin manager and finds that window closed.
  * The trace test also needs the start-up steps of Electron main and a message for each client row.
  * Then it reads the rows of the trace window page dsh-app://app/trace.
  * Uses only Node built-in modules. Prints one result line.
@@ -345,7 +347,6 @@ const child = spawn('corepack', ['pnpm', 'run', 'start:desktop'], {
     DSH_DESKTOP_RENDERER_DEBUG_PORT: String(rendererPort),
     DSH_DESKTOP_HOST_INSPECT_PORT: String(hostInspectPort),
     DSH_DESKTOP_OPEN_DEVTOOLS: '0',
-    ...((process.env.DSH_SMOKE_WIDGET ?? '') === '' ? {} : { DSH_DESKTOP_WIDGET_SMOKE: process.env.DSH_SMOKE_WIDGET }),
   },
 })
 
@@ -378,6 +379,7 @@ try {
       if (failed === undefined && (process.env.DSH_SMOKE_ROWS ?? '') !== '') failed = await checkRows(page, deadline)
       if (failed === undefined && (process.env.DSH_SMOKE_INSTALL ?? '') !== '') failed = await checkInstall(deadline)
       if (failed === undefined && (process.env.DSH_SMOKE_WIDGET ?? '') !== '') failed = await checkWidget(page, deadline)
+      if (failed === undefined && process.env.DSH_SMOKE_WINDOWS === '1') failed = await checkWindows(deadline)
     }
   }
 } catch (error) {
@@ -565,6 +567,66 @@ async function pollWidget(widget, until, accept) {
     await delay(250)
   }
   return { value: last, ok: false }
+}
+
+/** Count the renderer pages at one URL. Gives undefined while the debugger list is not ready. */
+async function countPages(url) {
+  try {
+    const targets = await (await fetch(`http://127.0.0.1:${String(rendererPort)}/json/list`, { signal: AbortSignal.timeout(2000) })).json()
+    return targets.filter((target) => target?.type === 'page' && target.url === url).length
+  } catch {
+    return undefined
+  }
+}
+
+/** Turn one host plugin row off through pluginManager.setPluginEnabled on the host Loader. */
+async function disableHostPlugin(moduleName, deadline) {
+  return withHostLoader(deadline, async (session, loaderId) => {
+    const call = await cdpCall(session, 'Runtime.callFunctionOn', {
+      objectId: loaderId,
+      awaitPromise: true,
+      returnByValue: true,
+      arguments: [{ value: moduleName }],
+      functionDeclaration: `async function (moduleName) {
+        if (this.length !== 1) throw new Error("Loader instances " + this.length);
+        const loader = this[0];
+        const manager = loader.ctx?.get?.("pluginManager") ?? loader.ctx?.pluginManager;
+        if (manager === undefined || typeof manager.setPluginEnabled !== "function") throw new Error("no pluginManager on Loader ctx");
+        const rows = (await manager.listPlugins()).filter((row) => row.moduleName === moduleName);
+        if (rows.length !== 1) throw new Error("plugin rows for " + moduleName + ": " + rows.length);
+        return await manager.setPluginEnabled(rows[0].entryId, false);
+      }`,
+    })
+    if (call?.exceptionDetails) {
+      throw new Error(String(call.exceptionDetails.exception?.description ?? call.exceptionDetails.text ?? 'setPluginEnabled failed'))
+    }
+    return call?.result?.value
+  })
+}
+
+async function checkWindows(deadline) {
+  const url = 'dsh-app://app/widget/?slug=sample'
+  let count
+  while (Date.now() < deadline) {
+    count = await countPages(url)
+    if (count !== undefined && count > 0) break
+    await delay(250)
+  }
+  // A second window for the slug would come within a moment; wait for the page list to settle.
+  await delay(1000)
+  count = await countPages(url)
+  note(`windows open count=${String(count)}`)
+  if (count !== 1) return `windows: want one window at ${url}, got ${String(count)}`
+  const result = await disableHostPlugin('@deepwidgets/widget-sample', deadline)
+  note(`windows disable=${JSON.stringify(result)}`)
+  if (result?.application !== 'applied') return `windows: the sample row did not turn off: ${JSON.stringify(result)}`
+  const until = Math.min(deadline, Date.now() + 15_000)
+  while (Date.now() < until) {
+    count = await countPages(url)
+    if (count === 0) return undefined
+    await delay(250)
+  }
+  return `windows: the window at ${url} did not close (count ${String(count)})`
 }
 
 async function checkWidget(page, deadline) {
