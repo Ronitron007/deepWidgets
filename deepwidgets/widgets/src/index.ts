@@ -25,6 +25,18 @@ const ACTION = /^[A-Za-z][A-Za-z0-9_]{0,62}$/
 const DEFAULT_TIMEOUT_MS = 5_000
 const CHANGE_LOG_SIZE = 1_000
 const DEFAULT_REQUEST_TTL_MS = 10 * 60_000
+
+/**
+ * The Host environment key of safe mode (`widget_phase2.isolation.supervisor`). Electron main sets it
+ * to `1` for a Host start after 2 crashes in 60 s.
+ */
+export const SAFE_MODE_ENV = 'DEEPWIDGETS_SAFE_MODE'
+
+/**
+ * The widget bundles that ship in this repository, by the module name of their Loader row.
+ * In safe mode, only these bundles can register a widget. Each other widget is off for that Host start.
+ */
+export const BUILT_IN_WIDGET_BUNDLES: ReadonlySet<string> = new Set(['@deepwidgets/widget-sample'])
 const PING_MS = 15_000
 const encoder = new TextEncoder()
 
@@ -39,6 +51,7 @@ export const WIDGET_ERROR_STATUS = {
   'idempotency-conflict': 409,
   'conflict': 409,
   'bad-request': 400,
+  'safe-mode': 503,
 } as const
 
 /** One error code of the action contract. */
@@ -111,6 +124,8 @@ export interface WidgetSummary {
   title: string
   rev: number
   programRev: number
+  /** Present only when the widget is off. A widget that is off has no routes and no window. */
+  off?: { reason: 'safe-mode', message: string }
 }
 
 /** The answer of `call()`. */
@@ -176,7 +191,8 @@ interface Registration {
 
 /** The internal side of the service, made by `apply`. */
 interface Runtime {
-  add(registration: Registration): () => Promise<void>
+  /** @param bundle - the module name of the Loader row that registers, when the caller has one. */
+  add(registration: Registration, bundle: string | undefined): () => Promise<void>
   list(): WidgetSummary[]
   describe(slug: string): WidgetDescription
   get(slug: string): { rev: number, data: unknown }
@@ -230,12 +246,15 @@ export class WidgetsService extends Service {
    * @param def - the widget definition.
    * @returns the disposer that ends the registration.
    * @throws {WidgetError} `conflict` when the slug has a live registration.
+   * @throws {WidgetError} `safe-mode` in safe mode, when the bundle is not in {@link BUILT_IN_WIDGET_BUNDLES}.
    * @throws {TypeError} when the definition is malformed.
    */
   register<S, const T extends readonly unknown[]>(def: WidgetDef<S, T>): () => Promise<void> {
     const registration = buildRegistration(def)
     const runtime = this.runtime
-    return this.ctx.effect(() => runtime.add(registration), `widgets: ${registration.slug}`)
+    // The Loader adds `entry` to the fiber of each row. A caller without a row is not built in.
+    const bundle = (this.ctx.fiber as { entry?: { options: { name?: unknown } } }).entry?.options.name
+    return this.ctx.effect(() => runtime.add(registration, typeof bundle === 'string' ? bundle : undefined), `widgets: ${registration.slug}`)
   }
 
   /** @returns `{ slug, title, rev, programRev }` for each live widget. */
@@ -404,6 +423,9 @@ export const Config: Schema<Config> = Schema.object({
 export function apply(ctx: Context, config: Config): void {
   const requestTtlMs = config.requestTtlMs
   const widgets = new Map<string, Entry>()
+  const safeMode = process.env[SAFE_MODE_ENV] === '1'
+  /** The widgets that safe mode refused in this Host start, by slug. */
+  const off = new Map<string, { title: string, message: string }>()
   const events = new Set<OpenStream>()
   const slot = new AsyncLocalStorage<Slot>()
   const inflight = new Map<string, { hash: string, promise: Promise<CallOutcome> }>()
@@ -766,8 +788,14 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
-  function add(registration: Registration): () => Promise<void> {
+  function add(registration: Registration, bundle: string | undefined): () => Promise<void> {
     const { slug } = registration
+    if (safeMode && (bundle === undefined || !BUILT_IN_WIDGET_BUNDLES.has(bundle))) {
+      const message = `safe mode: the widget ${slug} of ${bundle ?? 'an unknown bundle'} is off for this Host start; only built-in widgets run`
+      off.set(slug, { title: registration.title, message })
+      ctx.logger.warn(`widgets: ${message}`)
+      throw new WidgetError('safe-mode', message)
+    }
     if (widgets.has(slug)) throw new WidgetError('conflict', `the slug ${slug} already has a live registration`)
     for (const action of registration.actions.values()) {
       longestTimeoutMs = Math.max(longestTimeoutMs, action.timeoutMs ?? registration.timeoutMs ?? DEFAULT_TIMEOUT_MS)
@@ -808,8 +836,22 @@ export function apply(ctx: Context, config: Config): void {
       programRev: domain?.table('program').get(entry.slug)?.rev ?? 0,
     }
   }
-  const list = (): WidgetSummary[] => [...widgets.values()].map(summary)
+  function offSummary(slug: string, item: { title: string, message: string }): WidgetSummary {
+    return {
+      slug,
+      title: item.title,
+      rev: stateOf(slug)?.rev ?? 0,
+      programRev: domain?.table('program').get(slug)?.rev ?? 0,
+      off: { reason: 'safe-mode', message: item.message },
+    }
+  }
+  const list = (): WidgetSummary[] => [
+    ...[...widgets.values()].map(summary),
+    ...[...off].filter(([slug]) => !widgets.has(slug)).map(([slug, item]) => offSummary(slug, item)),
+  ]
   function describe(slug: string): WidgetDescription {
+    const refused = off.get(slug)
+    if (refused !== undefined && !widgets.has(slug)) return { ...offSummary(slug, refused), actions: [] }
     const entry = liveEntry(slug)
     return {
       ...summary(entry),
