@@ -90,6 +90,7 @@
     "@deepseek-ai/dsh-workflow-ptc": "workspace:*",
     "@deepseek-ai/schemastery": "workspace:~",
     "@deepwidgets/probe": "workspace:*",
+    "@deepwidgets/shell": "workspace:*",
     "@deepwidgets/trace": "workspace:*",
     "@deepwidgets/widget-sample": "workspace:*",
     "@deepwidgets/widgets": "workspace:*",

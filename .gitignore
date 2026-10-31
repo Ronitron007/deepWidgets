@@ -48,3 +48,4 @@ worktrees/
 .agents/worktrees/
 .typert-*/
 native/system/test/bin/
+deepwidgets/shell/dist/

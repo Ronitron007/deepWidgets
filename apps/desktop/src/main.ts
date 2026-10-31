@@ -612,6 +612,15 @@ async function main(): Promise<void> {
       })
       if (backend.host !== undefined) await openInitialWindow()
       if (backend.host !== undefined && !isQuitting()) openTraceWindow(() => { traceSteps.step('trace-window-open') })
+      // deepwidgets-trim: test only. The smoke check DSH_SMOKE_WIDGET sets DSH_DESKTOP_WIDGET_SMOKE to open one widget page.
+      // The real widget windows come in widget.windows (apps/desktop/src/deepwidgets-windows.ts).
+      const smokeWidget = process.env.DSH_DESKTOP_WIDGET_SMOKE
+      if (backend.host !== undefined && !isQuitting() && smokeWidget !== undefined && smokeWidget !== '') {
+        const widget = new BrowserWindow({ width: 320, height: 300, show: false, frame: false, alwaysOnTop: true,
+          webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true } })
+        void widget.loadURL(`${SCHEME}://app/widget/?slug=${encodeURIComponent(smokeWidget)}`)
+          .then(() => { widget.showInactive() }, (error: unknown) => { console.warn('deepwidgets: the smoke widget page did not load', error) })
+      }
       if (backend.host !== undefined) updateJournal?.action('workspace-ready')
       // The existing Web document resumes through the boot IPC response.
     })().catch((error: unknown) => {
@@ -713,8 +722,19 @@ async function main(): Promise<void> {
         || ['/favicon.svg', '/manifest.webmanifest'].includes(url.pathname)) {
         return serveWebDocument(request, join(resources.dsh, 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist'))
       }
+      // deepwidgets-trim: widget_mvp.shell serves the widget shell from disk, not from the host (widget.shell_url).
+      // Vite builds the page with base /widget/ into dist/widget/, so the path /widget/<file> maps to dist/widget/<file>.
+      if (url.pathname === '/widget' || url.pathname.startsWith('/widget/')) {
+        const shellRoot = join(resources.dsh, 'node_modules', '@deepwidgets', 'shell', 'dist')
+        if (url.pathname === '/widget' || url.pathname === '/widget/') {
+          return serveWebDocument(new Request(`${SCHEME}://app/widget/index.html`, { method: request.method }), shellRoot)
+        }
+        return serveWebDocument(request, shellRoot)
+      }
       if (backend.host === undefined || hostUrl === undefined || hostCookie === undefined) {
-        return Promise.resolve(new Response(null, { status: 503 }))
+        // deepwidgets-trim: widget_mvp.shell answers a network error while the host is down. A 503 closes an EventSource for good.
+        // return Promise.resolve(new Response(null, { status: 503 }))
+        return Promise.resolve(Response.error())
       }
       return forwardWebRequest(request, hostUrl, hostCookie)
     }
