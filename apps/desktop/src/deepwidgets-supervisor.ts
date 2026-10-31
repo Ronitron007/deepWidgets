@@ -4,17 +4,9 @@
  * Each event logs one line `deepwidgets-supervisor {json}`.
  * @module deepwidgets-supervisor
  */
+import { HostCrashPolicy } from './deepwidgets-crash-policy.ts'
 
-/** Wait before restart number 1, 2, and 3 in the window. */
-const BACKOFF_MS = [500, 2_000, 8_000] as const
-/** The window in which crashes count. */
-const WINDOW_MS = 60_000
-/** Crashes in the window from which the next start is in safe mode. */
-const SAFE_MODE_AFTER = 2
-/** Crashes in the window at which the supervisor gives up and the DSH fatal dialog shows. */
-const GIVE_UP_AFTER = 4
-
-/** The Host environment key that starts the Host in safe mode. Widget rows read it in a `!!js` condition. */
+/** The Host environment key that starts the Host in safe mode. The widget runtime reads it (`SAFE_MODE_ENV` of `@deepwidgets/widgets`). */
 export const SAFE_MODE_ENV = 'DEEPWIDGETS_SAFE_MODE'
 
 function log(event: string, detail: Record<string, unknown> = {}): void {
@@ -30,7 +22,7 @@ function messageOf(failure: unknown): string {
  * It owns a failure only after the first Host was ready, so a Host that cannot boot still fails loudly at once.
  */
 export class DesktopHostSupervisor {
-  private crashes: number[] = []
+  private readonly policy = new HostCrashPolicy()
   private safeMode = false
   private armed = false
   private timer: ReturnType<typeof setTimeout> | undefined
@@ -69,18 +61,15 @@ export class DesktopHostSupervisor {
     if (this.disposed || closing || !this.armed) return false
     // One failure gives one `error` state. A second one while a restart waits is the same outage.
     if (this.timer !== undefined) return true
-    const now = Date.now()
-    this.crashes = this.crashes.filter(at => now - at < WINDOW_MS)
-    this.crashes.push(now)
-    const crashes = this.crashes.length
-    if (crashes >= GIVE_UP_AFTER) {
-      log('give-up', { crashes, message: messageOf(failure) })
+    const decision = this.policy.crash()
+    if (decision.kind === 'give-up') {
+      log('give-up', { crashes: decision.crashes, message: messageOf(failure) })
       this.dispose()
       return false
     }
-    this.safeMode = crashes >= SAFE_MODE_AFTER
-    const delay = BACKOFF_MS[Math.min(crashes, BACKOFF_MS.length) - 1]
-    log('host-failed', { crashes, delay, safeMode: this.safeMode, message: messageOf(failure) })
+    this.safeMode = decision.safeMode
+    const delay = decision.delayMs
+    log('host-failed', { crashes: decision.crashes, delay, safeMode: this.safeMode, message: messageOf(failure) })
     this.recoveringNow = true
     this.timer = setTimeout(() => {
       this.timer = undefined
