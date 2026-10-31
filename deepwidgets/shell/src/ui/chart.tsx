@@ -1,5 +1,6 @@
-/* oxlint-disable typescript/no-unsafe-assignment, typescript/no-unsafe-member-access, typescript/no-unsafe-argument, typescript/no-unnecessary-condition, typescript/no-unnecessary-type-assertion, typescript/restrict-template-expressions --
-   Vendored unchanged from the OpenUI shadcn example; recharts types its tooltip and legend payloads as any. */
+/* oxlint-disable typescript/no-unsafe-assignment, typescript/no-unsafe-member-access, typescript/no-unsafe-argument, typescript/no-unnecessary-condition, typescript/no-unnecessary-type-assertion, typescript/restrict-template-expressions, typescript/no-deprecated --
+   Vendored from the OpenUI shadcn example; recharts types its tooltip and legend payloads as any.
+   The legend (unused by shadcn-widgets@1) keeps the recharts 2 prop verticalAlign. */
 "use client";
 
 import * as React from "react";
@@ -113,7 +114,9 @@ function ChartTooltipContent({
   nameKey,
   labelKey,
 }: React.ComponentProps<typeof RechartsPrimitive.Tooltip> &
-  React.ComponentProps<"div"> & {
+  React.ComponentProps<"div"> &
+  // deepWidgets: recharts 3 passes payload and label to the content, not to the Tooltip props.
+  Partial<Pick<RechartsPrimitive.TooltipContentProps<RechartsPrimitive.TooltipValueType, string>, "payload" | "label">> & {
     hideLabel?: boolean;
     hideIndicator?: boolean;
     indicator?: "line" | "dot" | "dashed";
@@ -172,7 +175,7 @@ function ChartTooltipContent({
 
             return (
               <div
-                key={item.dataKey}
+                key={index}
                 className={clsx(
                   "flex w-full flex-wrap items-stretch gap-2 [&>svg]:h-2.5 [&>svg]:w-2.5 [&>svg]:text-muted-foreground",
                   indicator === "dot" && "items-center",
@@ -243,7 +246,8 @@ function ChartLegendContent({
   verticalAlign = "bottom",
   nameKey,
 }: React.ComponentProps<"div"> &
-  Pick<RechartsPrimitive.LegendProps, "payload" | "verticalAlign"> & {
+  // deepWidgets: recharts 3 gives the legend payload to the content only.
+  Pick<RechartsPrimitive.DefaultLegendContentProps, "payload" | "verticalAlign"> & {
     hideIcon?: boolean;
     nameKey?: string;
   }) {
