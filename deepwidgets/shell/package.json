@@ -11,7 +11,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "vite build"
+    "build": "vite build && tsx scripts/guide.ts"
   },
   "dependencies": {
     "@openuidev/lang-core": "1.0.1",

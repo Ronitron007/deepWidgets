@@ -1224,15 +1224,33 @@ importers:
 
   deepwidgets/mcp:
     dependencies:
+      '@deepseek-ai/cordis-plugin-timer':
+        specifier: workspace:~
+        version: link:../../vendor/timer
       '@deepseek-ai/dsh-home-paths':
         specifier: workspace:*
         version: link:../../packages/util/home-paths
+      '@deepwidgets/shell':
+        specifier: workspace:*
+        version: link:../shell
       '@modelcontextprotocol/node':
         specifier: 2.0.0
         version: 2.0.0(@modelcontextprotocol/server@2.2.0)(hono@4.13.7)
       '@modelcontextprotocol/server':
         specifier: 2.2.0
         version: 2.2.0
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
+      oxlint:
+        specifier: 1.81.0
+        version: 1.81.0(oxlint-tsgolint@7.0.2001)
+      oxlint-tsgolint:
+        specifier: 7.0.2001
+        version: 7.0.2001
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -1240,9 +1258,15 @@ importers:
       '@deepseek-ai/cordis':
         specifier: workspace:~
         version: link:../../vendor/cordis
+      '@deepseek-ai/dsh-app-boot':
+        specifier: workspace:*
+        version: link:../../packages/boot/app-boot
       '@deepseek-ai/dsh-host-webserver':
         specifier: workspace:*
         version: link:../../packages/host/webserver
+      '@deepseek-ai/dsh-plugin-manager':
+        specifier: workspace:*
+        version: link:../../packages/boot/plugin-manager
       '@deepwidgets/widgets':
         specifier: workspace:*
         version: link:../widgets

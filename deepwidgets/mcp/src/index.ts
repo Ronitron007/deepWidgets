@@ -13,17 +13,22 @@ import { execFile } from 'node:child_process'
 import { createHash, createHmac, randomBytes } from 'node:crypto'
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { dirname } from 'node:path'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
+import type {} from '@deepseek-ai/dsh-app-boot'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import type {} from '@deepseek-ai/dsh-plugin-manager'
 import type { WidgetErrorCode } from '@deepwidgets/widgets'
 import { localhostHostValidation, toNodeHandler } from '@modelcontextprotocol/node'
 import type { NodeIncomingMessageLike } from '@modelcontextprotocol/node'
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import type { CallToolResult, StandardSchemaWithJSON } from '@modelcontextprotocol/server'
 import { z } from 'zod'
+import { CreationError, templateFiles, widgetTypesText, WidgetInstaller } from './creation.ts'
+import type { CreationErrorCode, GateName } from './creation.ts'
 
 export const name = 'deepwidgets-mcp'
 export const inject = ['webServer', 'widgets']
@@ -37,9 +42,11 @@ const LOOPBACK_V4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/
 const AGENT_NAME = /^[\x20-\x7e]{1,64}$/
 /** At least 16 random bytes as base64url (22 characters) or hex (32 characters). */
 const CHALLENGE = /^[A-Za-z0-9_-]{22,256}$/
+/** The slug pattern of the runtime (`deepwidgets/widgets/src/index.ts`). */
+const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/
 
 /** An error code of a tool answer: a runtime code, or a code of this package. */
-type ToolErrorCode = WidgetErrorCode | 'stale-cursor' | 'internal-error'
+type ToolErrorCode = WidgetErrorCode | CreationErrorCode | 'stale-cursor' | 'internal-error'
 
 /** What the agent does next, for each error code. */
 const NEXT_STEP: Record<ToolErrorCode, string> = {
@@ -54,12 +61,62 @@ const NEXT_STEP: Record<ToolErrorCode, string> = {
   'bad-request': 'Fix the request as the message says, then retry.',
   'stale-cursor': 'The change feed was reset (a host restart or a gap). Call widget_list for the current state and use its cursor.',
   'internal-error': 'The host failed. Tell the user the message. Do not retry in a loop.',
+  'bad-source': 'Pass the absolute path of a folder that holds src/index.ts. widget_template gives the files.',
+  'gate-failed': 'Fix the code at each diagnostic, then call widget_install again with the same folder. Nothing was installed.',
+  'slug-taken': 'A built-in widget has this slug. Change the slug in ctx.widgets.register, then call widget_install again.',
+  'slug-changed': 'widget_reload keeps the slug. Use widget_install to install a widget with a new slug.',
+  'install-failed': 'Read the diagnostics. Fix the code and call widget_install again. If the diagnostics name the plugin manager or pnpm, tell the user.',
+  'not-installed': 'Call widget_list. Only a widget that widget_install installed can be reloaded or removed.',
+  'creation-unavailable': 'This host has no plugin manager, so it cannot install widgets. Tell the user.',
 }
 
 interface ToolError {
   code: ToolErrorCode
   message: string
   nextStep: string
+  /** The creation gate that refused the code. */
+  gate?: GateName
+  diagnostics?: string[]
+}
+
+/** The text of `widget_guide` before the OpenUI guide: the widget API (`widget_phase2.creation.tools`). */
+const WIDGET_API_GUIDE = `# Writing a widget
+
+A widget is one TypeScript bundle: src/index.ts. It exports name, inject = ['widgets', 'timer'], and apply(ctx).
+apply calls ctx.widgets.register once. The definition has a slug, a title, a program, an initial state, and actions.
+An action is a query (reads the state) or a mutation (writes with w.update). The window and the agent run the same actions.
+
+Steps:
+1. Call widget_template. Write its files into an empty folder. Change the slug, title, state, actions, and program.
+2. Call widget_install with the absolute folder path. The gates compile, lint, type-check, and test-run the code.
+3. Check the widget: widget_describe, then widget_call each action.
+4. To change the code, edit the files and call widget_reload with the slug. widget_install of the same slug replaces it too.
+5. widget_remove removes the bundle. The state stays.
+
+Rules that the gates check:
+- No raw setTimeout, setInterval, setImmediate, or queueMicrotask. Use ctx.timeout and ctx.interval: they stop with the widget.
+- Await each promise, or end it with .catch(). An unhandled rejection ends the host.
+- No loop without an exit, such as while (true) with no break. A loop that blocks stops every widget.
+- apply must not throw. Each action is called once with {} (an action whose args schema refuses {} is not called), then timers run for 1.5 s. The heap limit is 256 MB.
+- Only zod and the types of deepwidgets:widget can be imported. Node built-in modules are not in the types.
+
+The types of the widget API (import type { WidgetContext } from 'deepwidgets:widget'):
+
+\`\`\`ts
+TYPES
+\`\`\`
+
+# The program: OpenUI Lang
+
+The program is the UI text of the widget. Query("<action>", args, default) runs a query action. Mutation("<action>", args) runs a mutation action.
+`
+
+/** The text of `widget_guide`: the widget API, then the OpenUI guide of the component set that the shell generated. */
+async function guideText(): Promise<string> {
+  const require = createRequire(import.meta.url)
+  const file = join(dirname(require.resolve('@deepwidgets/shell/package.json')), 'dist', 'guide.md')
+  const openui = await readFile(file, 'utf8')
+  return WIDGET_API_GUIDE.replace('TYPES', (await widgetTypesText()).trim()) + openui
 }
 
 /** `epoch` names the host start that issued the token; rows of an earlier start (or with no epoch) are void. */
@@ -107,8 +164,10 @@ function toolOk(body: Record<string, unknown>): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(body) }], structuredContent: body }
 }
 
-function toolError(code: ToolErrorCode, message: string): CallToolResult {
+function toolError(code: ToolErrorCode, message: string, extra: { gate?: GateName | undefined, diagnostics?: string[] } = {}): CallToolResult {
   const error: ToolError = { code, message, nextStep: NEXT_STEP[code] }
+  if (extra.gate !== undefined) error.gate = extra.gate
+  if (extra.diagnostics !== undefined) error.diagnostics = extra.diagnostics
   return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error }) }], structuredContent: { error } }
 }
 
@@ -278,6 +337,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       return toolOk(await run())
     } catch (error) {
       if (isWidgetError(error)) return toolError(error.code, error.message)
+      if (error instanceof CreationError) return toolError(error.code, error.message, { gate: error.gate, diagnostics: error.diagnostics })
       ctx.logger.warn('mcp: a tool failed', error)
       return toolError('internal-error', error instanceof Error ? error.message : String(error))
     }
@@ -303,9 +363,12 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       requestId: z.string().min(1).max(100).optional(),
     })
     const changesInput = z.object({ since: z.string().optional() })
+    const templateInput = z.object({ slug: z.string().regex(SLUG).optional(), title: z.string().min(1).max(80).optional() })
+    const installInput = z.object({ dir: z.string().min(1) })
+    const slugInput = z.object({ slug: z.string().regex(SLUG) })
     const mcp = new McpServer(
       { name: 'deepwidgets', version: '0.0.0' },
-      { instructions: 'deepWidgets: desktop widgets. Call widget_list, then widget_describe, then widget_call. Pass a new requestId on each mutation. Call widget_changes with the last cursor to see what changed.' },
+      { instructions: 'deepWidgets: desktop widgets. Call widget_list, then widget_describe, then widget_call. Pass a new requestId on each mutation. Call widget_changes with the last cursor to see what changed. To create a widget, call widget_guide and widget_template, write the files, then call widget_install.' },
     )
     mcp.registerTool('widget_list', {
       description: 'List the live widgets: slug, title, state revision, program revision. Also gives a cursor for widget_changes.',
@@ -340,8 +403,53 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       if (out.reset === true) return { ...out, error: { code: 'stale-cursor', message: 'the cursor is from another host process or too old', nextStep: NEXT_STEP['stale-cursor'] } }
       return { ...out }
     }))
+
+    mcp.registerTool('widget_template', {
+      description: 'Give the files of the TypeScript widget template, with the slug and title filled in. Write them into an empty folder, change them, then call widget_install with the absolute folder path.',
+      inputSchema: lenient(templateInput),
+      annotations: { readOnlyHint: true },
+    }, tool(templateInput, async ({ slug, title }) => {
+      const files = await templateFiles(slug ?? 'my-widget', title ?? 'My widget')
+      return { files, nextStep: 'Write each file under one empty folder (src/index.ts), change it, then call widget_install with the absolute folder path. Call widget_guide for the API and the components.' }
+    }))
+
+    mcp.registerTool('widget_guide', {
+      description: 'Give the guide for writing a widget: the widget API types, the rules that the install gates check, and the OpenUI Lang guide of the component set for the program.',
+      inputSchema: lenient(listInput),
+      annotations: { readOnlyHint: true },
+    }, tool(listInput, async () => ({ guide: await guideText() })))
+
+    mcp.registerTool('widget_install', {
+      description: 'Install the widget in a folder (absolute path, with src/index.ts). The gates compile, lint, type-check, and test-run the code first; code that fails a gate is not installed. A second install of the same slug replaces the bundle; the state stays.',
+      inputSchema: lenient(installInput),
+    }, tool(installInput, async ({ dir }) => ({ ...await creator().install(dir), nextStep: 'Call widget_describe with the slug, then widget_call each action to check it.' })))
+
+    mcp.registerTool('widget_reload', {
+      description: 'Run the gates again on the folder that the widget was installed from, and replace the bundle. Use it after you edit the files. The state stays.',
+      inputSchema: lenient(slugInput),
+    }, tool(slugInput, async ({ slug }) => ({ ...await creator().reload(slug), nextStep: 'Call widget_describe with the slug, then widget_call the changed actions.' })))
+
+    mcp.registerTool('widget_remove', {
+      description: 'Remove the bundle of a widget that widget_install installed. Its window closes. The state stays, so a later install of the slug gets it back.',
+      inputSchema: lenient(slugInput),
+    }, tool(slugInput, async ({ slug }) => ({ ...await creator().remove(slug) })))
     return mcp
   }
+
+  /** The installer, while the plugin manager and the profile are there (`widget_phase2.creation`). */
+  let installer: WidgetInstaller | undefined
+  function creator(): WidgetInstaller {
+    if (installer === undefined) throw new CreationError('creation-unavailable', 'the host has no plugin manager or no profile')
+    return installer
+  }
+  ctx.inject(['pluginManager', 'profileContext'], (inner) => {
+    installer = new WidgetInstaller({
+      pluginManager: inner.pluginManager,
+      profileDir: inner.profileContext.dir,
+      widgets: ctx.widgets,
+    })
+    inner.effect(() => () => { installer = undefined }, 'mcp: the widget installer')
+  })
 
   const modern = createMcpHandler((request) => buildServer(request.authInfo?.clientId ?? 'anonymous'), {
     legacy: 'stateless',

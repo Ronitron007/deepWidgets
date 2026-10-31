@@ -232,7 +232,9 @@ async function main() {
     const tools = listed.map((tool) => tool.name).sort()
     const callSchema = listed.find((tool) => tool.name === 'widget_call')?.inputSchema
     check('tools/list advertises the input schema of widget_call', callSchema?.properties?.slug?.type === 'string' && callSchema?.properties?.args?.type === 'object' && callSchema?.required?.includes('action'), JSON.stringify(callSchema))
-    check('tools are widget_call, widget_changes, widget_describe, widget_list', JSON.stringify(tools) === JSON.stringify(['widget_call', 'widget_changes', 'widget_describe', 'widget_list']), JSON.stringify(tools))
+    const interact = ['widget_call', 'widget_changes', 'widget_describe', 'widget_list']
+    const create = ['widget_guide', 'widget_install', 'widget_reload', 'widget_remove', 'widget_template']
+    check('tools are the interact tools widget_call, widget_changes, widget_describe, widget_list and the create tools of widget.creation', JSON.stringify(tools) === JSON.stringify([...interact, ...create].sort()), JSON.stringify(tools))
 
     const list = body(await client.callTool({ name: 'widget_list', arguments: {} }))
     check('widget_list names sample', list?.widgets?.some((widget) => widget.slug === 'sample'), JSON.stringify(list?.widgets))
