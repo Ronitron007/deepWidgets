@@ -1,24 +1,32 @@
 #!/usr/bin/env node
 /**
- * Check of the fixed MCP port, the port file, and the nonce (unit widget.mcp_port).
- * - port_file: a CLI host (web profile) on port P writes $DSH_HOME/deepwidgets/mcp.json with
- *   { port: P, nonce }, mode 0600. An agent reads the file, gets a token, and the token answer
- *   carries the same nonce. The agent then uses /mcp with the token.
- * - second_instance: the desktop app (tools/smoke-desktop.mjs with DEEPWIDGETS_MCP_PORT=P) starts
- *   while that host holds P. It must fail, and its log must show `listen EADDRINUSE` for P. The
- *   first host keeps serving with the same nonce.
- * - port_squat: the host stops and a fake server takes P. An agent that checks the nonce refuses
- *   the fake token. The mutant (an agent that does not check the nonce) accepts it, so the check
- *   can fail.
+ * Check of the fixed MCP port, the port file, and the token handshake (unit widget.mcp_port).
  * - setting: DEEPWIDGETS_MCP_PORT of the desktop Host gives the default, a set port, or a loud error.
+ * - port_file: a CLI host (web profile) on port P writes $DSH_HOME/deepwidgets/mcp.json with
+ *   { port: P, nonce, pid }, mode 0600. An agent reads the file, sends a random challenge to
+ *   POST /mcp/token, and checks proof = HMAC-SHA256(nonce, challenge). The answer has no nonce.
+ * - owner: a second CLI host on the same home does not overwrite the file of a live host, and its
+ *   stop does not remove it.
+ * - second_instance: the desktop app (tools/smoke-desktop.mjs with DEEPWIDGETS_MCP_PORT=P) starts
+ *   while the first host holds P. It fails with `listen EADDRINUSE` for P, and Electron main keeps
+ *   a port file whose owner is alive.
+ * - clean_stop: SIGTERM of the host removes its port file.
+ * - replay: an attacker that never reads the file records a token answer; the host is SIGKILLed;
+ *   the file stays; a fake server on P replays or echoes. The agent refuses each fake token. The
+ *   mutant agent (no proof check) accepts it, so the check can fail.
+ * - crash_cleanup: the desktop app fails on P while its home holds a port file of a dead host;
+ *   Electron main removes the file.
  * Prints `widgets-mcp-port: pass` and exits 0 only when every check passes.
+ * WIDGETS_MCP_PORT_SKIP_DESKTOP=1 skips second_instance and crash_cleanup (for quick mutant runs;
+ * the run then does not pass).
  * Needs `corepack pnpm run build:artifacts` and the desktop build first. It starts the desktop
  * app, so run it under the machine smoke lock.
  */
 import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
-import { createServer as createHttpServer } from 'node:http'
+import { createServer as createHttpServer, request as httpRequest } from 'node:http'
 import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -34,6 +42,7 @@ const work = await mkdtemp(join(process.env.WIDGETS_MCP_PORT_TMP ?? tmpdir(), 'w
 const home = join(work, 'home')
 const logPath = join(work, 'host.log')
 const portFile = join(home, 'deepwidgets', 'mcp.json')
+const skipDesktop = process.env.WIDGETS_MCP_PORT_SKIP_DESKTOP === '1'
 const results = []
 const children = new Set()
 
@@ -54,8 +63,11 @@ function freePort() {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const challenge = () => randomBytes(16).toString('base64url')
+const proofOf = (nonce, text) => createHmac('sha256', nonce).update(text).digest('hex')
+const readJson = (file) => { try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return undefined } }
 
-/** Start a CLI host (web profile) on `port`. Resolves when the host prints its URL. */
+/** Start a CLI host (web profile) on `port` with DSH_HOME `home`. Resolves when the host prints its URL. */
 async function startHost(port) {
   mkdirSync(home, { recursive: true })
   const out = createWriteStream(logPath, { flags: 'a' })
@@ -80,41 +92,72 @@ async function startHost(port) {
   return child
 }
 
-/** Wait until `file` exists and parses as JSON. The port file is written after the route is live. */
-async function waitForJson(file, ms) {
+function stopped(child) {
+  return new Promise((resolve) => { if (child.exitCode !== null || child.signalCode !== null) resolve(); else child.once('exit', () => resolve()) })
+}
+
+/** Wait until `test()` is true, or `ms` pass. Gives the last value of `test()`. */
+async function waitFor(test, ms) {
   const end = Date.now() + ms
-  while (Date.now() < end) {
-    try { return JSON.parse(readFileSync(file, 'utf8')) } catch { await sleep(250) }
+  let value = test()
+  while (!value && Date.now() < end) {
+    await sleep(250)
+    value = test()
   }
-  return undefined
+  return value
 }
 
 /**
- * The agent side of `standing.hard.port_squat`: read the port file, ask for a token, and compare
- * the nonce of the answer with the nonce of the file before the token is used.
- * @param checkNonce - false is the mutant: the agent trusts any server on the port.
- * @returns { token, port, nonce } of the accepted answer.
- * @throws when the answer nonce is not the file nonce (with checkNonce), or the request fails.
+ * POST /mcp/token on `port` with `body`; gives the status and the JSON answer. Each request uses a
+ * new connection: the servers on the port change during the check, and a pooled keep-alive socket
+ * of a closed server fails the next request.
  */
-async function agentToken(file, checkNonce) {
-  const { port, nonce } = JSON.parse(readFileSync(file, 'utf8'))
-  if (!Number.isInteger(port) || typeof nonce !== 'string' || nonce === '') throw new Error(`the port file ${file} is not { port, nonce }`)
-  const answer = await fetch(`http://127.0.0.1:${String(port)}/mcp/token`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ agent: 'Port Check Agent' }),
-    signal: AbortSignal.timeout(10_000),
+function postToken(port, body) {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(`http://127.0.0.1:${String(port)}/mcp/token`, {
+      method: 'POST', agent: false, timeout: 10_000,
+      headers: { 'content-type': 'application/json', connection: 'close' },
+    }, (res) => {
+      let text = ''
+      res.setEncoding('utf8')
+      res.on('data', (chunk) => { text += chunk })
+      res.on('end', () => {
+        let parsed = null
+        try { parsed = JSON.parse(text) } catch { /* not JSON */ }
+        resolve({ status: res.statusCode, body: parsed })
+      })
+    })
+    req.once('timeout', () => req.destroy(new Error('POST /mcp/token timed out')))
+    req.once('error', reject)
+    req.end(JSON.stringify(body))
   })
-  const body = await answer.json().catch(() => null)
-  if (answer.status !== 200 || typeof body?.token !== 'string') throw new Error(`POST /mcp/token gave ${String(answer.status)}`)
-  if (checkNonce && body.nonce !== nonce) {
-    throw new Error(`nonce mismatch: the server on port ${String(port)} is not the host that wrote ${file}; the token was not used`)
-  }
-  return { token: body.token, port, nonce: body.nonce }
 }
 
-/** Run tools/smoke-desktop.mjs with `env`; gives its exit code, its output, and its temp folder. */
-async function runSmoke(env, smokeTmp) {
+/**
+ * The agent side of `standing.hard.port_squat`, as deepwidgets/mcp/README.md tells it: read the port
+ * file, send a random challenge, and check proof = HMAC-SHA256(nonce, challenge) before the token is used.
+ * @param checkProof - false is the mutant: the agent trusts any server on the port.
+ * @returns { token, port, answer } of the accepted answer.
+ * @throws when the proof is wrong (with checkProof), or the request fails.
+ */
+async function agentToken(file, checkProof) {
+  const { port, nonce } = JSON.parse(readFileSync(file, 'utf8'))
+  if (!Number.isInteger(port) || typeof nonce !== 'string' || nonce === '') throw new Error(`the port file ${file} is not { port, nonce, pid }`)
+  const sent = challenge()
+  const { status, body } = await postToken(port, { agent: 'Port Check Agent', challenge: sent })
+  if (status !== 200 || typeof body?.token !== 'string') throw new Error(`POST /mcp/token gave ${String(status)}`)
+  if (checkProof) {
+    const expected = Buffer.from(proofOf(nonce, sent))
+    const got = Buffer.from(typeof body.proof === 'string' ? body.proof : '')
+    if (got.length !== expected.length || !timingSafeEqual(got, expected)) {
+      throw new Error(`proof mismatch: the server on port ${String(port)} is not the host that wrote ${file}; the token was not used`)
+    }
+  }
+  return { token: body.token, port, answer: body }
+}
+
+/** Run tools/smoke-desktop.mjs with `env`. `seed(home)` runs once the smoke home folder exists. */
+async function runSmoke(env, smokeTmp, seed) {
   mkdirSync(smokeTmp, { recursive: true })
   const child = spawn(process.execPath, [join(ROOT, 'tools/smoke-desktop.mjs')], {
     cwd: ROOT,
@@ -125,9 +168,24 @@ async function runSmoke(env, smokeTmp) {
   let output = ''
   child.stdout.on('data', (chunk) => { output += chunk })
   child.stderr.on('data', (chunk) => { output += chunk })
-  const code = await new Promise((resolve) => { child.once('exit', (exit) => { children.delete(child); resolve(exit) }) })
-  const folder = readdirSync(smokeTmp).find((name) => name.startsWith('deepwidgets-smoke-desktop-'))
-  return { code, output: output.trim(), folder: folder === undefined ? undefined : join(smokeTmp, folder) }
+  const exited = new Promise((resolve) => { child.once('exit', (exit) => { children.delete(child); resolve(exit) }) })
+  const folderOf = () => readdirSync(smokeTmp).find((name) => name.startsWith('deepwidgets-smoke-desktop-'))
+  // The smoke makes its home before it starts the app; the Host starts many seconds later.
+  const folder = await waitFor(() => { const name = folderOf(); return name !== undefined && existsSync(join(smokeTmp, name, 'home')) ? join(smokeTmp, name) : undefined }, 30_000)
+  if (folder !== undefined) seed?.(join(folder, 'home'))
+  const code = await exited
+  const desktopLog = folder !== undefined && existsSync(join(folder, 'desktop.log')) ? readFileSync(join(folder, 'desktop.log'), 'utf8') : ''
+  return { code, output: output.trim(), folder, desktopLog }
+}
+
+/** The desktop app with DEEPWIDGETS_MCP_PORT=port while that port is taken. Gives the EADDRINUSE line and the smoke home. */
+async function desktopOnTakenPort(port, label, seed) {
+  // The default smoke bound (240 s): a first launch of a fresh worktree prepares its runtime first.
+  const smoke = await runSmoke({ DEEPWIDGETS_MCP_PORT: String(port) }, join(work, label), seed)
+  const inUse = smoke.desktopLog.split('\n').find((line) => /\blisten EADDRINUSE\b/u.test(line) && line.includes(`:${String(port)}`))
+  const started = /desktop development: DSH_HOME=|Electron|dsh desktop/u.test(smoke.desktopLog)
+  console.log(`  desktop ${label}: exit ${String(smoke.code)}, ${smoke.output.split('\n').at(-1) ?? ''}, app started ${String(started)}, log ${smoke.folder === undefined ? 'missing' : join(smoke.folder, 'desktop.log')}`)
+  return { smoke, inUse, started }
 }
 
 /** The port setting of the desktop Host: default, `0`, a number, and bad values that must stop the Host. */
@@ -145,19 +203,23 @@ async function main() {
   await settingChecks()
   const port = await freePort()
   console.log(`widgets-mcp-port: work folder ${work}, port ${String(port)}`)
-  const host = await startHost(port)
 
   // port_file
-  const file = await waitForJson(portFile, 60_000)
+  const first = await startHost(port)
+  const file = await waitFor(() => readJson(portFile), 60_000)
   let mode
   try { mode = statSync(portFile).mode & 0o777 } catch { mode = undefined }
-  check('the host writes $DSH_HOME/deepwidgets/mcp.json as { port, nonce } with mode 0600',
-    file?.port === port && typeof file?.nonce === 'string' && file.nonce.length >= 16 && Object.keys(file).sort().join() === 'nonce,port' && mode === 0o600,
+  check('the host writes $DSH_HOME/deepwidgets/mcp.json as { port, nonce, pid } with mode 0600',
+    file?.port === port && file?.pid === first.pid && typeof file?.nonce === 'string' && file.nonce.length >= 16 && Object.keys(file).sort().join() === 'nonce,pid,port' && mode === 0o600,
     `${JSON.stringify(file === undefined ? null : { ...file, nonce: file.nonce === undefined ? undefined : '<set>' })} mode ${mode === undefined ? 'missing' : mode.toString(8)}`)
   let issued
-  try { issued = await agentToken(portFile, true) } catch (error) { check('an agent reads mcp.json and gets a token whose answer carries the file nonce', false, error.message) }
+  try { issued = await agentToken(portFile, true) } catch (error) { console.log(`  agent: ${error.message}`) }
+  check('an agent reads mcp.json, sends a challenge, and the answer proof is HMAC-SHA256(nonce, challenge)', issued !== undefined && issued.port === port)
+  check('the token answer has no nonce: it is only { token, agentId, proof }', issued !== undefined && Object.keys(issued.answer).sort().join() === 'agentId,proof,token' && !JSON.stringify(issued.answer).includes(file?.nonce ?? '\0'), JSON.stringify(Object.keys(issued?.answer ?? {})))
+  const noChallenge = await postToken(port, { agent: 'No Challenge' })
+  const shortChallenge = await postToken(port, { agent: 'Short Challenge', challenge: 'abc' })
+  check('POST /mcp/token without a challenge of at least 16 bytes gets 400', noChallenge.status === 400 && shortChallenge.status === 400, `${String(noChallenge.status)} ${String(shortChallenge.status)}`)
   if (issued !== undefined) {
-    check('an agent reads mcp.json and gets a token whose answer carries the file nonce', issued.nonce === file.nonce && issued.port === port)
     const client = new Client({ name: 'widgets-mcp-port-check', version: '0.0.0' })
     const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${String(port)}/mcp`), { requestInit: { headers: { authorization: `Bearer ${issued.token}` } } })
     let tools = []
@@ -172,43 +234,92 @@ async function main() {
     check('the agent uses /mcp with that token', tools.includes('widget_list'), JSON.stringify(tools))
   }
 
-  // second_instance: the desktop app with the same fixed port.
-  const smoke = await runSmoke({ DEEPWIDGETS_MCP_PORT: String(port), DSH_SMOKE_TIMEOUT_MS: process.env.WIDGETS_MCP_PORT_SMOKE_TIMEOUT_MS ?? '60000' }, join(work, 'smoke'))
-  const desktopLog = smoke.folder !== undefined && existsSync(join(smoke.folder, 'desktop.log')) ? readFileSync(join(smoke.folder, 'desktop.log'), 'utf8') : ''
-  const inUse = desktopLog.split('\n').find((line) => /\blisten EADDRINUSE\b/u.test(line) && line.includes(`:${String(port)}`))
-  console.log(`  desktop smoke: exit ${String(smoke.code)}, ${smoke.output.split('\n').at(-1) ?? ''}, log ${smoke.folder === undefined ? 'missing' : join(smoke.folder, 'desktop.log')}`)
-  check('a second app instance on the same fixed port fails loudly with listen EADDRINUSE for that port', smoke.code !== 0 && inUse !== undefined, inUse?.trim().slice(0, 200) ?? 'no EADDRINUSE line in the desktop log')
-  let after
-  try { after = await agentToken(portFile, true) } catch (error) { console.log(`  first host after the second start: ${error.message}`) }
-  check('the first host still serves with the same nonce', after?.nonce === file?.nonce && host.exitCode === null)
+  // owner: a second host on the same home and another port.
+  const before = readFileSync(portFile, 'utf8')
+  const second = await startHost(await freePort())
+  await sleep(3_000)
+  check('a second host on the same home does not overwrite the file of the live host', readFileSync(portFile, 'utf8') === before)
+  second.kill('SIGTERM')
+  await stopped(second)
+  check('the stop of the second host leaves the file of the live host', readFileSync(portFile, 'utf8') === before)
 
-  // port_squat: the host stops; a fake server takes the port; the port file is stale or restored.
+  // second_instance: the desktop app on the same port while the first host holds it.
+  if (!skipDesktop) {
+    const live = readFileSync(portFile, 'utf8')
+    let seeded
+    const run = await desktopOnTakenPort(port, 'second-instance', (smokeHome) => {
+      mkdirSync(join(smokeHome, 'deepwidgets'), { recursive: true, mode: 0o700 })
+      seeded = join(smokeHome, 'deepwidgets', 'mcp.json')
+      writeFileSync(seeded, live, { mode: 0o600 })
+    })
+    check('the desktop app reached its Host start', run.started, 'no app output in the desktop log')
+    check('a second app instance on the same fixed port fails loudly with listen EADDRINUSE for that port', run.smoke.code !== 0 && run.inUse !== undefined, run.inUse?.trim().slice(0, 200) ?? 'no EADDRINUSE line in the desktop log')
+    check('Electron main keeps a port file whose owner is alive', seeded !== undefined && existsSync(seeded) && readFileSync(seeded, 'utf8') === live)
+    let after
+    try { after = await agentToken(portFile, true) } catch (error) { console.log(`  first host after the second start: ${error.message}`) }
+    check('the first host still serves with a valid proof', after !== undefined && first.exitCode === null)
+  }
+
+  // clean_stop
+  first.kill('SIGTERM')
+  await stopped(first)
+  check('SIGTERM of the host removes its port file', await waitFor(() => !existsSync(portFile), 10_000))
+
+  // replay: the reviewer's case. The attacker never reads the file.
+  const third = await startHost(port)
+  await waitFor(() => readJson(portFile)?.pid === third.pid, 60_000)
+  const recorded = await postToken(port, { agent: 'Attacker', challenge: challenge() })
+  third.kill('SIGKILL')
+  await stopped(third)
   const stale = readFileSync(portFile, 'utf8')
-  host.kill('SIGKILL')
-  await new Promise((resolve) => { if (host.exitCode !== null || host.signalCode !== null) resolve(); else host.once('exit', resolve) })
+  check('after SIGKILL the port file stays (stale)', readJson(portFile)?.pid === third.pid)
   const fakes = [
-    ['with no nonce', () => ({ token: 'fake-token', agentId: 'fake' })],
-    ['with another nonce', () => ({ token: 'fake-token', agentId: 'fake', nonce: 'not-the-host-nonce' })],
+    ['that replays a recorded answer (and any nonce it leaked)', (sent) => ({ ...recorded.body, token: 'fake-token', ...(typeof recorded.body?.nonce === 'string' ? { proof: proofOf(recorded.body.nonce, sent) } : {}) })],
+    ['that echoes the challenge as the proof', (sent) => ({ token: 'fake-token', agentId: 'fake', proof: sent, nonce: sent, challenge: sent })],
+    ['with no proof', () => ({ token: 'fake-token', agentId: 'fake' })],
   ]
   for (const [label, answer] of fakes) {
-    const fake = createHttpServer((req, res) => {
-      req.resume()
+    const fake = createHttpServer(async (req, res) => {
+      let text = ''
+      for await (const chunk of req) text += chunk
+      let sent = ''
+      try { sent = String(JSON.parse(text).challenge ?? '') } catch { /* no body */ }
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify(answer()))
+      res.end(JSON.stringify(answer(sent)))
     })
     await new Promise((resolve, reject) => { fake.once('error', reject); fake.listen(port, '127.0.0.1', resolve) })
     try {
       let refused
       try { await agentToken(portFile, true) } catch (error) { refused = error.message }
-      check(`a fake server ${label} on the port: the agent refuses its token`, refused?.startsWith('nonce mismatch') === true, refused ?? 'accepted')
+      check(`a fake server ${label}: the agent refuses its token`, refused?.startsWith('proof mismatch') === true, refused ?? 'accepted')
       let mutant
-      try { mutant = await agentToken(portFile, false) } catch (error) { mutant = error.message }
-      check(`mutant (nonce not checked) against the fake server ${label}: the fake token is accepted, so the check can fail`, mutant?.token === 'fake-token', JSON.stringify(mutant))
+      try { mutant = await agentToken(portFile, false) } catch (error) { mutant = { error: error.message } }
+      check(`mutant (proof not checked) against the fake server ${label}: the fake token is accepted, so the check can fail`, mutant?.token === 'fake-token', JSON.stringify(mutant?.token ?? mutant))
     } finally {
       await new Promise((resolve) => fake.close(resolve))
     }
   }
-  check('the stale port file stayed in place for the squat checks', readFileSync(portFile, 'utf8') === stale)
+  check('the stale port file stayed in place for the replay checks', readFileSync(portFile, 'utf8') === stale)
+
+  // crash_cleanup: the desktop app fails on a taken port while its home holds a dead host's file.
+  if (!skipDesktop) {
+    const squatter = createServer()
+    await new Promise((resolve, reject) => { squatter.once('error', reject); squatter.listen(port, '127.0.0.1', resolve) })
+    let seeded
+    try {
+      const run = await desktopOnTakenPort(port, 'crash-cleanup', (smokeHome) => {
+        mkdirSync(join(smokeHome, 'deepwidgets'), { recursive: true, mode: 0o700 })
+        seeded = join(smokeHome, 'deepwidgets', 'mcp.json')
+        writeFileSync(seeded, stale, { mode: 0o600 })
+      })
+      check('crash_cleanup: the app fails with listen EADDRINUSE', run.smoke.code !== 0 && run.inUse !== undefined, run.inUse?.trim().slice(0, 200) ?? `app started ${String(run.started)}`)
+      check('Electron main removes a port file whose owner is dead when its Host fails', seeded !== undefined && !existsSync(seeded))
+    } finally {
+      await new Promise((resolve) => squatter.close(resolve))
+    }
+  } else {
+    check('desktop checks skipped (WIDGETS_MCP_PORT_SKIP_DESKTOP=1)', false)
+  }
 }
 
 let exitCode = 1
