@@ -292,12 +292,22 @@ interface Entry {
   routes: (() => Promise<void>)[]
 }
 
-/** State of one running call. */
+/** State of one running call or write. */
 interface Run {
   readonly signal: AbortSignal | undefined
   readonly by: string
   readonly action: string | undefined
+  /** True for a query: it cannot write. */
+  readonly query: boolean
   wrote: boolean
+  /** True after the job left its queue slot. */
+  settled: boolean
+}
+
+/** The async context of a job: the slug and the run that holds its queue slot. */
+interface Slot {
+  readonly slug: string
+  readonly run: Run
 }
 
 const json = (status: number, body: unknown): Response => Response.json(body, { status })
@@ -359,7 +369,7 @@ export const inject = ['connection', 'storageDomain']
 export function apply(ctx: Context): void {
   const widgets = new Map<string, Entry>()
   const events = new Set<OpenStream>()
-  const slot = new AsyncLocalStorage<string>()
+  const slot = new AsyncLocalStorage<Slot>()
   const inflight = new Map<string, { hash: string, promise: Promise<CallOutcome> }>()
   let domain: WidgetsDomain | undefined
 
@@ -436,8 +446,9 @@ export function apply(ctx: Context): void {
   /**
    * Run `job` in the queue of the slug. A job that waits longer than `waitMs` fails with `busy`
    * and does not run. The slot frees when `job` settles; `job` enforces its own run timeout.
+   * `job` runs in the async context of `run`, so a write from inside the job finds its run.
    */
-  function enqueue<T>(entry: Entry, waitMs: number, job: () => Promise<T>): Promise<T> {
+  function enqueue<T>(entry: Entry, waitMs: number, run: Run, job: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       let started = false
       let cancelled = false
@@ -451,7 +462,7 @@ export function apply(ctx: Context): void {
         if (cancelled) return
         started = true
         try {
-          resolve(await slot.run(entry.slug, job))
+          resolve(await slot.run({ slug: entry.slug, run }, job))
         } catch (error) {
           reject(error instanceof Error ? error : new Error(String(error)))
         }
@@ -478,12 +489,21 @@ export function apply(ctx: Context): void {
     return data
   }
 
-  /** update() from a timer or a plugin: queued, unless it runs inside a call of this slug. */
+  /**
+   * update() from a timer, a plugin, or a handler that calls `ctx.widgets.update`.
+   * A write from a call that timed out is refused, whatever its slug. A write from a running
+   * mutation of the same slug uses the slot of that mutation. Each other write waits in the queue.
+   */
   function update(slug: string, fn: (state: unknown) => unknown, by: string): Promise<unknown> {
     const entry = liveEntry(slug)
-    const run: Run = { signal: undefined, by, action: undefined, wrote: false }
-    if (slot.getStore() === slug) return write(entry, fn, run)
-    return enqueue(entry, timeoutOf(entry), () => write(entry, fn, run))
+    const current = slot.getStore()
+    if (current?.run.signal?.aborted === true) return Promise.reject(new WidgetError('timeout', 'a write after the timeout was refused'))
+    if (current?.slug === slug && !current.run.settled) {
+      if (current.run.query) return Promise.reject(new WidgetError('handler-error', `the query ${String(current.run.action)} cannot write`))
+      return write(entry, fn, current.run)
+    }
+    const run: Run = { signal: undefined, by, action: undefined, query: false, wrote: false, settled: false }
+    return enqueue(entry, timeoutOf(entry), run, () => write(entry, fn, run))
   }
 
   // ---- calls ----
@@ -518,7 +538,7 @@ export function apply(ctx: Context): void {
 
   function runAction(entry: Entry, action: WidgetAction<unknown>, args: unknown, caller: string): Promise<CallOutcome> {
     const controller = new AbortController()
-    const run = { signal: controller.signal, by: caller, action: action.name, wrote: false }
+    const run = { signal: controller.signal, by: caller, action: action.name, query: action.kind === 'query', wrote: false, settled: false }
     const job = async (): Promise<CallOutcome> => {
       try {
         const result = await execute(entry, action, args, run, () => { controller.abort() })
@@ -526,10 +546,13 @@ export function apply(ctx: Context): void {
       } catch (error) {
         if (error instanceof WidgetError) error.wrote = run.wrote
         throw error
+      } finally {
+        run.settled = true
       }
     }
-    if (action.kind === 'query') return job()
-    return enqueue(entry, timeoutOf(entry, action), job)
+    // A query does not wait in the queue, but it runs in the async context of its run too.
+    if (action.kind === 'query') return slot.run({ slug: entry.slug, run }, job)
+    return enqueue(entry, timeoutOf(entry, action), run, job)
   }
 
   async function call(slug: string, name: string, args: unknown, { caller, requestId }: CallOptions): Promise<CallOutcome> {

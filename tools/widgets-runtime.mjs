@@ -217,6 +217,10 @@ const CHECK_WIDGET = `
         wc.lateAborted = w.signal.aborted
         try { await w.update((s) => ({ ...s, n: s.n + 1000 })); wc.late = 'wrote' } catch (error) { wc.late = error.code ?? String(error) }
       } },
+      { name: 'leak', kind: 'mutation', timeoutMs: 300, handler: async () => {
+        await pause(600)
+        try { await wc.ctx.widgets.update('check', (s) => ({ ...s, n: s.n + 1000 })); wc.leak = 'wrote' } catch (error) { wc.leak = error.code ?? String(error) }
+      } },
       { name: 'boom', kind: 'mutation', handler: () => { throw new Error('boom on purpose') } },
       { name: 'slow', kind: 'mutation', handler: async (_args, w) => { await pause(800); return w.update((s) => ({ ...s, slow: true })) } },
       { name: 'quick', kind: 'mutation', timeoutMs: 200, handler: (_args, w) => w.update((s) => ({ ...s, quick: true })) },
@@ -270,6 +274,13 @@ async function firstHost(host) {
   const lateFacts = await host.inspector.run('return { late: wc.late, aborted: wc.lateAborted }')
   check('timeout: 504 timeout', late.status === 504 && late.body.error?.code === 'timeout', JSON.stringify(late.body))
   check('timeout: w.signal aborted and the later write is refused', lateFacts.aborted === true && lateFacts.late === 'timeout' && afterLate === 10, `late=${String(lateFacts.late)} aborted=${String(lateFacts.aborted)} n=${String(afterLate)}`)
+
+  // The timeout also refuses a later ctx.widgets.update of that call (not only w.update).
+  const leak = await host.post('/api/widgets/check/call', { action: 'leak' })
+  await sleep(700)
+  const afterLeak = (await host.post('/api/widgets/check/call', { action: 'get' })).body.result.n
+  const leakFact = await host.inspector.run('return wc.leak')
+  check('timeout: a later ctx.widgets.update of the call is refused', leak.status === 504 && leakFact === 'timeout' && afterLeak === 10, `status=${String(leak.status)} leak=${String(leakFact)} n=${String(afterLeak)}`)
 
   // busy: a job that waits longer than its timeout fails and does not run.
   const slow = host.post('/api/widgets/check/call', { action: 'slow' })
