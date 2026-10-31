@@ -103,6 +103,13 @@ async function main() {
     const list = body(await client.callTool({ name: 'widget_list', arguments: {} }))
     check('widget_list names sample', list?.widgets?.some((widget) => widget.slug === 'sample'), JSON.stringify(list?.widgets))
 
+    const described = body(await client.callTool({ name: 'widget_describe', arguments: { slug: 'sample' } }))
+    const actions = new Map((described?.actions ?? []).map((action) => [action.name, action]))
+    const addArgs = actions.get('add')?.args
+    check('widget_describe sample lists get and add with the args schema of add',
+      actions.get('get')?.kind === 'query' && actions.get('add')?.kind === 'mutation' && addArgs?.type === 'object' && addArgs?.properties?.by?.type === 'number' && typeof described?.state?.count === 'number',
+      JSON.stringify(described?.actions))
+
     const before = body(await client.callTool({ name: 'widget_call', arguments: { slug: 'sample', action: 'get' } }))
     const added = body(await client.callTool({ name: 'widget_call', arguments: { slug: 'sample', action: 'add', args: { by: 1 }, requestId: 'mcp-check-1' } }))
     const after = body(await client.callTool({ name: 'widget_call', arguments: { slug: 'sample', action: 'get' } }))

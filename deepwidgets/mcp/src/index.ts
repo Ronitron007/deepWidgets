@@ -30,8 +30,8 @@ type ToolErrorCode = WidgetErrorCode | 'stale-cursor' | 'internal-error'
 /** What the agent does next, for each error code. */
 const NEXT_STEP: Record<ToolErrorCode, string> = {
   'unknown-widget': 'Call widget_list and retry with an exact slug.',
-  'unknown-action': 'Check the action name with the user or the widget program, then retry with an exact name.',
-  'invalid-args': 'Fix args to match the action schema in the message, then retry.',
+  'unknown-action': 'Call widget_describe with this slug and retry with an exact action name.',
+  'invalid-args': 'Fix args to match the action args schema from widget_describe, then retry.',
   'handler-error': 'The action threw. Do not retry unchanged. Tell the user the message.',
   'timeout': 'The action ran past its limit and was aborted. Its later writes were refused. Read the state with widget_describe before you retry with the same requestId.',
   'busy': 'Other writes on this widget held the queue. This call did not run. Retry shortly.',
@@ -167,13 +167,13 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     }, () => guarded(() => ({ cursor: widgets.cursor(), widgets: widgets.list() })))
 
     mcp.registerTool('widget_describe', {
-      description: 'Describe one widget: its summary and its current state with the state revision.',
+      description: 'Describe one widget: its actions (name, kind, args JSON Schema, timeoutMs) and its current state. Call it before widget_call on a widget you have not described.',
       inputSchema: z.object({ slug: z.string() }),
       annotations: { readOnlyHint: true },
     }, ({ slug }) => guarded(() => {
+      const description = widgets.describe(slug)
       const state = widgets.get(slug)
-      const summary = widgets.list().find((widget) => widget.slug === slug)
-      return { ...summary, slug, state: state.data, rev: state.rev }
+      return { ...description, rev: state.rev, state: state.data }
     }))
 
     mcp.registerTool('widget_call', {
