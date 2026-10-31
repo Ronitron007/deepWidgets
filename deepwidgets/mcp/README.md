@@ -21,7 +21,7 @@ If a different process uses the port, the app does not start. The app shows an e
 The host writes the file `$DSH_HOME/deepwidgets/mcp.json`. The file has mode 0600, so only your user can read it. The content is:
 
 ```json
-{ "port": 47615, "nonce": "<random text>", "pid": 12345 }
+{ "port": 47615, "nonce": "<random text>", "pid": 12345, "started": 1793462400000 }
 ```
 
 - `port` is the port of the server.
@@ -30,13 +30,15 @@ The host writes the file `$DSH_HOME/deepwidgets/mcp.json`. The file has mode 060
 
 - `pid` is the process ID of the host.
 
+- `started` is the start time of the host process, in milliseconds since 1970. A different process can get the same process ID later. A process with a different start time is not the owner.
+
 The host does not replace a file whose host process is alive. The host removes its file when it stops. The desktop app removes the file when its host stops unexpectedly or fails to start.
 
 ## Token handshake `mcp_readme.handshake`
 
 Before you send a token to a server, make sure that the server is the host. Another process can use the port after the host stops.
 
-1. Read `port` and `nonce` from `$DSH_HOME/deepwidgets/mcp.json`.
+1. Read `port` and `nonce` from `$DSH_HOME/deepwidgets/mcp.json`. Keep the nonce in the memory of your process. Do not put the nonce in a command line or in the environment of a different process. Other users can see command lines with `ps`.
 
 2. Make a challenge: at least 16 random bytes, as base64url or hex text.
 
@@ -50,13 +52,25 @@ Before you send a token to a server, make sure that the server is the host. Anot
 
 7. If your result is equal to `proof`, use the token. Send it in the header `Authorization: Bearer <token>` on each request to `http://127.0.0.1:<port>/mcp`.
 
-A shell example of the proof calculation:
+A shell example of the proof calculation. The `node` process reads the nonce from the file itself. Only the challenge, which is not secret, is in the environment:
 
 ```bash
-printf '%s' "$challenge" | openssl dgst -sha256 -hmac "$nonce" -r | cut -d' ' -f1
+challenge=$(node -e 'process.stdout.write(require("crypto").randomBytes(16).toString("base64url"))')
+# Send the challenge to POST /mcp/token. Then calculate the proof:
+CHALLENGE="$challenge" node -e '
+const { readFileSync } = require("fs"), { join } = require("path"), { homedir } = require("os")
+const file = join(process.env.DSH_HOME || join(homedir(), ".dsh"), "deepwidgets", "mcp.json")
+const { nonce } = JSON.parse(readFileSync(file, "utf8"))
+process.stdout.write(require("crypto").createHmac("sha256", nonce).update(process.env.CHALLENGE).digest("hex"))'
 ```
 
-The token stays valid after a host restart. The host keeps the 64 newest tokens.
+A token is valid only for the host start that issued it. When the host starts again, it has a new nonce, and all earlier tokens get 401. Thus:
+
+- Do not keep a token for a later session.
+
+- After a connection error or a 401, do a new handshake with a new challenge before you send data. A different process can use the port after the host stops.
+
+The host keeps the 64 newest tokens.
 
 ## Tools `mcp_readme.tools`
 
@@ -74,3 +88,5 @@ Each tool error gives `code`, `message`, and `nextStep`.
 - The server accepts only requests from this computer (loopback addresses). It refuses browser requests.
 
 - The handshake does not protect against a process of your own user. That process can read `mcp.json`.
+
+- The proof checks the server only at the handshake. If the host stops during a session, a different process can get the requests that follow. The steps above limit this to the requests before the first error.
