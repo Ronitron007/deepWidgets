@@ -46,10 +46,108 @@ function freePort() {
   })
 }
 
+// ---- inspector: the Loader lookup of tools/widgets-runtime.mjs ----
+
+function cdpSession(url) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url)
+    const waiting = new Map()
+    let next = 0
+    socket.addEventListener('open', () => {
+      resolve({
+        send(method, params = {}) {
+          next += 1
+          const id = next
+          socket.send(JSON.stringify({ id, method, params }))
+          return new Promise((done, fail) => { waiting.set(id, { resolve: done, reject: fail }) })
+        },
+        close() { socket.close() },
+      })
+    })
+    socket.addEventListener('message', (event) => {
+      const message = JSON.parse(String(event.data))
+      const item = waiting.get(message.id)
+      if (item === undefined) return
+      waiting.delete(message.id)
+      if (message.error) item.reject(new Error(message.error.message ?? 'cdp error'))
+      else if (message.result?.exceptionDetails) {
+        const details = message.result.exceptionDetails
+        item.reject(new Error(details.exception?.description ?? details.text ?? 'evaluate failed'))
+      } else item.resolve(message.result)
+    })
+    socket.addEventListener('error', () => {
+      for (const item of waiting.values()) item.reject(new Error('debugger connection failed'))
+      reject(new Error('debugger connection failed'))
+    })
+  })
+}
+
+async function connectInspector(inspectPort) {
+  const targets = await (await fetch(`http://127.0.0.1:${String(inspectPort)}/json/list`)).json()
+  if (typeof targets[0]?.webSocketDebuggerUrl !== 'string') throw new Error('the inspector has no target')
+  const session = await cdpSession(targets[0].webSocketDebuggerUrl)
+  const proto = await session.send('Runtime.evaluate', { expression: 'Function.prototype' })
+  const functions = await session.send('Runtime.queryObjects', { prototypeObjectId: proto.result.objectId })
+  const loaderProto = await session.send('Runtime.callFunctionOn', {
+    objectId: functions.objects.objectId,
+    functionDeclaration: 'function () { const found = this.filter((fn) => fn.name === "Loader" && typeof fn.prototype?.showLog === "function" && typeof fn.prototype?.locate === "function"); if (found.length !== 1) throw new Error("Loader functions " + found.length); return found[0].prototype }',
+  })
+  const loaders = await session.send('Runtime.queryObjects', { prototypeObjectId: loaderProto.result.objectId })
+  await session.send('Runtime.callFunctionOn', {
+    objectId: loaders.objects.objectId,
+    functionDeclaration: 'function () { if (this.length !== 1) throw new Error("Loader instances " + this.length); globalThis.__mcpCheck = { loader: this[0] } }',
+  })
+  return {
+    /** Evaluate an async function body in the host; `mc` is the check scratch object. */
+    async run(body) {
+      const reply = await session.send('Runtime.evaluate', { expression: `(async (mc) => { ${body} })(globalThis.__mcpCheck)`, awaitPromise: true, returnByValue: true })
+      return reply.result.value
+    },
+    close() { session.close() },
+  }
+}
+
+/**
+ * Call the real /mcp prefix route handler in the host with a fake socket address
+ * (fence.non_loopback_bind): a LAN peer is not practical in a check.
+ */
+const CALL_ROUTE = `
+  const fiber = mc.loader.ctx.plugin({ name: 'widgets-mcp-check', inject: ['webServer'], apply(ctx) { mc.ctx = ctx } })
+  await fiber
+  // prefixes is a TypeScript-private field of WebServer; the check reads the registered route from it.
+  const route = mc.ctx.webServer.prefixes.get('/mcp')
+  await fiber.dispose()
+  if (route === undefined || typeof route.handler !== 'function') throw new Error('no /mcp prefix route')
+  const call = (path, remoteAddress, host, body) => new Promise((resolve, reject) => {
+    const chunks = body === undefined ? [] : [Buffer.from(body)]
+    const req = {
+      url: path, method: 'POST', socket: { remoteAddress },
+      headers: { host, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      async *[Symbol.asyncIterator]() { for (const chunk of chunks) yield chunk },
+    }
+    let status
+    const res = {
+      headersSent: false,
+      writeHead(code) { status = code; this.headersSent = true; return this },
+      setHeader() {}, write() { return true }, on() { return this }, once() { return this },
+      end() { resolve(status) },
+    }
+    Promise.resolve(route.handler(req, res)).catch(reject)
+  })
+  return {
+    lanMcp: await call('/mcp', '192.168.1.5', HOST, '{}'),
+    lanToken: await call('/mcp/token', '192.168.1.5', HOST, JSON.stringify({ agent: 'lan' })),
+    mappedMcp: await call('/mcp', '::ffff:127.0.0.1', HOST, '{}'),
+    mappedToken: await call('/mcp/token', '::ffff:127.0.0.1', HOST, JSON.stringify({ agent: 'mapped' })),
+  }
+`
+
+let inspectPort
+
 async function startHost(port) {
   mkdirSync(home, { recursive: true })
   const out = createWriteStream(logPath, { flags: 'a' })
-  child = spawn(process.execPath, [BIN, '--profile', 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open'], {
+  child = spawn(process.execPath, [`--inspect=127.0.0.1:${String(inspectPort)}`, BIN, '--profile', 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open'], {
     cwd: home,
     env: { ...process.env, DSH_HOME: home },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -101,6 +199,7 @@ function body(result) {
 
 async function main() {
   const port = await freePort()
+  inspectPort = await freePort()
   const base = `http://127.0.0.1:${String(port)}`
   console.log(`widgets-mcp: work folder ${work}, port ${String(port)}`)
   await predicateChecks()
@@ -185,6 +284,17 @@ async function main() {
   check('Host evil.com@127.0.0.1 gets 403 on /mcp and /mcp/token', userinfo === 403 && userinfoToken === 403, `/mcp ${String(userinfo)}, /mcp/token ${String(userinfoToken)}`)
   const tokenWithOrigin = await fetch(`${base}/mcp/token`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://evil.example' }, body: JSON.stringify({ agent: 'x' }) })
   check('POST /mcp/token with an Origin header gets 403', tokenWithOrigin.status === 403, String(tokenWithOrigin.status))
+
+  // fence.non_loopback_bind: the real route handler, in the host, with a fake peer address.
+  const inspector = await connectInspector(inspectPort)
+  let peers
+  try {
+    peers = await inspector.run(CALL_ROUTE.replaceAll('HOST', JSON.stringify(`127.0.0.1:${String(port)}`)))
+  } finally {
+    inspector.close()
+  }
+  check('the route handler refuses a peer 192.168.1.5 with 403 on /mcp and /mcp/token', peers?.lanMcp === 403 && peers?.lanToken === 403, JSON.stringify(peers))
+  check('the route handler lets a peer ::ffff:127.0.0.1 through (/mcp 401 with no token, /mcp/token 200)', peers?.mappedMcp === 401 && peers?.mappedToken === 200, JSON.stringify(peers))
 
   // token.unbounded: the file keeps the newest 64 agents; the oldest token is dropped.
   const more = []
