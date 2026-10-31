@@ -1,0 +1,5 @@
+- insert:
+    - id: deepwidgets-widget-sample
+      name: '@deepwidgets/widget-sample'
+      config:
+        tickMs: 0

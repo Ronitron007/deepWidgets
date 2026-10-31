@@ -1,0 +1,25 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types",
+    "tsBuildInfoFile": "lib/tsconfig.host.tsbuildinfo"
+  },
+  "files": [
+    "src/index.ts"
+  ],
+  "references": [
+    {
+      "path": "../../vendor/cordis"
+    },
+    {
+      "path": "../../packages/storage/storage"
+    },
+    {
+      "path": "../../packages/storage/storage-domain"
+    },
+    {
+      "path": "../../packages/client/connection/tsconfig.host.json"
+    }
+  ]
+}

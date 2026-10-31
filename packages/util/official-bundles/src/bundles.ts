@@ -12,9 +12,9 @@ export const PROFILE_TEMPLATES: Record<string, ProfileTemplate> = {
     bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-acp-app'],
   },
   web: {
-    // deepwidgets-trim: probe.round_trip, trace.host, and trim.profile add the @deepwidgets bundles to the web profile.
+    // deepwidgets-trim: probe.round_trip, trace.host, trim.profile, and widget.runtime_core add the @deepwidgets bundles to the web profile.
     // bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'],
-    bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@deepwidgets/probe', '@deepwidgets/trace', '@deepwidgets/trim'],
+    bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@deepwidgets/probe', '@deepwidgets/trace', '@deepwidgets/widgets', '@deepwidgets/widget-sample', '@deepwidgets/trim'],
   },
   headless: {
     bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless'],
