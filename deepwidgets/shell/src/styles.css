@@ -1,0 +1,96 @@
+/* Widget shell stylesheet (ported from the overnight shell spike). Tailwind v4 compiles the classes that the shadcn components use.
+   Theming option `theme.tailwind_map` (recommended): DSH owns the values (--dsw-*),
+   the shell maps shadcn's variable names onto --dsw-alias-* once, here. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* DSH token sheets, read-only (ui-theme exports ./src/*). */
+@import "@deepseek-ai/dsh-client-ui-theme/src/styles/base.css" layer(theme);
+@import "@deepseek-ai/dsh-client-ui-theme/src/styles/design-platform.css" layer(theme);
+
+@source "./";
+
+/* DSH dark mode: body[data-ds-dark-theme] (boot-theme.ts). shadcn `dark:` classes follow it. */
+@custom-variant dark (&:is(body[data-ds-dark-theme] *));
+
+@theme inline {
+  --font-sans: var(--dsw-font-family);
+  --font-mono: var(--ds-font-family-code);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  /* DSH radius scale (docs/ui-radius.md): button/input R12, card R20. */
+  --radius-xs: var(--dsw-radius-xs);
+  --radius-sm: var(--dsw-radius-sm);
+  --radius-md: var(--dsw-radius-md);
+  --radius-lg: var(--dsw-radius-lg);
+  --radius-xl: var(--dsw-radius-xl);
+  --radius-2xl: var(--dsw-radius-panel);
+}
+
+/* The one mapping table. Declared on body, where DSH declares the aliases,
+   so body[data-ds-dark-theme] flips every value without a second table. */
+body {
+  --background: var(--dsw-alias-bg-base);
+  --foreground: var(--dsw-alias-label-primary);
+  --card: var(--dsw-alias-bg-layer-1);
+  --card-foreground: var(--dsw-alias-label-primary);
+  --popover: var(--dsw-alias-bg-layer-2);
+  --popover-foreground: var(--dsw-alias-label-primary);
+  --primary: var(--dsw-alias-button-primary-fill);
+  --primary-foreground: var(--dsw-alias-label-primary-inverted);
+  --secondary: var(--dsw-alias-interactive-bg-hover-solid);
+  --secondary-foreground: var(--dsw-alias-label-primary);
+  --muted: var(--dsw-alias-interactive-bg-hover-solid);
+  --muted-foreground: var(--dsw-alias-label-tertiary);
+  --accent: var(--dsw-alias-interactive-bg-hover);
+  --accent-foreground: var(--dsw-alias-label-primary);
+  --destructive: var(--dsw-alias-state-error-primary);
+  --destructive-foreground: var(--dsw-alias-label-primary-inverted);
+  --border: var(--dsw-alias-border-l2);
+  --input: var(--dsw-alias-border-l2);
+  --ring: var(--dsw-alias-border-l3);
+  --chart-1: var(--dsw-alias-brand-primary);
+  --chart-2: var(--dsw-alias-state-success-primary);
+  --chart-3: var(--dsw-alias-state-warn-primary);
+  --chart-4: var(--dsw-alias-state-error-primary);
+  --chart-5: var(--dsw-alias-label-tertiary);
+  --radius: var(--dsw-radius-md);
+}
+
+@layer base {
+  * { border-color: var(--border); }
+  html, body { background: transparent; margin: 0; }
+  body { color: var(--foreground); font-family: var(--dsw-font-family); font-size: 13px; line-height: 18px; }
+}
+
+/* Shell chrome: loading/error/empty. Plain CSS, no Tailwind needed. */
+.dw-surface { background: var(--card); border-radius: var(--dsw-radius-xl); padding: 12px; box-sizing: border-box; width: 100%; }
+.dw-state { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; padding: 12px; color: var(--muted-foreground); }
+.dw-state strong { color: var(--foreground); font-weight: 500; }
+.dw-state--error strong { color: var(--dsw-alias-state-error-primary); }
+.dw-skeleton { height: 12px; width: 100%; border-radius: var(--dsw-radius-xs); background: var(--dsw-alias-bg-skeleton, var(--muted)); }
+.dw-skeleton + .dw-skeleton { width: 70%; }
