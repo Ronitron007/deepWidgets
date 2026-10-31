@@ -7,6 +7,11 @@
  * With DSH_SMOKE_ROWS_SAVE set to a path, also write the host row snapshot to that file.
  * With DSH_SMOKE_ROWS_SNAPSHOT set to a path, compare that host snapshot with rows.host.txt and do not start the app.
  * With DSH_SMOKE_INSTALL set to a local bundle path, also call pluginManager.installBundle over the host Loader.
+ * With DSH_SMOKE_WIDGET set to a widget slug, Electron main also opens dsh-app://app/widget/?slug=<slug> (test only).
+ * The check finds the count in that page, posts add from the main window, and finds the new count in the page.
+ * Then it writes a new program with ctx.widgets.setProgram over the host Loader and finds its text in the page.
+ * Then it registers a second widget over the Loader, loads its page (with a bar chart of two bars), ends the
+ * registration, and checks that the page shows the removed state and does not open its stream again.
  * The trace test also needs the start-up steps of Electron main and a message for each client row.
  * Then it reads the rows of the trace window page dsh-app://app/trace.
  * Uses only Node built-in modules. Prints one result line.
@@ -346,6 +351,7 @@ const child = spawn('corepack', ['pnpm', 'run', 'start:desktop'], {
     DSH_DESKTOP_RENDERER_DEBUG_PORT: String(rendererPort),
     DSH_DESKTOP_HOST_INSPECT_PORT: String(hostInspectPort),
     DSH_DESKTOP_OPEN_DEVTOOLS: '0',
+    ...((process.env.DSH_SMOKE_WIDGET ?? '') === '' ? {} : { DSH_DESKTOP_WIDGET_SMOKE: process.env.DSH_SMOKE_WIDGET }),
   },
 })
 
@@ -377,6 +383,7 @@ try {
       if (failed === undefined && process.env.DSH_SMOKE_HELLO === '1') failed = await checkHello(page, deadline)
       if (failed === undefined && (process.env.DSH_SMOKE_ROWS ?? '') !== '') failed = await checkRows(page, deadline)
       if (failed === undefined && (process.env.DSH_SMOKE_INSTALL ?? '') !== '') failed = await checkInstall(deadline)
+      if (failed === undefined && (process.env.DSH_SMOKE_WIDGET ?? '') !== '') failed = await checkWidget(page, deadline)
     }
   }
 } catch (error) {
@@ -535,6 +542,129 @@ async function checkProbe(page, deadline) {
   const shown = text === '' ? 'missing' : text
   note(`probe text=${shown} hostPid=${String(hostPid)}`)
   return `probe text: ${shown}`
+}
+
+/** Read the widget page: the shown count, and the shell diagnostics `window.__dw`. */
+function widgetReadExpression() {
+  return `JSON.stringify({ count: document.querySelector('[data-dw=stat-value]')?.textContent ?? null,
+  dw: window.__dw ?? null, state: document.querySelector('[data-dw^=state-]')?.getAttribute('data-dw') ?? null,
+  text: document.body.innerText, chart: document.querySelectorAll('[data-chart] .recharts-bar-rectangle').length })`
+}
+
+/** Run `declaration(widgets, ...args)` in the host, with the service ctx.widgets of the Loader. */
+async function hostWidgets(deadline, declaration, args) {
+  return withHostLoader(deadline, async (session, loaderId) => {
+    const call = await cdpCall(session, 'Runtime.callFunctionOn', {
+      objectId: loaderId,
+      awaitPromise: true,
+      returnByValue: true,
+      arguments: args.map((value) => ({ value })),
+      functionDeclaration: `async function (...args) {
+        if (this.length !== 1) throw new Error("Loader instances " + this.length);
+        const widgets = this[0].ctx?.get?.("widgets");
+        if (widgets === undefined) throw new Error("no widgets service on Loader ctx");
+        return (${declaration})(widgets, ...args);
+      }`,
+    })
+    if (call?.exceptionDetails) {
+      throw new Error(String(call.exceptionDetails.exception?.description ?? call.exceptionDetails.text ?? 'host call failed'))
+    }
+    return call?.result?.value
+  })
+}
+
+/** The sample program with a new header title. */
+function widgetProgram(title) {
+  return `root = Card([CardHeader("${title}", "A counter"), Stat("Count", s.count), Button("Add 1", Action([@Run(add), @Run(s)]))])
+s = Query("get", {}, {count: 0})
+add = Mutation("add", {by: 1})
+`
+}
+
+async function findWidgetPage(slug, deadline) {
+  const url = `dsh-app://app/widget/?slug=${encodeURIComponent(slug)}`
+  while (Date.now() < deadline) {
+    try {
+      const targets = await (await fetch(`http://127.0.0.1:${String(rendererPort)}/json/list`, { signal: AbortSignal.timeout(2000) })).json()
+      const match = targets.find((target) => target?.type === 'page' && target.url === url && typeof target.webSocketDebuggerUrl === 'string')
+      if (match !== undefined) return match
+    } catch { /* the debugger list is not ready */ }
+    await delay(250)
+  }
+  return undefined
+}
+
+/** Poll the widget page until `accept` takes the read value. Gives the last value, and whether it was accepted. */
+async function pollWidget(widget, until, accept) {
+  let last
+  while (Date.now() < until) {
+    try {
+      last = JSON.parse(String(await evaluate(widget.webSocketDebuggerUrl, widgetReadExpression(), until)))
+      if (accept(last)) return { value: last, ok: true }
+    } catch (error) {
+      last = { error: error instanceof Error ? error.message : 'evaluate failed' }
+    }
+    await delay(250)
+  }
+  return { value: last, ok: false }
+}
+
+async function checkWidget(page, deadline) {
+  const slug = process.env.DSH_SMOKE_WIDGET
+  const widget = await findWidgetPage(slug, deadline)
+  if (widget === undefined) return `widget: no page for ${slug}`
+  const first = await pollWidget(widget, deadline, (value) => value.count !== null && value.dw?.stream === 'open')
+  note(`widget first=${JSON.stringify(first.value)}`)
+  if (!first.ok) return `widget: no count in the page: ${JSON.stringify(first.value)}`
+  // The main window posts add, so the widget page learns of it only from its stream.
+  const posted = await evaluate(page.webSocketDebuggerUrl, `fetch('/api/widgets/${encodeURIComponent(slug)}/call', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'add', args: { by: 1 } }),
+  }).then(async (response) => JSON.stringify({ status: response.status, body: await response.json() }))`, deadline, true)
+  note(`widget add=${String(posted)}`)
+  const answer = JSON.parse(String(posted))
+  const expected = answer.body?.result?.count
+  if (answer.status !== 200 || typeof expected !== 'number') return `widget: add failed: ${String(posted)}`
+  const shown = await pollWidget(widget, Math.min(deadline, Date.now() + 10_000), (value) => value.count === String(expected))
+  note(`widget after-add=${JSON.stringify(shown.value)}`)
+  if (!shown.ok) return `widget: the page did not show count ${String(expected)}: ${JSON.stringify(shown.value)}`
+  // A new program: the page must load it again on the `program` frame.
+  const title = `smoke program ${Date.now().toString(36)}`
+  const written = await hostWidgets(deadline, '(widgets, slug, text) => widgets.setProgram(slug, text, { by: "smoke" })', [slug, widgetProgram(title)])
+  note(`widget setProgram=${JSON.stringify(written)}`)
+  const reloaded = await pollWidget(widget, Math.min(deadline, Date.now() + 10_000), (value) => value.text.includes(title) && value.count === String(expected))
+  note(`widget after-program=${JSON.stringify({ ...reloaded.value, text: reloaded.value?.text?.slice(0, 120) })}`)
+  if (!reloaded.ok) return `widget: the page did not show the new program "${title}": ${JSON.stringify(reloaded.value?.dw ?? reloaded.value)}`
+  return checkWidgetRemoved(widget, deadline)
+}
+
+/** Register a second widget, load its page, end the registration, and check the removed state. */
+async function checkWidgetRemoved(widget, deadline) {
+  const slug = `smoke-removed-${Date.now().toString(36)}`
+  const title = `removable ${slug}`
+  await hostWidgets(deadline, `(widgets, slug, title) => {
+    globalThis.__deepwidgetsSmokeRemove = widgets.register({ slug, title, initialState: {},
+      program: 'root = Card([CardHeader("' + title + '"), BarChart(["a", "b"], [Series("n", [1, 2])])])', actions: [] })
+    return true
+  }`, [slug, title])
+  const url = `dsh-app://app/widget/?slug=${encodeURIComponent(slug)}`
+  await evaluate(widget.webSocketDebuggerUrl, `location.href = ${JSON.stringify(url)}`, deadline)
+  const page = await findWidgetPage(slug, deadline)
+  if (page === undefined) return `widget removed: no page for ${slug}`
+  const ready = await pollWidget(page, Math.min(deadline, Date.now() + 15_000), (value) => value.text.includes(title) && value.dw?.stream === 'open' && value.chart === 2)
+  note(`widget second=${JSON.stringify({ ...ready.value, text: ready.value?.text?.slice(0, 120) })}`)
+  if (!ready.ok) return `widget removed: the page of ${slug} did not load with its bar chart: ${JSON.stringify({ ...ready.value, text: undefined })}`
+  await hostWidgets(deadline, 'async () => { await globalThis.__deepwidgetsSmokeRemove(); delete globalThis.__deepwidgetsSmokeRemove; return true }', [])
+  const removed = await pollWidget(page, Math.min(deadline, Date.now() + 10_000), (value) => value.state === 'state-removed')
+  if (!removed.ok) return `widget removed: no removed state: ${JSON.stringify(removed.value?.dw ?? removed.value)}`
+  // A page that opens the stream again would log connect and closed after removed within this wait (backoff 250 ms).
+  await delay(3000)
+  const after = await pollWidget(page, Math.min(deadline, Date.now() + 5000), () => true)
+  const events = after.value?.dw?.events ?? []
+  const tail = events.slice(events.lastIndexOf('removed') + 1)
+  note(`widget removed events=${JSON.stringify(events)} state=${String(after.value?.state)}`)
+  if (after.value?.state !== 'state-removed') return `widget removed: the removed state did not stay: ${String(after.value?.state)}`
+  if (tail.length > 0) return `widget removed: the page kept using the stream after removed: ${JSON.stringify(tail)}`
+  return undefined
 }
 
 async function checkHello(page, deadline) {
