@@ -19,13 +19,17 @@
  * Then it kills the host again and quits the app while the restart waits; the app must exit with no kill.
  * With DSH_SMOKE_HOST_RESTART=give-up, the check kills the host 4 times. The second restart must be in safe mode
  * (the sample window closes), and the fourth crash must take the fatal dialog path (the give-up log line, no restart).
+ * With DSH_SMOKE_HOST_RESTART=blame, the check installs the fixture deepwidgets/widgets/fixtures/blame-timer, whose
+ * timer throws 1 s after it loads. The host must restart, the blame-timer window must show failed with the reason,
+ * and the sample page must stay live, with no safe mode and no second crash. Then the check changes a file of the
+ * installed fixture and kills the host: blame-timer must come back (`widget.isolation_blame`).
  * The trace test also needs the start-up steps of Electron main and a message for each client row.
  * Then it reads the rows of the trace window page dsh-app://app/trace.
  * Uses only Node built-in modules. Prints one result line.
  */
 
 import { spawn, execFile } from 'node:child_process'
-import { appendFileSync, existsSync, openSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -393,6 +397,7 @@ try {
       if (failed === undefined && process.env.DSH_SMOKE_WINDOWS === '1') failed = await checkWindows(deadline)
       if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === '1') failed = await checkHostRestart(page, deadline)
       if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === 'give-up') failed = await checkHostGiveUp(deadline)
+      if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === 'blame') failed = await checkHostBlame(deadline)
     }
   }
 } catch (error) {
@@ -959,6 +964,100 @@ async function checkHostGiveUp(deadline) {
   const fatal = /^Error: dsh desktop host /mu.test(text.slice(text.indexOf('deepwidgets-supervisor {"at":' + String(gaveUp.at))))
   note(`give-up reportFatal line=${String(fatal)}`)
   if (!fatal) return 'give-up: no reportFatal line after the give-up'
+  return undefined
+}
+
+/** Install a local bundle with pluginManager.installBundle over the host Loader. Gives the install result. */
+async function installHostBundle(folder, deadline) {
+  return withHostLoader(deadline, async (session, loaderId) => {
+    const call = await cdpCall(session, 'Runtime.callFunctionOn', {
+      objectId: loaderId,
+      awaitPromise: true,
+      returnByValue: true,
+      arguments: [{ value: `file:${folder}` }],
+      functionDeclaration: `async function (spec) {
+        if (this.length !== 1) throw new Error("Loader instances " + this.length);
+        const manager = this[0].ctx?.get?.("pluginManager");
+        if (manager === undefined || typeof manager.installBundle !== "function") throw new Error("no pluginManager on Loader ctx");
+        return await manager.installBundle(spec);
+      }`,
+    })
+    if (call?.exceptionDetails) throw new Error(String(call.exceptionDetails.exception?.description ?? call.exceptionDetails.text ?? 'install failed'))
+    return call?.result?.value
+  })
+}
+
+/** Gives the failure text when a supervisor event after `since` is a crash, else undefined. */
+function noCrashSince(since, what) {
+  const crashes = supervisorEvents(since).filter((event) => event.event === 'host-failed' || event.event === 'give-up')
+  return crashes.length === 0 ? undefined : `blame: ${what}: another crash: ${JSON.stringify(crashes)}`
+}
+
+async function checkHostBlame(deadline) {
+  const plugin = 'deepwidgets-widget-blame-timer'
+  const sample = await findWidgetPage('sample', deadline)
+  if (sample === undefined) return 'blame: no sample widget page'
+  const first = await pollWidget(sample, deadline, (value) => value.count !== null && value.dw?.stream === 'open')
+  if (!first.ok) return `blame: no count in the sample page: ${JSON.stringify(first.value)}`
+  const until = Math.min(deadline, Date.now() + 120_000)
+
+  // The fixture is a copy, so the change below does not touch the repository.
+  const fixture = join(temp, 'blame-timer')
+  cpSync(join(root, 'deepwidgets/widgets/fixtures/blame-timer'), fixture, { recursive: true })
+  const start = Date.now()
+  // The timer throws 1 s after the plugin loads; the install answer can be lost with the host.
+  const install = await installHostBundle(fixture, until).catch((error) => ({ error: error instanceof Error ? error.message : 'install failed' }))
+  note(`blame install=${JSON.stringify({ application: install?.application, error: install?.error })}`)
+  const crash = await waitForSupervisor(start, (event) => event.event === 'host-failed', until)
+  note(`blame host-failed=${JSON.stringify(crash)}`)
+  if (crash === undefined) return 'blame: the timer throw did not end the host'
+  const oldPid = hostPid
+  if (!await waitForNewHost(oldPid, until)) return 'blame: no new host'
+  const ready = await waitForSupervisor(crash.at, (event) => event.event === 'ready', until)
+  note(`blame ready=${JSON.stringify(ready)}`)
+
+  // The blamed widget shows failed with its reason; sample stays live.
+  const blamed = await findWidgetPage('blame-timer', until)
+  if (blamed === undefined) return 'blame: no blame-timer widget page'
+  const shown = await pollWidget(blamed, until, (value) => value.state === 'state-error' && value.text.includes('the timer threw'))
+  note(`blame failed page=${JSON.stringify(shown.value)}`)
+  if (!shown.ok) return `blame: the blame-timer page does not show failed: ${JSON.stringify(shown.value)}`
+  const live = await pollWidget(sample, until, (value) => value.count !== null && value.dw?.stream === 'open' && value.dw.streamOpens > first.value.dw.streamOpens)
+  note(`blame sample=${JSON.stringify(live.value)}`)
+  if (!live.ok) return `blame: the sample page is not live after the restart: ${JSON.stringify(live.value)}`
+  // A blamed widget that ran again would throw within 1 s of the start.
+  await delay(5_000)
+  let failed = noCrashSince(crash.at + 1, 'after the restart')
+  if (failed !== undefined) return failed
+  if (await countPages('dsh-app://app/widget/?slug=sample') !== 1) return 'blame: the sample window closed'
+  if (ready?.safeMode !== false) return `blame: the restart is in safe mode: ${JSON.stringify(ready)}`
+  if (crash.blamed !== plugin || crash.crashes !== 0) return `blame: the supervisor did not see a blamed crash: ${JSON.stringify(crash)}`
+
+  // A changed file of the widget lifts the quarantine at the next start. THROW false keeps the widget alive.
+  let quarantine
+  try { quarantine = JSON.parse(readFileSync(join(home, 'deepwidgets', 'quarantine.json'), 'utf8')) } catch { quarantine = undefined }
+  const item = Array.isArray(quarantine) ? quarantine.find((entry) => entry.plugin === plugin) : undefined
+  note(`blame quarantine=${JSON.stringify(item)}`)
+  if (typeof item?.root !== 'string') return `blame: no quarantine entry: ${JSON.stringify(quarantine)}`
+  const file = join(item.root, 'index.js')
+  const text = readFileSync(file, 'utf8')
+  if (!text.includes('const THROW = true')) return 'blame: the installed fixture has no THROW line'
+  // A rename, so a hard link into a package store stays unchanged.
+  writeFileSync(`${file}.tmp`, text.replace('const THROW = true', 'const THROW = false'))
+  renameSync(`${file}.tmp`, file)
+  const kill = await killHost('blame lift')
+  const second = await waitForSupervisor(kill.at, (event) => event.event === 'host-failed', until)
+  note(`blame lift host-failed=${JSON.stringify(second)}`)
+  if (second?.blamed !== null || second.crashes !== 1 || second.safeMode !== false) return `blame: the kill is not one unblamed crash: ${JSON.stringify(second)}`
+  if (!await waitForNewHost(kill.pid, until)) return 'blame: no host after the change'
+  const back = await pollWidget(blamed, until, (value) => value.state === null && value.text.includes('Blame timer') && value.dw?.stream === 'open')
+  note(`blame lifted page=${JSON.stringify(back.value)}`)
+  if (!back.ok) return `blame: the changed widget did not come back: ${JSON.stringify(back.value)}`
+  const sampleBack = await pollWidget(sample, until, (value) => value.count !== null && value.dw?.stream === 'open')
+  if (!sampleBack.ok) return `blame: the sample page is not live after the lift: ${JSON.stringify(sampleBack.value)}`
+  await delay(3_000)
+  failed = noCrashSince(second.at + 1, 'after the lift')
+  if (failed !== undefined) return failed
   return undefined
 }
 

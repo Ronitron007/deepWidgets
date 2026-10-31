@@ -42,6 +42,7 @@ const NEXT_STEP: Record<ToolErrorCode, string> = {
   'idempotency-conflict': 'This requestId was used for a different call. Use a new requestId for a new operation.',
   'conflict': 'The slug already has a live registration. Pick another slug.',
   'bad-request': 'Fix the request as the message says, then retry.',
+  'widget-failed': 'The widget crashed the host and is quarantined. Do not retry. Change its files to bring it back, or tell the user the message.',
   'stale-cursor': 'The change feed was reset (a host restart or a gap). Call widget_list for the current state and use its cursor.',
   'internal-error': 'The host failed. Tell the user the message. Do not retry in a loop.',
 }

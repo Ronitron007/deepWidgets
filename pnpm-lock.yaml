@@ -1370,6 +1370,9 @@ importers:
 
   deepwidgets/widgets:
     dependencies:
+      '@deepseek-ai/dsh-home-paths':
+        specifier: workspace:*
+        version: link:../../packages/util/home-paths
       '@deepseek-ai/dsh-storage-domain':
         specifier: workspace:*
         version: link:../../packages/storage/storage-domain
