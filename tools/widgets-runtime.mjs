@@ -377,6 +377,18 @@ async function firstHost(host) {
     return { before, outcome: await running }`)
   check('drain: a running call ends with its write when the runtime stops', drain?.outcome?.ok === true && drain.outcome.rev === drain.before + 1, JSON.stringify(drain))
 
+  // Drain over HTTP: a call route in flight while the runtime restarts finishes or gets a clean error.
+  await waitFor(async () => (await host.getJson('/api/widgets')).body?.widgets?.some((w) => w.slug === 'check'))
+  const httpBefore = (await host.post('/api/widgets/check/call', { action: 'get' })).body?.result
+  const httpCall = host.post('/api/widgets/check/call', { action: 'slow' })
+  await sleep(100)
+  await host.inspector.run(`const entry = [...wc.loader.entries()].find((e) => e.options.id === 'deepwidgets-widgets'); await entry.fiber.update({ requestTtlMs: 300 }, true)`)
+  const httpOutcome = await httpCall
+  const clean = (httpOutcome.status === 200 && httpOutcome.body?.ok === true)
+    || (httpOutcome.status === 503 && httpOutcome.body?.error?.code === 'busy')
+    || (httpOutcome.status === 404)
+  check('drain over HTTP: a call in flight during a runtime restart finishes or gets a clean error', clean && httpBefore !== undefined, `${String(httpOutcome.status)} ${JSON.stringify(httpOutcome.body)}`)
+
   // The requests TTL: a record older than requestTtlMs is void.
   const back = await waitFor(async () => (await host.getJson('/api/widgets')).body?.widgets?.some((w) => w.slug === 'sample'))
   const ttlFirst = await host.post('/api/widgets/sample/call', { action: 'add', args: { by: 1 }, requestId: 'ttl-1' })

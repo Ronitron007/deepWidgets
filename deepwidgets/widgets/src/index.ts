@@ -431,6 +431,15 @@ export function apply(ctx: Context, config: Config): void {
     return promise
   }
 
+  /**
+   * Wrap a route handler in the admission gate. A request that arrives after the runtime began
+   * to stop gets 503 `busy`, never a storage error. An admitted request runs to its answer before
+   * the domain closes.
+   */
+  function guarded(handler: (request: Request) => Promise<Response>): (request: Request) => Promise<Response> {
+    return (request) => admit(() => handler(request)).catch(failure)
+  }
+
   ctx.effect(() => async () => {
     stopping = true
     for (const open of [...events]) open.close()
@@ -701,7 +710,7 @@ export function apply(ctx: Context, config: Config): void {
         path: `${base}/program`,
         methods: ['GET'],
         requestBody: 'buffered',
-        fetch: async () => {
+        fetch: guarded(async () => {
           try {
             await entry.seeded
             const program = opened().table('program').get(slug)
@@ -709,13 +718,13 @@ export function apply(ctx: Context, config: Config): void {
           } catch (error) {
             return failure(error)
           }
-        },
+        }),
       }),
       ctx.connection.fetch.register({
         path: `${base}/call`,
         methods: ['POST'],
         requestBody: 'buffered',
-        fetch: async (request) => {
+        fetch: guarded(async (request) => {
           try {
             const body = await readBody(request)
             if (body === null || typeof body !== 'object' || typeof (body as { action?: unknown }).action !== 'string') {
@@ -728,20 +737,20 @@ export function apply(ctx: Context, config: Config): void {
           } catch (error) {
             return failure(error)
           }
-        },
+        }),
       }),
       ctx.connection.fetch.register({
         path: `${base}/stream`,
         methods: ['GET'],
         requestBody: 'buffered',
-        fetch: async (request) => {
+        fetch: guarded(async (request) => {
           await entry.seeded.catch(() => undefined)
           return eventStream(request, entry.streams, () => ({
             type: 'hello',
             rev: stateOf(slug)?.rev ?? 0,
             programRev: domain?.table('program').get(slug)?.rev ?? 0,
           }))
-        },
+        }),
       }),
     ]
   }
@@ -817,14 +826,14 @@ export function apply(ctx: Context, config: Config): void {
     path: '/api/widgets',
     methods: ['GET'],
     requestBody: 'buffered',
-    fetch: () => Promise.resolve(json(200, { widgets: list() })),
+    fetch: guarded(() => Promise.resolve(json(200, { widgets: list() }))),
   })
 
   ctx.connection.fetch.register({
     path: '/api/widgets/events',
     methods: ['GET'],
     requestBody: 'buffered',
-    fetch: (request) => Promise.resolve(eventStream(request, events, () => ({ type: 'hello', slugs: [...widgets.keys()] }))),
+    fetch: guarded((request) => Promise.resolve(eventStream(request, events, () => ({ type: 'hello', slugs: [...widgets.keys()] })))),
   })
 
   // The service methods report each failure as a WidgetError, so the caller sees one form.
