@@ -7,11 +7,13 @@
  * With DSH_SMOKE_ROWS_SAVE set to a path, also write the host row snapshot to that file.
  * With DSH_SMOKE_ROWS_SNAPSHOT set to a path, compare that host snapshot with rows.host.txt and do not start the app.
  * With DSH_SMOKE_INSTALL set to a local bundle path, also call pluginManager.installBundle over the host Loader.
- * With DSH_SMOKE_WIDGET set to a widget slug, Electron main also opens dsh-app://app/widget/?slug=<slug> (test only).
- * The check finds the count in that page, posts add from the main window, and finds the new count in the page.
+ * With DSH_SMOKE_WIDGET set to a widget slug, the check finds the widget window dsh-app://app/widget/?slug=<slug>.
+ * It finds the count in that page, posts add from the main window, and finds the new count in the page.
  * Then it writes a new program with ctx.widgets.setProgram over the host Loader and finds its text in the page.
  * Then it registers a second widget over the Loader, loads its page (with a bar chart of two bars), ends the
  * registration, and checks that the page shows the removed state and does not open its stream again.
+ * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://app/widget/?slug=sample.
+ * It turns the sample row off through the host plugin manager and finds that window closed.
  * The trace test also needs the start-up steps of Electron main and a message for each client row.
  * Then it reads the rows of the trace window page dsh-app://app/trace.
  * Uses only Node built-in modules. Prints one result line.
@@ -351,7 +353,6 @@ const child = spawn('corepack', ['pnpm', 'run', 'start:desktop'], {
     DSH_DESKTOP_RENDERER_DEBUG_PORT: String(rendererPort),
     DSH_DESKTOP_HOST_INSPECT_PORT: String(hostInspectPort),
     DSH_DESKTOP_OPEN_DEVTOOLS: '0',
-    ...((process.env.DSH_SMOKE_WIDGET ?? '') === '' ? {} : { DSH_DESKTOP_WIDGET_SMOKE: process.env.DSH_SMOKE_WIDGET }),
   },
 })
 
@@ -384,6 +385,7 @@ try {
       if (failed === undefined && (process.env.DSH_SMOKE_ROWS ?? '') !== '') failed = await checkRows(page, deadline)
       if (failed === undefined && (process.env.DSH_SMOKE_INSTALL ?? '') !== '') failed = await checkInstall(deadline)
       if (failed === undefined && (process.env.DSH_SMOKE_WIDGET ?? '') !== '') failed = await checkWidget(page, deadline)
+      if (failed === undefined && process.env.DSH_SMOKE_WINDOWS === '1') failed = await checkWindows(deadline)
     }
   }
 } catch (error) {
@@ -545,7 +547,14 @@ async function checkProbe(page, deadline) {
 }
 
 /** Read the widget page: the shown count, and the shell diagnostics `window.__dw`. */
-function widgetReadExpression() {
+/** With `frameId`, read the page in that iframe of the evaluated page instead. */
+function widgetReadExpression(frameId) {
+  if (frameId !== undefined) {
+    return `((frame) => {
+  if (frame === null || frame.contentDocument === null || frame.contentDocument.body === null) throw new Error('no frame page');
+  return ((window, document) => ${widgetReadExpression()})(frame.contentWindow, frame.contentDocument)
+})(document.getElementById(${JSON.stringify(frameId)}))`
+  }
   return `JSON.stringify({ count: document.querySelector('[data-dw=stat-value]')?.textContent ?? null,
   dw: window.__dw ?? null, state: document.querySelector('[data-dw^=state-]')?.getAttribute('data-dw') ?? null,
   text: document.body.innerText, chart: document.querySelectorAll('[data-chart] .recharts-bar-rectangle').length })`
@@ -595,11 +604,11 @@ async function findWidgetPage(slug, deadline) {
 }
 
 /** Poll the widget page until `accept` takes the read value. Gives the last value, and whether it was accepted. */
-async function pollWidget(widget, until, accept) {
+async function pollWidget(widget, until, accept, frameId) {
   let last
   while (Date.now() < until) {
     try {
-      last = JSON.parse(String(await evaluate(widget.webSocketDebuggerUrl, widgetReadExpression(), until)))
+      last = JSON.parse(String(await evaluate(widget.webSocketDebuggerUrl, widgetReadExpression(frameId), until)))
       if (accept(last)) return { value: last, ok: true }
     } catch (error) {
       last = { error: error instanceof Error ? error.message : 'evaluate failed' }
@@ -607,6 +616,160 @@ async function pollWidget(widget, until, accept) {
     await delay(250)
   }
   return { value: last, ok: false }
+}
+
+/** Count the renderer pages at one URL. Gives undefined while the debugger list is not ready. */
+async function countPages(url) {
+  try {
+    const targets = await (await fetch(`http://127.0.0.1:${String(rendererPort)}/json/list`, { signal: AbortSignal.timeout(2000) })).json()
+    return targets.filter((target) => target?.type === 'page' && target.url === url).length
+  } catch {
+    return undefined
+  }
+}
+
+/** Turn one host plugin row on or off through pluginManager.setPluginEnabled on the host Loader. */
+async function setHostPlugin(moduleName, enabled, deadline) {
+  return withHostLoader(deadline, async (session, loaderId) => {
+    const call = await cdpCall(session, 'Runtime.callFunctionOn', {
+      objectId: loaderId,
+      awaitPromise: true,
+      returnByValue: true,
+      arguments: [{ value: moduleName }, { value: enabled }],
+      functionDeclaration: `async function (moduleName, enabled) {
+        if (this.length !== 1) throw new Error("Loader instances " + this.length);
+        const loader = this[0];
+        const manager = loader.ctx?.get?.("pluginManager") ?? loader.ctx?.pluginManager;
+        if (manager === undefined || typeof manager.setPluginEnabled !== "function") throw new Error("no pluginManager on Loader ctx");
+        const rows = (await manager.listPlugins()).filter((row) => row.moduleName === moduleName);
+        if (rows.length !== 1) throw new Error("plugin rows for " + moduleName + ": " + rows.length);
+        return await manager.setPluginEnabled(rows[0].entryId, enabled);
+      }`,
+    })
+    if (call?.exceptionDetails) {
+      throw new Error(String(call.exceptionDetails.exception?.description ?? call.exceptionDetails.text ?? 'setPluginEnabled failed'))
+    }
+    return call?.result?.value
+  })
+}
+
+/**
+ * Run `declaration` with `this` set to the one DesktopWidgetWindows instance of Electron main, over the main inspector.
+ * The check uses the public hostGone and hostReady to cut and reopen the events stream, and counts `hello` frames.
+ */
+async function withWidgetWindows(deadline, declaration) {
+  const targets = await (await fetch(`http://127.0.0.1:${String(mainInspectPort)}/json/list`, { signal: AbortSignal.timeout(3000) })).json()
+  if (!Array.isArray(targets) || typeof targets[0]?.webSocketDebuggerUrl !== 'string') throw new Error('main /json/list: no target')
+  const session = await cdpSession(targets[0].webSocketDebuggerUrl, deadline)
+  try {
+    const proto = await cdpCall(session, 'Runtime.evaluate', { expression: 'Function.prototype' })
+    const functions = await cdpCall(session, 'Runtime.queryObjects', { prototypeObjectId: proto?.result?.objectId })
+    const classProto = await cdpCall(session, 'Runtime.callFunctionOn', {
+      objectId: functions?.objects?.objectId,
+      functionDeclaration: 'function () { const found = this.filter((fn) => fn.name === "DesktopWidgetWindows" && typeof fn.prototype?.hostReady === "function"); if (found.length !== 1) throw new Error("DesktopWidgetWindows classes " + found.length); return found[0].prototype }',
+    })
+    if (typeof classProto?.result?.objectId !== 'string') throw new Error('main: no DesktopWidgetWindows prototype')
+    const instances = await cdpCall(session, 'Runtime.queryObjects', { prototypeObjectId: classProto.result.objectId })
+    const call = await cdpCall(session, 'Runtime.callFunctionOn', {
+      objectId: instances?.objects?.objectId,
+      awaitPromise: true,
+      returnByValue: true,
+      functionDeclaration: `function () { if (this.length !== 1) throw new Error("DesktopWidgetWindows instances " + this.length); return (${declaration}).call(this[0]) }`,
+    })
+    if (call?.exceptionDetails) throw new Error(String(call.exceptionDetails.exception?.description ?? call.exceptionDetails.text ?? 'main call failed'))
+    return call?.result?.value
+  } finally {
+    session.close()
+  }
+}
+
+/** Count `hello` frames from now on: wrap the instance method sync, which only `hello` calls. Gives the count. */
+function countHellos() {
+  return `function () {
+  if (this.__smokeHellos === undefined) {
+    this.__smokeHellos = 0
+    const sync = this.sync
+    this.sync = function (slugs) { this.__smokeHellos += 1; return sync.call(this, slugs) }
+  }
+  return this.__smokeHellos
+}`
+}
+/** Cut the events stream of main with its public hostGone, and keep the target. */
+function pauseStream() {
+  return 'function () { this.__smokeTarget = this.target; this.hostGone(); return this.__smokeTarget !== undefined }'
+}
+/** Open the events stream of main again with its public hostReady. */
+function resumeStream() {
+  return 'function () { this.hostReady(this.__smokeTarget.url, this.__smokeTarget.cookie); return true }'
+}
+
+/** Poll until the page count at `url` is `want`. Gives the failure text, or undefined. */
+async function waitPages(url, want, until, what) {
+  let count
+  while (Date.now() < until) {
+    count = await countPages(url)
+    if (count === want) return undefined
+    await delay(250)
+  }
+  return `windows: ${what}: want ${String(want)} window(s) at ${url}, got ${String(count)}`
+}
+
+/** Poll until main has counted more `hello` frames than `before`. */
+async function waitHello(before, until) {
+  let count
+  while (Date.now() < until) {
+    count = await withWidgetWindows(until, countHellos())
+    if (count > before) return undefined
+    await delay(250)
+  }
+  return `windows: no new hello frame (count ${String(count)})`
+}
+
+async function setSample(enabled, deadline) {
+  const result = await setHostPlugin('@deepwidgets/widget-sample', enabled, deadline)
+  note(`windows sample enabled=${String(enabled)} result=${JSON.stringify({ application: result?.application, changed: result?.changed })}`)
+  return result?.application === 'applied' ? undefined : `windows: the sample row did not turn ${enabled ? 'on' : 'off'}: ${JSON.stringify(result)}`
+}
+
+async function checkWindows(deadline) {
+  const url = 'dsh-app://app/widget/?slug=sample'
+  const soon = () => Math.min(deadline, Date.now() + 15_000)
+  let failed = await waitPages(url, 1, deadline, 'first open')
+  if (failed !== undefined) return failed
+  // Turn the row off and on again quickly, twice. One window must stay.
+  for (const enabled of [false, true, false, true]) {
+    failed = await setSample(enabled, deadline)
+    if (failed !== undefined) return failed
+  }
+  failed = await waitPages(url, 1, soon(), 'after off and on twice')
+  if (failed !== undefined) return failed
+  // A resync while the sample window is open: `hello` lists sample again, and open must not add a second window.
+  let hellos = await withWidgetWindows(deadline, countHellos())
+  await withWidgetWindows(deadline, pauseStream())
+  await withWidgetWindows(deadline, resumeStream())
+  failed = await waitHello(hellos, soon())
+  if (failed !== undefined) return failed
+  // `removed` closes the window. A second window from the resync would stay open here.
+  failed = await setSample(false, deadline)
+  if (failed !== undefined) return failed
+  failed = await waitPages(url, 0, soon(), 'after removed')
+  if (failed !== undefined) return failed
+  // `added` opens it again.
+  failed = await setSample(true, deadline)
+  if (failed !== undefined) return failed
+  failed = await waitPages(url, 1, soon(), 'after added')
+  if (failed !== undefined) return failed
+  // The row goes off while main has no stream, so main misses `removed`. The next `hello` must close the extra window.
+  hellos = await withWidgetWindows(deadline, countHellos())
+  await withWidgetWindows(deadline, pauseStream())
+  failed = await setSample(false, deadline)
+  if (failed !== undefined) return failed
+  failed = await waitPages(url, 1, deadline, 'while the stream is cut')
+  if (failed !== undefined) return failed
+  await withWidgetWindows(deadline, resumeStream())
+  failed = await waitHello(hellos, soon())
+  if (failed !== undefined) return failed
+  return waitPages(url, 0, soon(), 'after hello without sample')
 }
 
 async function checkWidget(page, deadline) {
@@ -634,11 +797,15 @@ async function checkWidget(page, deadline) {
   const reloaded = await pollWidget(widget, Math.min(deadline, Date.now() + 10_000), (value) => value.text.includes(title) && value.count === String(expected))
   note(`widget after-program=${JSON.stringify({ ...reloaded.value, text: reloaded.value?.text?.slice(0, 120) })}`)
   if (!reloaded.ok) return `widget: the page did not show the new program "${title}": ${JSON.stringify(reloaded.value?.dw ?? reloaded.value)}`
-  return checkWidgetRemoved(widget, deadline)
+  return checkWidgetRemoved(page, deadline)
 }
 
-/** Register a second widget, load its page, end the registration, and check the removed state. */
-async function checkWidgetRemoved(widget, deadline) {
+/**
+ * Register a second widget, find the window that Electron main opens for it (with a bar chart of two bars),
+ * end the registration, and check the removed state. Electron main closes the widget window on `removed`,
+ * so the removed state is read from the same page in an iframe of the main window, which main does not own.
+ */
+async function checkWidgetRemoved(main, deadline) {
   const slug = `smoke-removed-${Date.now().toString(36)}`
   const title = `removable ${slug}`
   await hostWidgets(deadline, `(widgets, slug, title) => {
@@ -647,24 +814,30 @@ async function checkWidgetRemoved(widget, deadline) {
     return true
   }`, [slug, title])
   const url = `dsh-app://app/widget/?slug=${encodeURIComponent(slug)}`
-  await evaluate(widget.webSocketDebuggerUrl, `location.href = ${JSON.stringify(url)}`, deadline)
   const page = await findWidgetPage(slug, deadline)
-  if (page === undefined) return `widget removed: no page for ${slug}`
+  if (page === undefined) return `widget removed: no window for ${slug}`
   const ready = await pollWidget(page, Math.min(deadline, Date.now() + 15_000), (value) => value.text.includes(title) && value.dw?.stream === 'open' && value.chart === 2)
   note(`widget second=${JSON.stringify({ ...ready.value, text: ready.value?.text?.slice(0, 120) })}`)
   if (!ready.ok) return `widget removed: the page of ${slug} did not load with its bar chart: ${JSON.stringify({ ...ready.value, text: undefined })}`
+  const frameId = 'deepwidgets-smoke-removed'
+  await evaluate(main.webSocketDebuggerUrl, `(() => { const frame = document.createElement('iframe'); frame.id = ${JSON.stringify(frameId)};
+  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:320px;height:300px;border:0'; frame.src = ${JSON.stringify(url)};
+  document.body.append(frame); return true })()`, deadline)
+  const framed = await pollWidget(main, Math.min(deadline, Date.now() + 15_000), (value) => value.text.includes(title) && value.dw?.stream === 'open', frameId)
+  if (!framed.ok) return `widget removed: the iframe page of ${slug} did not load: ${JSON.stringify({ ...framed.value, text: undefined })}`
   await hostWidgets(deadline, 'async () => { await globalThis.__deepwidgetsSmokeRemove(); delete globalThis.__deepwidgetsSmokeRemove; return true }', [])
-  const removed = await pollWidget(page, Math.min(deadline, Date.now() + 10_000), (value) => value.state === 'state-removed')
+  const removed = await pollWidget(main, Math.min(deadline, Date.now() + 10_000), (value) => value.state === 'state-removed', frameId)
   if (!removed.ok) return `widget removed: no removed state: ${JSON.stringify(removed.value?.dw ?? removed.value)}`
   // A page that opens the stream again would log connect and closed after removed within this wait (backoff 250 ms).
   await delay(3000)
-  const after = await pollWidget(page, Math.min(deadline, Date.now() + 5000), () => true)
+  const after = await pollWidget(main, Math.min(deadline, Date.now() + 5000), () => true, frameId)
   const events = after.value?.dw?.events ?? []
   const tail = events.slice(events.lastIndexOf('removed') + 1)
   note(`widget removed events=${JSON.stringify(events)} state=${String(after.value?.state)}`)
+  await evaluate(main.webSocketDebuggerUrl, `document.getElementById(${JSON.stringify(frameId)})?.remove(), true`, deadline)
   if (after.value?.state !== 'state-removed') return `widget removed: the removed state did not stay: ${String(after.value?.state)}`
   if (tail.length > 0) return `widget removed: the page kept using the stream after removed: ${JSON.stringify(tail)}`
-  return undefined
+  return waitPages(url, 0, Math.min(deadline, Date.now() + 10_000), 'the window of the removed widget')
 }
 
 async function checkHello(page, deadline) {
