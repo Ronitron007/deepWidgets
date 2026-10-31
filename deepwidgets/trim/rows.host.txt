@@ -1,6 +1,8 @@
 # Host row keys that the trim keeps. Form: <key> or <key> pending <services>.
 deepwidgets-probe   # start keep set
 deepwidgets-trace   # start keep set
+deepwidgets-widgets   # widget runtime (widget.runtime_core)
+deepwidgets-widget-sample   # sample widget (widget.runtime_core)
 mcp-resources pending tools   # tools: row tools, off
 settings   # start keep set
 config-editor   # start keep set
