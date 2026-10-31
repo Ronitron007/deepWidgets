@@ -353,8 +353,21 @@ async function firstHost(host) {
   check('sample timer: tickMs 100 adds 1 at that interval', ticked - tickStart >= 3, `count ${String(tickStart)} -> ${String(ticked)}`)
   await host.inspector.run(`const entry = [...wc.loader.entries()].find((e) => e.options.id === 'deepwidgets-widget-sample'); await entry.fiber.update({ tickMs: 0 }, true)`)
 
-  // The requests TTL: restart the runtime row with requestTtlMs 300; a record older than that is void.
-  await host.inspector.run(`const entry = [...wc.loader.entries()].find((e) => e.options.id === 'deepwidgets-widgets'); await entry.fiber.update({ requestTtlMs: 300 }, true)`)
+  // Drain: a call that runs when the runtime row restarts ends with its write, before the domain closes.
+  // The same restart sets requestTtlMs 300 for the TTL check below.
+  const drain = await host.inspector.run(`
+    wc.fiber = wc.loader.ctx.plugin({ name: 'widgets-check-drain', inject: ['widgets'], apply(ctx) { wc.ctx = ctx; ctx.widgets.register(wc.def) } })
+    await wc.fiber
+    const service = wc.ctx.widgets
+    const before = service.get('check').rev
+    const running = service.call('check', 'slow', {}, { caller: 'check' }).then((o) => ({ ok: true, rev: o.rev }), (error) => ({ ok: false, code: error.code, message: String(error.message) }))
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const entry = [...wc.loader.entries()].find((e) => e.options.id === 'deepwidgets-widgets')
+    await entry.fiber.update({ requestTtlMs: 300 }, true)
+    return { before, outcome: await running }`)
+  check('drain: a running call ends with its write when the runtime stops', drain?.outcome?.ok === true && drain.outcome.rev === drain.before + 1, JSON.stringify(drain))
+
+  // The requests TTL: a record older than requestTtlMs is void.
   const back = await waitFor(async () => (await host.getJson('/api/widgets')).body?.widgets?.some((w) => w.slug === 'sample'))
   const ttlFirst = await host.post('/api/widgets/sample/call', { action: 'add', args: { by: 1 }, requestId: 'ttl-1' })
   const ttlSoon = await host.post('/api/widgets/sample/call', { action: 'add', args: { by: 1 }, requestId: 'ttl-1' })

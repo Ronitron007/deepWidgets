@@ -393,11 +393,35 @@ export function apply(ctx: Context, config: Config): void {
   })
   ready.catch((error: unknown) => { ctx.logger.error('widgets: the storage domain did not open; each widget call fails', error) })
 
+  // Each call, update, and setProgram that is admitted runs to its end before the domain closes.
+  let stopping = false
+  let longestTimeoutMs = DEFAULT_TIMEOUT_MS
+  const running = new Set<Promise<unknown>>()
+  function admit<T>(work: () => Promise<T>): Promise<T> {
+    if (stopping) return Promise.reject(new WidgetError('busy', 'the widget runtime is stopping'))
+    const promise = work()
+    running.add(promise)
+    const forget = (): void => { running.delete(promise) }
+    promise.then(forget, forget)
+    return promise
+  }
+
   ctx.effect(() => async () => {
+    stopping = true
     for (const open of [...events]) open.close()
+    // A job waits in the queue for at most its timeout and then runs for at most its timeout.
+    // The bound only guards against a defect: each admitted promise settles before it.
+    const bound = 2 * longestTimeoutMs + 1_000
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const drained = await Promise.race([
+      Promise.allSettled([...running]).then(() => true),
+      new Promise<false>((resolve) => { timer = setTimeout(() => { resolve(false) }, bound) }),
+    ])
+    clearTimeout(timer)
+    if (!drained) ctx.logger.error(`widgets: ${String(running.size)} calls still ran after ${String(bound)} ms; the domain closes under them, and their writes fail`)
     const opened = await ready.catch(() => undefined)
     await opened?.close()
-  }, 'widgets: close the domain')
+  }, 'widgets: drain the calls, then close the domain')
 
   // ---- change feed: cursor = epoch:seq, a new epoch for each process ----
   const epoch = randomUUID().slice(0, 8)
@@ -711,6 +735,9 @@ export function apply(ctx: Context, config: Config): void {
   function add(registration: Registration): () => Promise<void> {
     const { slug } = registration
     if (widgets.has(slug)) throw new WidgetError('conflict', `the slug ${slug} already has a live registration`)
+    for (const action of registration.actions.values()) {
+      longestTimeoutMs = Math.max(longestTimeoutMs, action.timeoutMs ?? registration.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+    }
     const entry: Entry = {
       slug,
       registration,
@@ -771,9 +798,9 @@ export function apply(ctx: Context, config: Config): void {
       liveEntry(slug)
       return stateOf(slug) ?? { rev: 0, data: widgets.get(slug)?.registration.initialState ?? null }
     },
-    call,
-    update,
-    setProgram,
+    call: (slug, action, args, options) => admit(() => call(slug, action, args, options)),
+    update: (slug, fn, by) => admit(() => update(slug, fn, by)),
+    setProgram: (slug, text, by) => admit(() => setProgram(slug, text, by)),
     changes,
     cursor,
   })
