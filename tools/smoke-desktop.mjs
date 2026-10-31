@@ -351,6 +351,8 @@ const child = spawn('corepack', ['pnpm', 'run', 'start:desktop'], {
     DSH_DESKTOP_RENDERER_DEBUG_PORT: String(rendererPort),
     DSH_DESKTOP_HOST_INSPECT_PORT: String(hostInspectPort),
     DSH_DESKTOP_OPEN_DEVTOOLS: '0',
+    // The fixed MCP port of a live app must not collide with the smoke run: let the OS pick one.
+    DEEPWIDGETS_MCP_PORT: process.env.DEEPWIDGETS_MCP_PORT ?? '0',
     ...((process.env.DSH_SMOKE_WIDGET ?? '') === '' ? {} : { DSH_DESKTOP_WIDGET_SMOKE: process.env.DSH_SMOKE_WIDGET }),
   },
 })

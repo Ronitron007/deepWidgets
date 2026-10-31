@@ -2,10 +2,15 @@
  * The MCP server for widgets (`widget_mvp.mcp`). One `webServer` prefix route owns `/mcp` and
  * `/mcp/token`. Each tool calls `ctx.widgets` in this process, so the action contract (queue,
  * timeout, `requestId`, change feed) stays in the runtime.
+ *
+ * The port file (`widget_phase2.mcp_port`) tells agents the listening port and a random server
+ * nonce. The nonce never leaves the file: `POST /mcp/token { agent, challenge }` answers
+ * `proof = HMAC-SHA256(nonce, challenge)`, so an agent that checks the proof refuses a server on
+ * the port that is not this host (`standing.hard.port_squat`). See README.md.
  * @module @deepwidgets/mcp
  */
-import { createHash, randomBytes } from 'node:crypto'
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { createHash, createHmac, randomBytes } from 'node:crypto'
+import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -27,6 +32,8 @@ const MAX_AGENTS = 64
 const LOOPBACK_HOST = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i
 const LOOPBACK_V4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/
 const AGENT_NAME = /^[\x20-\x7e]{1,64}$/
+/** At least 16 random bytes as base64url (22 characters) or hex (32 characters). */
+const CHALLENGE = /^[A-Za-z0-9_-]{22,256}$/
 
 /** An error code of a tool answer: a runtime code, or a code of this package. */
 type ToolErrorCode = WidgetErrorCode | 'stale-cursor' | 'internal-error'
@@ -121,6 +128,64 @@ async function readSmallBody(req: IncomingMessage): Promise<string | undefined> 
 export interface Config {
   /** The token file. Defaults to `$DSH_HOME/deepwidgets/mcp-tokens.json`. */
   tokenFile?: string
+  /** The port file `{ port, nonce, pid }` for agents. Defaults to `$DSH_HOME/deepwidgets/mcp.json`. */
+  portFile?: string
+}
+
+/** The port file: the port of the host web server, the nonce of this host start, and the host process id. */
+export interface PortFile {
+  port: number
+  nonce: string
+  pid: number
+}
+
+/** The proof of one token answer: HMAC-SHA256 with the nonce as key over the challenge, in hex. */
+export function mcpProof(nonce: string, challenge: string): string {
+  return createHmac('sha256', nonce).update(challenge).digest('hex')
+}
+
+/** True when process `pid` exists. EPERM means it exists under another user. */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/** The live process that owns the port file, or `undefined` when no other live host owns it. */
+async function otherOwner(portFile: string): Promise<number | undefined> {
+  let pid: unknown
+  try {
+    pid = (JSON.parse(await readFile(portFile, 'utf8')) as Partial<PortFile> | null)?.pid
+  } catch {
+    // A missing or unreadable file has no owner; this host replaces it.
+    return undefined
+  }
+  if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) return undefined
+  return processAlive(pid) ? pid : undefined
+}
+
+/** Replace `path` in one rename with `text`, with mode 0600 in a folder of mode 0700. */
+async function writeFileAtomic(path: string, text: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+  const temp = `${path}.${randomBytes(4).toString('hex')}.tmp`
+  await writeFile(temp, text, { mode: 0o600 })
+  await chmod(temp, 0o600)
+  await rename(temp, path)
+}
+
+/** Remove the port file when it still names `nonce`; a later host start may have replaced it. */
+async function removePortFile(portFile: string, nonce: string): Promise<void> {
+  let current: unknown
+  try {
+    current = JSON.parse(await readFile(portFile, 'utf8'))
+  } catch {
+    // A missing or unreadable file names no host; there is nothing of this host to remove.
+    return
+  }
+  if ((current as Partial<PortFile> | null)?.nonce === nonce) await unlink(portFile)
 }
 
 /**
@@ -149,19 +214,16 @@ async function loadTokens(tokenFile: string): Promise<Map<string, TokenRow>> {
 
 export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const tokenFile = config.tokenFile ?? dshHomePath('deepwidgets', 'mcp-tokens.json')
+  const portFile = config.portFile ?? dshHomePath('deepwidgets', 'mcp.json')
   const tokens = await loadTokens(tokenFile)
+  /** New for each host start (each plugin start), so a stale port file or another server does not match. */
+  const nonce = randomBytes(16).toString('base64url')
 
   // One write at a time; each write replaces the file in one rename, with mode 0600.
   let writes: Promise<void> = Promise.resolve()
   function persist(): Promise<void> {
     const text = JSON.stringify(Object.fromEntries(tokens))
-    const next = writes.then(async () => {
-      await mkdir(dirname(tokenFile), { recursive: true, mode: 0o700 })
-      const temp = `${tokenFile}.${randomBytes(4).toString('hex')}.tmp`
-      await writeFile(temp, text, { mode: 0o600 })
-      await chmod(temp, 0o600)
-      await rename(temp, tokenFile)
-    })
+    const next = writes.then(() => writeFileAtomic(tokenFile, text))
     writes = next.catch(() => undefined)
     return next
   }
@@ -285,14 +347,19 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       return
     }
     let agent: unknown
+    let challenge: unknown
     try {
-      agent = (JSON.parse(text) as { agent?: unknown } | null)?.agent
+      ({ agent, challenge } = (JSON.parse(text) as { agent?: unknown; challenge?: unknown } | null) ?? {})
     } catch {
-      send(res, 400, { error: 'the body must be JSON { agent }' })
+      send(res, 400, { error: 'the body must be JSON { agent, challenge }' })
       return
     }
     if (typeof agent !== 'string' || !AGENT_NAME.test(agent)) {
       send(res, 400, { error: 'agent must be 1 to 64 printable ASCII characters' })
+      return
+    }
+    if (typeof challenge !== 'string' || !CHALLENGE.test(challenge)) {
+      send(res, 400, { error: 'challenge must be at least 16 random bytes as base64url or hex (22 to 256 characters of A-Z a-z 0-9 _ -)' })
       return
     }
     const token = randomBytes(24).toString('base64url')
@@ -319,7 +386,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       send(res, 500, { error: 'the token was not saved; retry later' })
       return
     }
-    send(res, 200, { token, agentId })
+    send(res, 200, { token, agentId, proof: mcpProof(nonce, challenge) })
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -335,7 +402,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     }
     const row = agentOf(req.headers.authorization)
     if (row === undefined) {
-      send(res, 401, { error: 'missing or unknown bearer token; POST /mcp/token { agent } first' }, { 'www-authenticate': 'Bearer' })
+      send(res, 401, { error: 'missing or unknown bearer token; POST /mcp/token { agent, challenge } first' }, { 'www-authenticate': 'Bearer' })
       return
     }
     // The SDK types `method` and `url` as present under exactOptionalPropertyTypes; node:http fills both for a server request.
@@ -353,4 +420,24 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     }),
   }), 'mcp: the /mcp route')
   ctx.effect(() => () => modern.close(), 'mcp: close the MCP handler')
+  // The route is live before the file names the port, so an agent that reads the file finds /mcp.
+  await ctx.effect(async () => {
+    const port = ctx.webServer.port
+    if (port === undefined) throw new Error('mcp: the web server has no listening port; the port file was not written')
+    // A live host owns the file (for example the desktop app while a CLI host starts); do not take it.
+    const owner = await otherOwner(portFile)
+    if (owner !== undefined) {
+      ctx.logger.warn(`mcp: ${portFile} belongs to the live host process ${String(owner)}; this host on port ${String(port)} does not write it`)
+      return () => {}
+    }
+    const content: PortFile = { port, nonce, pid: process.pid }
+    await writeFileAtomic(portFile, `${JSON.stringify(content)}\n`)
+    return async () => {
+      try {
+        await removePortFile(portFile, nonce)
+      } catch (error) {
+        ctx.logger.warn(`mcp: the port file ${portFile} was not removed`, error)
+      }
+    }
+  }, 'mcp: the port file')
 }
