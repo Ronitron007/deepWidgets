@@ -23,8 +23,21 @@ const WIDGET_GAP = 16
 const RETRY_FIRST_MS = 500
 const RETRY_MAX_MS = 10_000
 
+/** The slug pattern of the Host runtime (`deepwidgets/widgets/src/index.ts`). */
+const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/u
+
 /**
- * Parse one frame at the boundary. An unknown frame gives `undefined`.
+ * Check one slug against the Host pattern. An invalid slug writes one warning.
+ * @param slug - slug from a frame.
+ */
+function validSlug(slug: unknown): slug is string {
+  if (typeof slug === 'string' && SLUG.test(slug)) return true
+  console.warn('deepwidgets-windows: dropped an invalid slug', JSON.stringify(slug))
+  return false
+}
+
+/**
+ * Parse one frame at the boundary. An unknown frame gives `undefined`. Invalid slugs are dropped.
  * @param data - the `data` field of one server-sent event.
  */
 function parseWidgetEvent(data: string): WidgetEvent | undefined {
@@ -32,10 +45,10 @@ function parseWidgetEvent(data: string): WidgetEvent | undefined {
   try { value = JSON.parse(data) } catch { return undefined }
   if (typeof value !== 'object' || value === null) return undefined
   const frame = value as { type?: unknown; slug?: unknown; slugs?: unknown }
-  if (frame.type === 'hello' && Array.isArray(frame.slugs) && frame.slugs.every(slug => typeof slug === 'string')) {
-    return { type: 'hello', slugs: frame.slugs }
+  if (frame.type === 'hello' && Array.isArray(frame.slugs)) {
+    return { type: 'hello', slugs: frame.slugs.filter(validSlug) }
   }
-  if ((frame.type === 'added' || frame.type === 'removed') && typeof frame.slug === 'string' && frame.slug !== '') {
+  if ((frame.type === 'added' || frame.type === 'removed') && validSlug(frame.slug)) {
     return { type: frame.type, slug: frame.slug }
   }
   return undefined
