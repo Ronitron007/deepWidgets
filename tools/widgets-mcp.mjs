@@ -9,7 +9,7 @@
  * Needs `corepack pnpm run build:artifacts` first.
  */
 import { spawn } from 'node:child_process'
-import { createWriteStream, mkdirSync, statSync } from 'node:fs'
+import { createWriteStream, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { request as httpRequest } from 'node:http'
@@ -67,15 +67,43 @@ async function startHost(port) {
   })
 }
 
+/** One request over node:http, which can set any Host header. Gives the status. */
+function rawHttp(url, headers, payload = '') {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...headers } }, (res) => { res.resume(); resolve(res.statusCode) })
+    req.once('error', reject)
+    req.end(payload)
+  })
+}
+
+/** Unit check of the fence predicates (fence.non_loopback_bind, fence.host_userinfo): a real LAN socket is not practical here. */
+async function predicateChecks() {
+  const mod = await import(pathToFileURL(join(ROOT, 'deepwidgets/mcp/lib/index.js')).href)
+  const addr = mod.isLoopbackAddress
+  const host = mod.isLoopbackHost
+  const loopAddrs = ['127.0.0.1', '127.8.9.10', '::1', '::ffff:127.0.0.1', '::ffff:127.200.1.1']
+  const otherAddrs = [undefined, '', '10.0.0.5', '192.168.1.20', '::ffff:192.168.1.20', 'fe80::1', '::', '0.0.0.0', '128.0.0.1', '::ffff:10.0.0.1']
+  check('isLoopbackAddress: loopback remote addresses pass, others fail',
+    typeof addr === 'function' && loopAddrs.every((a) => addr(a) === true) && otherAddrs.every((a) => addr(a) === false),
+    typeof addr === 'function' ? JSON.stringify([...loopAddrs, ...otherAddrs].map((a) => [a, addr(a)])) : 'not exported')
+  const goodHosts = ['127.0.0.1', '127.0.0.1:8080', 'localhost', 'LOCALHOST:1', '[::1]', '[::1]:65535']
+  const badHosts = [undefined, '', 'evil.com@127.0.0.1', 'evil.com@127.0.0.1:80', '127.0.0.1.evil.com', 'localhost.', '127.1', 'evil.com', '127.0.0.1:', '127.0.0.1:123456', 'user@localhost', '[::1]x']
+  check('isLoopbackHost: only 127.0.0.1, localhost, [::1] with an optional port pass',
+    typeof host === 'function' && goodHosts.every((h) => host(h) === true) && badHosts.every((h) => host(h) === false),
+    typeof host === 'function' ? JSON.stringify([...goodHosts, ...badHosts].map((h) => [h, host(h)])) : 'not exported')
+}
+
 /** Parse the JSON body of one tool answer. */
 function body(result) {
-  return result.structuredContent ?? JSON.parse(result.content?.[0]?.text ?? 'null')
+  if (result.structuredContent !== undefined) return result.structuredContent
+  try { return JSON.parse(result.content?.[0]?.text ?? 'null') } catch { return null }
 }
 
 async function main() {
   const port = await freePort()
   const base = `http://127.0.0.1:${String(port)}`
   console.log(`widgets-mcp: work folder ${work}, port ${String(port)}`)
+  await predicateChecks()
   await startHost(port)
 
   // The bundles load after the URL prints; wait for the /mcp route.
@@ -97,7 +125,10 @@ async function main() {
   const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { authorization: `Bearer ${String(token)}` } } })
   await client.connect(transport)
   try {
-    const tools = (await client.listTools()).tools.map((tool) => tool.name).sort()
+    const listed = (await client.listTools()).tools
+    const tools = listed.map((tool) => tool.name).sort()
+    const callSchema = listed.find((tool) => tool.name === 'widget_call')?.inputSchema
+    check('tools/list advertises the input schema of widget_call', callSchema?.properties?.slug?.type === 'string' && callSchema?.properties?.args?.type === 'object' && callSchema?.required?.includes('action'), JSON.stringify(callSchema))
     check('tools are widget_call, widget_changes, widget_describe, widget_list', JSON.stringify(tools) === JSON.stringify(['widget_call', 'widget_changes', 'widget_describe', 'widget_list']), JSON.stringify(tools))
 
     const list = body(await client.callTool({ name: 'widget_list', arguments: {} }))
@@ -119,6 +150,13 @@ async function main() {
     const change = changes?.changes?.find((item) => item.slug === 'sample' && item.kind === 'state' && item.action === 'add')
     check('widget_changes shows the change with by set to the agent', change !== undefined && change.by === agentId, JSON.stringify(changes?.changes))
 
+    const badArgs = await client.callTool({ name: 'widget_call', arguments: { slug: 'sample', action: 'add', args: [1] } })
+    const badSlug = await client.callTool({ name: 'widget_describe', arguments: { slug: 5 } })
+    const schemaErrors = [badArgs, badSlug].map((answer) => ({ isError: answer.isError, error: body(answer)?.error ?? answer.content?.[0]?.text }))
+    check('tool input that fails the schema gives invalid-args with message and a nextStep to widget_describe',
+      schemaErrors.every(({ isError, error }) => isError === true && error?.code === 'invalid-args' && typeof error.message === 'string' && error.message !== '' && /widget_describe/.test(error.nextStep ?? '')),
+      JSON.stringify(schemaErrors))
+
     const unknown = await client.callTool({ name: 'widget_call', arguments: { slug: 'ghost', action: 'get' } })
     const error = body(unknown)?.error
     check('a tool error gives code, message, and nextStep', unknown.isError === true && error?.code === 'unknown-widget' && typeof error.message === 'string' && typeof error.nextStep === 'string', JSON.stringify(error))
@@ -137,14 +175,31 @@ async function main() {
   const badToken = await raw({ authorization: 'Bearer not-a-token' })
   check('a bad token gets 401', badToken.status === 401, String(badToken.status))
   // fetch cannot set Host; node:http can.
-  const badHost = await new Promise((resolve, reject) => {
-    const req = httpRequest(`${base}/mcp`, { method: 'POST', headers: { host: 'evil.example', authorization: `Bearer ${String(token)}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' } }, (res) => { res.resume(); resolve(res.statusCode) })
-    req.once('error', reject)
-    req.end(initialize)
-  })
+  const auth = { authorization: `Bearer ${String(token)}` }
+  const badHost = await rawHttp(`${base}/mcp`, { ...auth, host: 'evil.example' }, initialize)
   check('a request whose Host is not loopback gets 403', badHost === 403, String(badHost))
+  const badHostToken = await rawHttp(`${base}/mcp/token`, { host: 'evil.example' }, JSON.stringify({ agent: 'x' }))
+  check('POST /mcp/token whose Host is not loopback gets 403', badHostToken === 403, String(badHostToken))
+  const userinfo = await rawHttp(`${base}/mcp`, { ...auth, host: 'evil.com@127.0.0.1' }, initialize)
+  const userinfoToken = await rawHttp(`${base}/mcp/token`, { host: 'evil.com@127.0.0.1' }, JSON.stringify({ agent: 'x' }))
+  check('Host evil.com@127.0.0.1 gets 403 on /mcp and /mcp/token', userinfo === 403 && userinfoToken === 403, `/mcp ${String(userinfo)}, /mcp/token ${String(userinfoToken)}`)
   const tokenWithOrigin = await fetch(`${base}/mcp/token`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://evil.example' }, body: JSON.stringify({ agent: 'x' }) })
   check('POST /mcp/token with an Origin header gets 403', tokenWithOrigin.status === 403, String(tokenWithOrigin.status))
+
+  // token.unbounded: the file keeps the newest 64 agents; the oldest token is dropped.
+  const more = []
+  for (let i = 0; i < 64; i += 1) {
+    const answer = await fetch(`${base}/mcp/token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agent: `cap-${String(i)}` }) })
+    more.push((await answer.json().catch(() => null))?.token)
+  }
+  let rows
+  try { rows = Object.keys(JSON.parse(readFileSync(tokenFile, 'utf8'))).length } catch { rows = undefined }
+  const oldest = await raw({ authorization: `Bearer ${String(token)}` })
+  const keptOldest = await raw({ authorization: `Bearer ${String(more[0])}` })
+  const newest = await raw({ authorization: `Bearer ${String(more.at(-1))}` })
+  check('65 tokens keep the newest 64: the first token gets 401, the others work, the file has 64 rows',
+    more.every((t) => typeof t === 'string') && oldest.status === 401 && keptOldest.status !== 401 && newest.status !== 401 && rows === 64,
+    `first ${String(oldest.status)}, second ${String(keptOldest.status)}, last ${String(newest.status)}, rows ${String(rows)}`)
 }
 
 let exitCode = 1

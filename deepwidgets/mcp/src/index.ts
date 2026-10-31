@@ -15,13 +15,17 @@ import type { WidgetErrorCode } from '@deepwidgets/widgets'
 import { localhostHostValidation, toNodeHandler } from '@modelcontextprotocol/node'
 import type { NodeIncomingMessageLike } from '@modelcontextprotocol/node'
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
-import type { CallToolResult } from '@modelcontextprotocol/server'
+import type { CallToolResult, StandardSchemaWithJSON } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 
 export const name = 'deepwidgets-mcp'
 export const inject = ['webServer', 'widgets']
 
 const TOKEN_BODY_LIMIT = 4_096
+/** The token file keeps the newest agents up to this count; a new token drops the oldest (decision `widget.agent_identity`: tokens only name the caller). */
+const MAX_AGENTS = 64
+const LOOPBACK_HOST = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i
+const LOOPBACK_V4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/
 const AGENT_NAME = /^[\x20-\x7e]{1,64}$/
 
 /** An error code of a tool answer: a runtime code, or a code of this package. */
@@ -60,6 +64,32 @@ function isWidgetError(error: unknown): error is Error & { code: WidgetErrorCode
   if (!(error instanceof Error) || error.name !== 'WidgetError') return false
   const code = (error as { code?: unknown }).code
   return typeof code === 'string' && Object.hasOwn(NEXT_STEP, code)
+}
+
+/**
+ * True for a `Host` header of `127.0.0.1`, `localhost`, or `[::1]`, each with an optional port.
+ * It refuses any other text, such as userinfo (`evil.com@127.0.0.1`), which the SDK guard accepts.
+ */
+export function isLoopbackHost(host: string | undefined): boolean {
+  return host !== undefined && LOOPBACK_HOST.test(host)
+}
+
+/** True for a loopback socket address: 127.0.0.0/8, `::1`, or 127.0.0.0/8 mapped into IPv6. */
+export function isLoopbackAddress(address: string | undefined): boolean {
+  if (address === undefined) return false
+  if (address === '::1') return true
+  const v4 = address.toLowerCase().startsWith('::ffff:') ? address.slice(7) : address
+  return LOOPBACK_V4.test(v4) && v4.split('.').every((part) => Number(part) <= 255)
+}
+
+/**
+ * Wrap a zod schema so that the SDK advertises its JSON Schema but passes each input through.
+ * The tool parses the input itself, so a bad input gets `invalid-args` with a `nextStep`, not
+ * the SDK text error.
+ */
+function lenient(schema: z.ZodType): StandardSchemaWithJSON {
+  const standard = schema['~standard'] as StandardSchemaWithJSON['~standard']
+  return { '~standard': { ...standard, validate: (value: unknown) => ({ value }) } }
 }
 
 function toolOk(body: Record<string, unknown>): CallToolResult {
@@ -154,23 +184,41 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     }
   }
 
+  /** Parse the tool input with `schema`, then run the tool body through {@link guarded}. */
+  function tool<S extends z.ZodType>(schema: S, run: (input: z.infer<S>) => Record<string, unknown> | Promise<Record<string, unknown>>): (input: unknown) => Promise<CallToolResult> {
+    return async (input) => {
+      const parsed = schema.safeParse(input ?? {})
+      if (!parsed.success) return toolError('invalid-args', z.prettifyError(parsed.error))
+      return guarded(() => run(parsed.data))
+    }
+  }
+
   function buildServer(agentId: string): McpServer {
     const widgets = ctx.widgets
+    const listInput = z.object({})
+    const describeInput = z.object({ slug: z.string() })
+    const callInput = z.object({
+      slug: z.string(),
+      action: z.string(),
+      args: z.record(z.string(), z.unknown()).optional(),
+      requestId: z.string().min(1).max(100).optional(),
+    })
+    const changesInput = z.object({ since: z.string().optional() })
     const mcp = new McpServer(
       { name: 'deepwidgets', version: '0.0.0' },
       { instructions: 'deepWidgets: desktop widgets. Call widget_list, then widget_describe, then widget_call. Pass a new requestId on each mutation. Call widget_changes with the last cursor to see what changed.' },
     )
     mcp.registerTool('widget_list', {
       description: 'List the live widgets: slug, title, state revision, program revision. Also gives a cursor for widget_changes.',
-      inputSchema: z.object({}),
+      inputSchema: lenient(listInput),
       annotations: { readOnlyHint: true },
-    }, () => guarded(() => ({ cursor: widgets.cursor(), widgets: widgets.list() })))
+    }, tool(listInput, () => ({ cursor: widgets.cursor(), widgets: widgets.list() })))
 
     mcp.registerTool('widget_describe', {
       description: 'Describe one widget: its actions (name, kind, args JSON Schema, timeoutMs) and its current state. Call it before widget_call on a widget you have not described.',
-      inputSchema: z.object({ slug: z.string() }),
+      inputSchema: lenient(describeInput),
       annotations: { readOnlyHint: true },
-    }, ({ slug }) => guarded(() => {
+    }, tool(describeInput, ({ slug }) => {
       const description = widgets.describe(slug)
       const state = widgets.get(slug)
       return { ...description, rev: state.rev, state: state.data }
@@ -178,22 +226,17 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
 
     mcp.registerTool('widget_call', {
       description: 'Run one widget action. For a mutation, pass a new requestId. After a timeout, retry with the same requestId.',
-      inputSchema: z.object({
-        slug: z.string(),
-        action: z.string(),
-        args: z.record(z.string(), z.unknown()).optional(),
-        requestId: z.string().min(1).max(100).optional(),
-      }),
-    }, ({ slug, action, args, requestId }) => guarded(async () => {
+      inputSchema: lenient(callInput),
+    }, tool(callInput, async ({ slug, action, args, requestId }) => {
       const outcome = await widgets.call(slug, action, args ?? {}, { caller: agentId, ...(requestId === undefined ? {} : { requestId }) })
       return { ...outcome }
     }))
 
     mcp.registerTool('widget_changes', {
       description: 'The changes after a cursor from widget_list or an earlier widget_changes. Each change names who made it in `by`. With no cursor, it gives a cursor for now.',
-      inputSchema: z.object({ since: z.string().optional() }),
+      inputSchema: lenient(changesInput),
       annotations: { readOnlyHint: true },
-    }, ({ since }) => guarded(() => {
+    }, tool(changesInput, ({ since }) => {
       const out = widgets.changes(since)
       if (out.reset === true) return { ...out, error: { code: 'stale-cursor', message: 'the cursor is from another host process or too old', nextStep: NEXT_STEP['stale-cursor'] } }
       return { ...out }
@@ -209,13 +252,23 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const validateHost = localhostHostValidation()
 
   /**
-   * The fence. An MCP client is never a browser, so a request with `Origin` or `Sec-Fetch-Site`
-   * gets 403. A request whose `Host` is not loopback gets 403 from the SDK guard.
+   * The fence, for each request on `/mcp` and `/mcp/token`:
+   * - A peer that is not loopback gets 403, also when the web server binds a wider address.
+   * - An MCP client is never a browser, so a request with `Origin` or `Sec-Fetch-Site` gets 403.
+   * - A `Host` that is not exactly loopback gets 403, then the SDK guard checks it again.
    * @returns true when the request may go on; false when the fence answered it.
    */
   function fence(req: IncomingMessage, res: ServerResponse): boolean {
+    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+      send(res, 403, { error: 'only loopback clients may use /mcp' })
+      return false
+    }
     if (req.headers.origin !== undefined || req.headers['sec-fetch-site'] !== undefined) {
       send(res, 403, { error: 'browser requests are refused' })
+      return false
+    }
+    if (!isLoopbackHost(req.headers.host)) {
+      send(res, 403, { error: 'the Host must be 127.0.0.1, localhost, or [::1]' })
       return false
     }
     return validateHost(req, res)
@@ -247,11 +300,21 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     const agentId = `${base}-${randomBytes(3).toString('hex')}`
     const key = hashToken(token)
     tokens.set(key, { agentId, agent, issuedAt: new Date().toISOString() })
+    // The map keeps insertion order, so the first keys are the oldest tokens.
+    const dropped: [string, TokenRow][] = []
+    for (const [oldKey, oldRow] of tokens) {
+      if (tokens.size <= MAX_AGENTS) break
+      tokens.delete(oldKey)
+      dropped.push([oldKey, oldRow])
+    }
     try {
       await persist()
     } catch (error) {
-      // An unsaved token would stop working after a restart; do not hand it out.
+      // An unsaved token would stop working after a restart; do not hand it out, and keep the old rows.
       tokens.delete(key)
+      const kept = [...tokens]
+      tokens.clear()
+      for (const [oldKey, oldRow] of [...dropped, ...kept]) tokens.set(oldKey, oldRow)
       ctx.logger.error(`mcp: the token file ${tokenFile} was not written; no token was issued`, error)
       send(res, 500, { error: 'the token was not saved; retry later' })
       return
