@@ -1,0 +1,11 @@
+{
+  "name": "deepwidgets-widget-rows-install",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": "./index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
