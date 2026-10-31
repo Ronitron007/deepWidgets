@@ -203,6 +203,15 @@ function openStream(host, path) {
   }
 }
 
+async function waitFor(test, ms = 10_000) {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    if (await test().catch(() => false)) return true
+    await sleep(100)
+  }
+  return false
+}
+
 // ---- the checks ----
 
 /** The in-host check widget: actions that probe the queue, the timeout, and the errors. */
@@ -216,6 +225,10 @@ const CHECK_WIDGET = `
         await pause(600)
         wc.lateAborted = w.signal.aborted
         try { await w.update((s) => ({ ...s, n: s.n + 1000 })); wc.late = 'wrote' } catch (error) { wc.late = error.code ?? String(error) }
+      } },
+      { name: 'leak', kind: 'mutation', timeoutMs: 300, handler: async () => {
+        await pause(600)
+        try { await wc.ctx.widgets.update('check', (s) => ({ ...s, n: s.n + 1000 })); wc.leak = 'wrote' } catch (error) { wc.leak = error.code ?? String(error) }
       } },
       { name: 'boom', kind: 'mutation', handler: () => { throw new Error('boom on purpose') } },
       { name: 'slow', kind: 'mutation', handler: async (_args, w) => { await pause(800); return w.update((s) => ({ ...s, slow: true })) } },
@@ -252,6 +265,16 @@ async function firstHost(host) {
   check('slug stream: data { rev }', data !== null, JSON.stringify(stream.frames.filter((f) => f.type === 'data').at(-1)))
 
   const slugs = await host.inspector.run(CHECK_WIDGET)
+  const described = await host.inspector.run(`
+    const unknown = (() => { try { wc.ctx.widgets.describe('ghost'); return null } catch (error) { return error.code } })()
+    return { sample: wc.ctx.widgets.describe('sample'), unknown }`)
+  const getAction = described?.sample?.actions?.find((a) => a.name === 'get')
+  const addAction = described?.sample?.actions?.find((a) => a.name === 'add')
+  check('describe: sample lists get (query, args null) and add (mutation, args with by: number); unknown slug gives unknown-widget',
+    described?.sample?.slug === 'sample' && typeof described.sample.rev === 'number' && typeof described.sample.programRev === 'number'
+      && getAction?.kind === 'query' && getAction.args === null && getAction.timeoutMs === 5000
+      && addAction?.kind === 'mutation' && addAction.args?.properties?.by?.type === 'number' && described.unknown === 'unknown-widget',
+    JSON.stringify(described))
   check('register from a plugin fiber', Array.isArray(slugs) && slugs.includes('check'), JSON.stringify(slugs))
   const added = await events.next((f) => f.type === 'added' && f.slug === 'check')
   check('events stream: added', added !== null)
@@ -270,6 +293,13 @@ async function firstHost(host) {
   const lateFacts = await host.inspector.run('return { late: wc.late, aborted: wc.lateAborted }')
   check('timeout: 504 timeout', late.status === 504 && late.body.error?.code === 'timeout', JSON.stringify(late.body))
   check('timeout: w.signal aborted and the later write is refused', lateFacts.aborted === true && lateFacts.late === 'timeout' && afterLate === 10, `late=${String(lateFacts.late)} aborted=${String(lateFacts.aborted)} n=${String(afterLate)}`)
+
+  // The timeout also refuses a later ctx.widgets.update of that call (not only w.update).
+  const leak = await host.post('/api/widgets/check/call', { action: 'leak' })
+  await sleep(700)
+  const afterLeak = (await host.post('/api/widgets/check/call', { action: 'get' })).body.result.n
+  const leakFact = await host.inspector.run('return wc.leak')
+  check('timeout: a later ctx.widgets.update of the call is refused', leak.status === 504 && leakFact === 'timeout' && afterLeak === 10, `status=${String(leak.status)} leak=${String(leakFact)} n=${String(afterLeak)}`)
 
   // busy: a job that waits longer than its timeout fails and does not run.
   const slow = host.post('/api/widgets/check/call', { action: 'slow' })
@@ -297,6 +327,11 @@ async function firstHost(host) {
   const repeat = await host.post('/api/widgets/sample/call', { action: 'add', args: { by: 1 }, requestId: 'k1' })
   check('idempotency-conflict 409', first.status === 200 && reused.status === 409 && reused.body.error?.code === 'idempotency-conflict', JSON.stringify(reused.body))
   check('a replayed requestId in one host gives replayed and runs once', repeat.body.replayed === true && repeat.body.rev === first.body.rev, JSON.stringify(repeat.body))
+  const parallel = await host.inspector.run(`
+    const before = wc.ctx.widgets.get('check').data.n
+    const outs = await Promise.all([1, 2, 3].map(() => wc.ctx.widgets.call('check', 'add', {}, { caller: 'check', requestId: 'same' })))
+    return { before, after: wc.ctx.widgets.get('check').data.n, revs: outs.map((o) => o.rev), replayed: outs.filter((o) => o.replayed === true).length }`)
+  check('3 parallel calls with one requestId run once; two are replayed', parallel.after === parallel.before + 1 && parallel.replayed === 2 && new Set(parallel.revs).size === 1, JSON.stringify(parallel))
   const conflict = await host.inspector.run(`try { wc.ctx.widgets.register(wc.def); return null } catch (error) { return { code: error.code, status: error.status } }`)
   check('conflict 409 on a second live register', conflict?.code === 'conflict' && conflict.status === 409, JSON.stringify(conflict))
 
@@ -327,6 +362,29 @@ async function firstHost(host) {
   const ticked = (await host.post('/api/widgets/sample/call', { action: 'get' })).body.result.count
   check('sample timer: tickMs 100 adds 1 at that interval', ticked - tickStart >= 3, `count ${String(tickStart)} -> ${String(ticked)}`)
   await host.inspector.run(`const entry = [...wc.loader.entries()].find((e) => e.options.id === 'deepwidgets-widget-sample'); await entry.fiber.update({ tickMs: 0 }, true)`)
+
+  // Drain: a call that runs when the runtime row restarts ends with its write, before the domain closes.
+  // The same restart sets requestTtlMs 300 for the TTL check below.
+  const drain = await host.inspector.run(`
+    wc.fiber = wc.loader.ctx.plugin({ name: 'widgets-check-drain', inject: ['widgets'], apply(ctx) { wc.ctx = ctx; ctx.widgets.register(wc.def) } })
+    await wc.fiber
+    const service = wc.ctx.widgets
+    const before = service.get('check').rev
+    const running = service.call('check', 'slow', {}, { caller: 'check' }).then((o) => ({ ok: true, rev: o.rev }), (error) => ({ ok: false, code: error.code, message: String(error.message) }))
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const entry = [...wc.loader.entries()].find((e) => e.options.id === 'deepwidgets-widgets')
+    await entry.fiber.update({ requestTtlMs: 300 }, true)
+    return { before, outcome: await running }`)
+  check('drain: a running call ends with its write when the runtime stops', drain?.outcome?.ok === true && drain.outcome.rev === drain.before + 1, JSON.stringify(drain))
+
+  // The requests TTL: a record older than requestTtlMs is void.
+  const back = await waitFor(async () => (await host.getJson('/api/widgets')).body?.widgets?.some((w) => w.slug === 'sample'))
+  const ttlFirst = await host.post('/api/widgets/sample/call', { action: 'add', args: { by: 1 }, requestId: 'ttl-1' })
+  const ttlSoon = await host.post('/api/widgets/sample/call', { action: 'add', args: { by: 1 }, requestId: 'ttl-1' })
+  await sleep(500)
+  const ttlLate = await host.post('/api/widgets/sample/call', { action: 'add', args: { by: 1 }, requestId: 'ttl-1' })
+  check('requests TTL: a record older than requestTtlMs is void, so the retry runs again', back && ttlSoon.body?.replayed === true && ttlLate.status === 200 && ttlLate.body.replayed === undefined && ttlLate.body.result.count === ttlFirst.body.result.count + 1,
+    `first=${JSON.stringify(ttlFirst.body)} soon=${JSON.stringify(ttlSoon.body)} late=${JSON.stringify(ttlLate.body)}`)
 
   events.close()
   stream.close()

@@ -6,6 +6,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomUUID } from 'node:crypto'
 import { Service } from '@deepseek-ai/cordis'
+import Schema from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
@@ -23,7 +24,7 @@ const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/
 const ACTION = /^[A-Za-z][A-Za-z0-9_]{0,62}$/
 const DEFAULT_TIMEOUT_MS = 5_000
 const CHANGE_LOG_SIZE = 1_000
-const REQUEST_TTL_MS = 10 * 60_000
+const DEFAULT_REQUEST_TTL_MS = 10 * 60_000
 const PING_MS = 15_000
 const encoder = new TextEncoder()
 
@@ -87,6 +88,21 @@ export interface WidgetDef<S, T extends readonly unknown[] = readonly unknown[]>
   /** The timeout of each action without its own `timeoutMs`. */
   timeoutMs?: number
   actions: { readonly [K in keyof T]: WidgetAction<S, T[K]> }
+}
+
+/** One action in `describe()`. */
+export interface WidgetActionDescription {
+  name: string
+  kind: 'query' | 'mutation'
+  /** The JSON Schema of `args` (from `z.toJSONSchema`), or null when the action takes no args schema. */
+  args: unknown
+  /** The timeout that applies: the action value, else the widget value, else 5 s. */
+  timeoutMs: number
+}
+
+/** The answer of `describe()`. */
+export interface WidgetDescription extends WidgetSummary {
+  actions: WidgetActionDescription[]
 }
 
 /** One item of `list()`. */
@@ -162,6 +178,7 @@ interface Registration {
 interface Runtime {
   add(registration: Registration): () => Promise<void>
   list(): WidgetSummary[]
+  describe(slug: string): WidgetDescription
   get(slug: string): { rev: number, data: unknown }
   call(slug: string, action: string, args: unknown, options: CallOptions): Promise<CallOutcome>
   update(slug: string, fn: (state: unknown) => unknown, by: string): Promise<unknown>
@@ -224,6 +241,15 @@ export class WidgetsService extends Service {
   /** @returns `{ slug, title, rev, programRev }` for each live widget. */
   list(): WidgetSummary[] {
     return this.runtime.list()
+  }
+
+  /**
+   * @param slug - a live widget.
+   * @returns the summary of the widget and its actions, with the JSON Schema of each `args`.
+   * @throws {WidgetError} `unknown-widget`.
+   */
+  describe(slug: string): WidgetDescription {
+    return this.runtime.describe(slug)
   }
 
   /**
@@ -292,12 +318,22 @@ interface Entry {
   routes: (() => Promise<void>)[]
 }
 
-/** State of one running call. */
+/** State of one running call or write. */
 interface Run {
   readonly signal: AbortSignal | undefined
   readonly by: string
   readonly action: string | undefined
+  /** True for a query: it cannot write. */
+  readonly query: boolean
   wrote: boolean
+  /** True after the job left its queue slot. */
+  settled: boolean
+}
+
+/** The async context of a job: the slug and the run that holds its queue slot. */
+interface Slot {
+  readonly slug: string
+  readonly run: Run
 }
 
 const json = (status: number, body: unknown): Response => Response.json(body, { status })
@@ -356,27 +392,61 @@ async function readBody(request: Request): Promise<unknown> {
 export const name = 'deepwidgets-widgets'
 export const inject = ['connection', 'storageDomain']
 
-export function apply(ctx: Context): void {
+export interface Config {
+  /** A `requests` record older than this is void. The checks set a short value. */
+  requestTtlMs: number
+}
+
+export const Config: Schema<Config> = Schema.object({
+  requestTtlMs: Schema.natural().default(DEFAULT_REQUEST_TTL_MS),
+})
+
+export function apply(ctx: Context, config: Config): void {
+  const requestTtlMs = config.requestTtlMs
   const widgets = new Map<string, Entry>()
   const events = new Set<OpenStream>()
-  const slot = new AsyncLocalStorage<string>()
+  const slot = new AsyncLocalStorage<Slot>()
   const inflight = new Map<string, { hash: string, promise: Promise<CallOutcome> }>()
   let domain: WidgetsDomain | undefined
 
   const ready = ctx.storageDomain.open(widgetsDomain).then(async (opened) => {
     domain = opened
     const now = Date.now()
-    const expired = [...opened.table('requests').entries()].filter(([, record]) => now - record.at > REQUEST_TTL_MS).map(([key]) => key)
+    const expired = [...opened.table('requests').entries()].filter(([, record]) => now - record.at > requestTtlMs).map(([key]) => key)
     if (expired.length > 0) await opened.table('requests').deleteMany(expired)
     return opened
   })
   ready.catch((error: unknown) => { ctx.logger.error('widgets: the storage domain did not open; each widget call fails', error) })
 
+  // Each call, update, and setProgram that is admitted runs to its end before the domain closes.
+  let stopping = false
+  let longestTimeoutMs = DEFAULT_TIMEOUT_MS
+  const running = new Set<Promise<unknown>>()
+  function admit<T>(work: () => Promise<T>): Promise<T> {
+    if (stopping) return Promise.reject(new WidgetError('busy', 'the widget runtime is stopping'))
+    const promise = work()
+    running.add(promise)
+    const forget = (): void => { running.delete(promise) }
+    promise.then(forget, forget)
+    return promise
+  }
+
   ctx.effect(() => async () => {
+    stopping = true
     for (const open of [...events]) open.close()
+    // A job waits in the queue for at most its timeout and then runs for at most its timeout.
+    // The bound only guards against a defect: each admitted promise settles before it.
+    const bound = 2 * longestTimeoutMs + 1_000
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const drained = await Promise.race([
+      Promise.allSettled([...running]).then(() => true),
+      new Promise<false>((resolve) => { timer = setTimeout(() => { resolve(false) }, bound) }),
+    ])
+    clearTimeout(timer)
+    if (!drained) ctx.logger.error(`widgets: ${String(running.size)} calls still ran after ${String(bound)} ms; the domain closes under them, and their writes fail`)
     const opened = await ready.catch(() => undefined)
     await opened?.close()
-  }, 'widgets: close the domain')
+  }, 'widgets: drain the calls, then close the domain')
 
   // ---- change feed: cursor = epoch:seq, a new epoch for each process ----
   const epoch = randomUUID().slice(0, 8)
@@ -436,8 +506,9 @@ export function apply(ctx: Context): void {
   /**
    * Run `job` in the queue of the slug. A job that waits longer than `waitMs` fails with `busy`
    * and does not run. The slot frees when `job` settles; `job` enforces its own run timeout.
+   * `job` runs in the async context of `run`, so a write from inside the job finds its run.
    */
-  function enqueue<T>(entry: Entry, waitMs: number, job: () => Promise<T>): Promise<T> {
+  function enqueue<T>(entry: Entry, waitMs: number, run: Run, job: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       let started = false
       let cancelled = false
@@ -451,7 +522,7 @@ export function apply(ctx: Context): void {
         if (cancelled) return
         started = true
         try {
-          resolve(await slot.run(entry.slug, job))
+          resolve(await slot.run({ slug: entry.slug, run }, job))
         } catch (error) {
           reject(error instanceof Error ? error : new Error(String(error)))
         }
@@ -478,12 +549,21 @@ export function apply(ctx: Context): void {
     return data
   }
 
-  /** update() from a timer or a plugin: queued, unless it runs inside a call of this slug. */
+  /**
+   * update() from a timer, a plugin, or a handler that calls `ctx.widgets.update`.
+   * A write from a call that timed out is refused, whatever its slug. A write from a running
+   * mutation of the same slug uses the slot of that mutation. Each other write waits in the queue.
+   */
   function update(slug: string, fn: (state: unknown) => unknown, by: string): Promise<unknown> {
     const entry = liveEntry(slug)
-    const run: Run = { signal: undefined, by, action: undefined, wrote: false }
-    if (slot.getStore() === slug) return write(entry, fn, run)
-    return enqueue(entry, timeoutOf(entry), () => write(entry, fn, run))
+    const current = slot.getStore()
+    if (current?.run.signal?.aborted === true) return Promise.reject(new WidgetError('timeout', 'a write after the timeout was refused'))
+    if (current?.slug === slug && !current.run.settled) {
+      if (current.run.query) return Promise.reject(new WidgetError('handler-error', `the query ${String(current.run.action)} cannot write`))
+      return write(entry, fn, current.run)
+    }
+    const run: Run = { signal: undefined, by, action: undefined, query: false, wrote: false, settled: false }
+    return enqueue(entry, timeoutOf(entry), run, () => write(entry, fn, run))
   }
 
   // ---- calls ----
@@ -518,7 +598,7 @@ export function apply(ctx: Context): void {
 
   function runAction(entry: Entry, action: WidgetAction<unknown>, args: unknown, caller: string): Promise<CallOutcome> {
     const controller = new AbortController()
-    const run = { signal: controller.signal, by: caller, action: action.name, wrote: false }
+    const run = { signal: controller.signal, by: caller, action: action.name, query: action.kind === 'query', wrote: false, settled: false }
     const job = async (): Promise<CallOutcome> => {
       try {
         const result = await execute(entry, action, args, run, () => { controller.abort() })
@@ -526,10 +606,13 @@ export function apply(ctx: Context): void {
       } catch (error) {
         if (error instanceof WidgetError) error.wrote = run.wrote
         throw error
+      } finally {
+        run.settled = true
       }
     }
-    if (action.kind === 'query') return job()
-    return enqueue(entry, timeoutOf(entry, action), job)
+    // A query does not wait in the queue, but it runs in the async context of its run too.
+    if (action.kind === 'query') return slot.run({ slug: entry.slug, run }, job)
+    return enqueue(entry, timeoutOf(entry, action), run, job)
   }
 
   async function call(slug: string, name: string, args: unknown, { caller, requestId }: CallOptions): Promise<CallOutcome> {
@@ -542,10 +625,13 @@ export function apply(ctx: Context): void {
       if (!checked.success) throw new WidgetError('invalid-args', z.prettifyError(checked.error))
       parsed = checked.data
     }
-    await entry.seeded
-    if (action.kind === 'query' || requestId === undefined) return runAction(entry, action, parsed, caller)
+    if (action.kind === 'query' || requestId === undefined) {
+      await entry.seeded
+      return runAction(entry, action, parsed, caller)
+    }
 
-    // Idempotent mutation: one real run for each (caller, requestId), kept in storage for 10 minutes.
+    // Idempotent mutation: one real run for each (caller, requestId), kept in storage for `requestTtlMs`.
+    // The in-flight entry is set before the first await, so parallel retries share one run.
     const key = hashOf([caller, requestId])
     const hash = hashOf([slug, name, parsed])
     const pending = inflight.get(key)
@@ -553,17 +639,27 @@ export function apply(ctx: Context): void {
       if (pending.hash !== hash) throw new WidgetError('idempotency-conflict', `the requestId ${requestId} was used for a different call`)
       return { ...(await pending.promise), replayed: true }
     }
+    const promise = runOnce(entry, action, parsed, caller, requestId, key, hash)
+    inflight.set(key, { hash, promise })
+    try {
+      return await promise
+    } finally {
+      inflight.delete(key)
+    }
+  }
+
+  /** The stored outcome of an earlier run of the key, or one new run whose outcome is stored. */
+  async function runOnce(entry: Entry, action: WidgetAction<unknown>, parsed: unknown, caller: string, requestId: string, key: string, hash: string): Promise<CallOutcome> {
+    await entry.seeded
     const requests = (await ready).table('requests')
     const stored = requests.get(key)
-    if (stored !== undefined && Date.now() - stored.at <= REQUEST_TTL_MS) {
+    if (stored !== undefined && Date.now() - stored.at <= requestTtlMs) {
       if (stored.hash !== hash) throw new WidgetError('idempotency-conflict', `the requestId ${requestId} was used for a different call`)
       if (stored.outcome.ok) return { result: stored.outcome.result, rev: stored.outcome.rev, replayed: true }
       throw new WidgetError(stored.outcome.code, stored.outcome.message)
     }
-    const promise = runAction(entry, action, parsed, caller)
-    inflight.set(key, { hash, promise })
     try {
-      const outcome = await promise
+      const outcome = await runAction(entry, action, parsed, caller)
       await remember(requests, key, { hash, at: Date.now(), outcome: { ok: true, result: outcome.result, rev: outcome.rev } })
       return outcome
     } catch (error) {
@@ -573,15 +669,13 @@ export function apply(ctx: Context): void {
         await remember(requests, key, { hash, at: Date.now(), outcome: { ok: false, code: error.code, message: error.message } })
       }
       throw error
-    } finally {
-      inflight.delete(key)
     }
   }
 
-  /** Store the outcome of an idempotent call, and drop the records older than 10 minutes. */
+  /** Store the outcome of an idempotent call, and drop the records older than `requestTtlMs`. */
   async function remember(requests: KvTable<string, StoredRequest>, key: string, record: StoredRequest): Promise<void> {
     const now = Date.now()
-    const expired = [...requests.entries()].filter(([, old]) => now - old.at > REQUEST_TTL_MS).map(([old]) => old)
+    const expired = [...requests.entries()].filter(([, old]) => now - old.at > requestTtlMs).map(([old]) => old)
     if (expired.length > 0) await requests.deleteMany(expired)
     await requests.put(key, record)
   }
@@ -666,6 +760,9 @@ export function apply(ctx: Context): void {
   function add(registration: Registration): () => Promise<void> {
     const { slug } = registration
     if (widgets.has(slug)) throw new WidgetError('conflict', `the slug ${slug} already has a live registration`)
+    for (const action of registration.actions.values()) {
+      longestTimeoutMs = Math.max(longestTimeoutMs, action.timeoutMs ?? registration.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+    }
     const entry: Entry = {
       slug,
       registration,
@@ -703,6 +800,18 @@ export function apply(ctx: Context): void {
     }
   }
   const list = (): WidgetSummary[] => [...widgets.values()].map(summary)
+  function describe(slug: string): WidgetDescription {
+    const entry = liveEntry(slug)
+    return {
+      ...summary(entry),
+      actions: [...entry.registration.actions.values()].map((action) => ({
+        name: action.name,
+        kind: action.kind,
+        args: action.args === undefined ? null : z.toJSONSchema(action.args),
+        timeoutMs: timeoutOf(entry, action),
+      })),
+    }
+  }
 
   ctx.connection.fetch.register({
     path: '/api/widgets',
@@ -722,13 +831,14 @@ export function apply(ctx: Context): void {
   new WidgetsService(ctx, {
     add,
     list,
+    describe,
     get: (slug) => {
       liveEntry(slug)
       return stateOf(slug) ?? { rev: 0, data: widgets.get(slug)?.registration.initialState ?? null }
     },
-    call,
-    update,
-    setProgram,
+    call: (slug, action, args, options) => admit(() => call(slug, action, args, options)),
+    update: (slug, fn, by) => admit(() => update(slug, fn, by)),
+    setProgram: (slug, text, by) => admit(() => setProgram(slug, text, by)),
     changes,
     cursor,
   })
