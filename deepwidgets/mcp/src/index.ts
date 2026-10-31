@@ -52,6 +52,7 @@ const NEXT_STEP: Record<ToolErrorCode, string> = {
   'idempotency-conflict': 'This requestId was used for a different call. Use a new requestId for a new operation.',
   'conflict': 'The slug already has a live registration. Pick another slug.',
   'bad-request': 'Fix the request as the message says, then retry.',
+  'safe-mode': 'The host runs in safe mode after repeated crashes, so this widget is off. Tell the user. Do not retry until the host restarts normally.',
   'stale-cursor': 'The change feed was reset (a host restart or a gap). Call widget_list for the current state and use its cursor.',
   'internal-error': 'The host failed. Tell the user the message. Do not retry in a loop.',
 }
@@ -319,6 +320,8 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       annotations: { readOnlyHint: true },
     }, tool(describeInput, ({ slug }) => {
       const description = widgets.describe(slug)
+      // A widget that is off has no state to read; `off` gives the reason.
+      if (description.off !== undefined) return { ...description }
       const state = widgets.get(slug)
       return { ...description, rev: state.rev, state: state.data }
     }))

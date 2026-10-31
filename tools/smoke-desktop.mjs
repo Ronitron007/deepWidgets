@@ -14,13 +14,22 @@
  * registration, and checks that the page shows the removed state and does not open its stream again.
  * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://app/widget/?slug=sample.
  * It turns the sample row off through the host plugin manager and finds that window closed.
+ * With DSH_SMOKE_HOST_RESTART=1, the check kills the host once. The sample widget page must be live again
+ * (count readable, an add shows, its stream did not close), and the main window must load again for the new host.
+ * Then it kills the host again and quits the app while the restart waits; the app must exit with no kill.
+ * With DSH_SMOKE_HOST_RESTART=give-up, the check installs a widget bundle that is not built in, then kills the host 4 times.
+ * The second restart must be in safe mode: sample stays live, the installed widget is off with reason safe-mode,
+ * and a plugin-manager enable does not turn it on. The fourth crash must open the fatal dialog, with no restart.
+ * With DSH_SMOKE_HOST_RESTART=boot, the check kills the host as soon as it is first ready, while the main window boots.
+ * The host must restart, and the main window must show the probe pid of the new host.
+ * Each run sets DEEPWIDGETS_LOGS_DIR, so the crash reports of the app stay in the temp folder of the run.
  * The trace test also needs the start-up steps of Electron main and a message for each client row.
  * Then it reads the rows of the trace window page dsh-app://app/trace.
  * Uses only Node built-in modules. Prints one result line.
  */
 
 import { spawn, execFile } from 'node:child_process'
-import { appendFileSync, existsSync, openSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -130,6 +139,10 @@ const temp = await mkdtemp(join(tmpdir(), 'deepwidgets-smoke-desktop-'))
 const home = join(temp, 'home')
 const userData = join(temp, 'user-data')
 const logPath = join(temp, 'desktop.log')
+const appLogs = join(temp, 'app-logs')
+/** The slug and the Loader module name of the safe mode test widget (deepwidgets/widgets/fixtures/safe-mode-widget). */
+const TEST_WIDGET = 'safe-mode-test'
+const TEST_WIDGET_MODULE = 'deepwidgets-widget-safe-mode-test'
 await mkdir(home)
 await mkdir(userData)
 openSync(logPath, 'a')
@@ -355,6 +368,8 @@ const child = spawn('corepack', ['pnpm', 'run', 'start:desktop'], {
     DSH_DESKTOP_OPEN_DEVTOOLS: '0',
     // The fixed MCP port of a live app must not collide with the smoke run: let the OS pick one.
     DEEPWIDGETS_MCP_PORT: process.env.DEEPWIDGETS_MCP_PORT ?? '0',
+    // Crash reports and crash dumps of the app go into the temp folder, not ~/Library/Logs.
+    DEEPWIDGETS_LOGS_DIR: appLogs,
   },
 })
 
@@ -371,23 +386,29 @@ let hostPid
 let failed
 try {
   const deadline = Date.now() + timeoutMs
-  const page = await waitForRenderer(deadline)
-  if (page === undefined) {
-    failed = 'renderer timeout'
+  if (process.env.DSH_SMOKE_HOST_RESTART === 'boot') {
+    failed = await checkHostBootKill(deadline)
   } else {
-    const ready = await waitUntilComplete(page, deadline)
-    if (!ready) {
-      failed = 'renderer readyState was not complete'
+    const page = await waitForRenderer(deadline)
+    if (page === undefined) {
+      failed = 'renderer timeout'
     } else {
-      const host = await waitForHost(deadline)
-      if (!host) failed = 'host timeout'
-      else if (process.env.DSH_SMOKE_PROBE === '1') failed = await checkProbe(page, deadline)
-      if (failed === undefined && process.env.DSH_SMOKE_TRACE === '1') failed = await checkTrace(page, deadline)
-      if (failed === undefined && process.env.DSH_SMOKE_HELLO === '1') failed = await checkHello(page, deadline)
-      if (failed === undefined && (process.env.DSH_SMOKE_ROWS ?? '') !== '') failed = await checkRows(page, deadline)
-      if (failed === undefined && (process.env.DSH_SMOKE_INSTALL ?? '') !== '') failed = await checkInstall(deadline)
-      if (failed === undefined && (process.env.DSH_SMOKE_WIDGET ?? '') !== '') failed = await checkWidget(page, deadline)
-      if (failed === undefined && process.env.DSH_SMOKE_WINDOWS === '1') failed = await checkWindows(deadline)
+      const ready = await waitUntilComplete(page, deadline)
+      if (!ready) {
+        failed = 'renderer readyState was not complete'
+      } else {
+        const host = await waitForHost(deadline)
+        if (!host) failed = 'host timeout'
+        else if (process.env.DSH_SMOKE_PROBE === '1') failed = await checkProbe(page, deadline)
+        if (failed === undefined && process.env.DSH_SMOKE_TRACE === '1') failed = await checkTrace(page, deadline)
+        if (failed === undefined && process.env.DSH_SMOKE_HELLO === '1') failed = await checkHello(page, deadline)
+        if (failed === undefined && (process.env.DSH_SMOKE_ROWS ?? '') !== '') failed = await checkRows(page, deadline)
+        if (failed === undefined && (process.env.DSH_SMOKE_INSTALL ?? '') !== '') failed = await checkInstall(deadline)
+        if (failed === undefined && (process.env.DSH_SMOKE_WIDGET ?? '') !== '') failed = await checkWidget(page, deadline)
+        if (failed === undefined && process.env.DSH_SMOKE_WINDOWS === '1') failed = await checkWindows(deadline)
+        if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === '1') failed = await checkHostRestart(page, deadline)
+        if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === 'give-up') failed = await checkHostGiveUp(deadline)
+      }
     }
   }
 } catch (error) {
@@ -772,6 +793,290 @@ async function checkWindows(deadline) {
   failed = await waitHello(hellos, soon())
   if (failed !== undefined) return failed
   return waitPages(url, 0, soon(), 'after hello without sample')
+}
+
+/** The `deepwidgets-supervisor {json}` lines of Electron main in the app log, from the time `since` on. */
+function supervisorEvents(since) {
+  let text = ''
+  try { text = readFileSync(logPath, 'utf8') } catch { return [] }
+  const events = []
+  for (const match of text.matchAll(/deepwidgets-supervisor (\{.*\})/g)) {
+    try {
+      const event = JSON.parse(match[1])
+      if (typeof event.at === 'number' && event.at >= since) events.push(event)
+    } catch { /* a partial line */ }
+  }
+  return events
+}
+
+/** Wait for a supervisor event that `test` takes. Gives undefined at the deadline. */
+async function waitForSupervisor(since, test, until) {
+  while (Date.now() < until) {
+    const found = supervisorEvents(since).find(test)
+    if (found !== undefined) return found
+    await delay(100)
+  }
+  return undefined
+}
+
+/** Kill the host with SIGKILL. Gives the kill time. */
+async function killHost(label) {
+  const pid = hostPid
+  if (pid === undefined) throw new Error(`${label}: no host pid`)
+  const at = Date.now()
+  process.kill(Number(pid), 'SIGKILL')
+  note(`${label}: killed host ${pid}`)
+  return { pid, at }
+}
+
+/** Wait for a host web server in a new host process. Sets hostPid. */
+async function waitForNewHost(oldPid, until) {
+  while (Date.now() < until) {
+    if (await waitForHost(Math.min(until, Date.now() + 5000)) && hostPid !== oldPid) return true
+    await delay(250)
+  }
+  return false
+}
+
+/** Read the main window: a mark set before the restart, the probe text, and readyState. */
+async function readMainWindow(until) {
+  const main = await waitForRenderer(until)
+  if (main === undefined) return undefined
+  try {
+    return JSON.parse(String(await evaluate(main.webSocketDebuggerUrl, `JSON.stringify({ mark: window.__smokeRestartMark === true,
+  ready: document.readyState, probe: document.querySelector('[data-deepwidgets-probe]')?.textContent ?? '' })`, until)))
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'evaluate failed' }
+  }
+}
+
+/** Quit Electron main through its inspector: app.quit() runs the normal quit path. */
+async function quitApp(until) {
+  const targets = await (await fetch(`http://127.0.0.1:${String(mainInspectPort)}/json/list`, { signal: AbortSignal.timeout(3000) })).json()
+  const url = targets[0]?.webSocketDebuggerUrl
+  if (typeof url !== 'string') throw new Error('main inspector: no target')
+  const session = await cdpSession(url, until)
+  try {
+    await cdpCall(session, 'Runtime.evaluate', { expression: "require('electron').app.quit()", includeCommandLineAPI: true })
+  } finally {
+    session.close()
+  }
+}
+
+async function checkHostRestart(page, deadline) {
+  const url = 'dsh-app://app/widget/?slug=sample'
+  const widget = await findWidgetPage('sample', deadline)
+  if (widget === undefined) return 'restart: no sample widget page'
+  const first = await pollWidget(widget, deadline, (value) => value.count !== null && value.dw?.stream === 'open')
+  note(`restart first=${JSON.stringify(first.value)}`)
+  if (!first.ok) return `restart: no count in the page: ${JSON.stringify(first.value)}`
+  const opensBefore = first.value.dw.streamOpens
+  const eventsBefore = first.value.dw.events.length
+  await evaluate(page.webSocketDebuggerUrl, 'window.__smokeRestartMark = true', deadline)
+
+  const kill = await killHost('restart')
+  const until = Math.min(deadline, Date.now() + 60_000)
+  const failedEvent = await waitForSupervisor(kill.at, (event) => event.event === 'host-failed', until)
+  note(`restart host-failed=${JSON.stringify(failedEvent)}`)
+  if (failedEvent === undefined) return 'restart: Electron main did not log host-failed'
+  if (!await waitForNewHost(kill.pid, until)) return 'restart: no new host'
+  note(`restart new host=${String(hostPid)} after ${String(Date.now() - kill.at)} ms`)
+
+  // The same window, so the same renderer target: the window stayed open across the restart.
+  const back = await pollWidget(widget, until, (value) => value.count !== null && value.dw?.stream === 'open' && value.dw.streamOpens > opensBefore)
+  note(`restart widget back=${JSON.stringify(back.value)} after ${String(Date.now() - kill.at)} ms`)
+  if (!back.ok) return `restart: the widget page did not come back: ${JSON.stringify(back.value)}`
+
+  let mainState
+  while (Date.now() < until) {
+    mainState = await readMainWindow(until)
+    if (mainState !== undefined && mainState.mark === false && mainState.ready === 'complete' && mainState.probe === `probe pid ${String(hostPid)}`) break
+    await delay(250)
+  }
+  note(`restart main=${JSON.stringify(mainState)}`)
+  if (mainState?.mark !== false || mainState.probe !== `probe pid ${String(hostPid)}`) return `restart: the main window did not come back: ${JSON.stringify(mainState)}`
+
+  const main = await waitForRenderer(until)
+  const posted = await evaluate(main.webSocketDebuggerUrl, `fetch('/api/widgets/sample/call', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'add', args: { by: 1 } }),
+  }).then(async (response) => JSON.stringify({ status: response.status, body: await response.json() }))`, until, true)
+  note(`restart add=${String(posted)}`)
+  const expected = JSON.parse(String(posted)).body?.result?.count
+  if (typeof expected !== 'number') return `restart: add failed: ${String(posted)}`
+  const shown = await pollWidget(widget, Math.min(until, Date.now() + 10_000), (value) => value.count === String(expected))
+  note(`restart after-add=${JSON.stringify(shown.value)}`)
+  if (!shown.ok) return `restart: the page did not show count ${String(expected)}: ${JSON.stringify(shown.value)}`
+  // A 503 in the gap closes the EventSource; a network error keeps it retrying (widget.shell_url).
+  const gapEvents = shown.value.dw.events.slice(eventsBefore)
+  if (gapEvents.includes('closed')) return `restart: the page stream closed in the gap: ${gapEvents.join(',')}`
+  const windows = await countPages(url)
+  if (windows !== 1) return `restart: want one sample window, got ${String(windows)}`
+
+  // Quit while a restart waits: the app must exit by itself.
+  const second = await killHost('quit')
+  const waiting = await waitForSupervisor(second.at, (event) => event.event === 'host-failed', until)
+  if (waiting === undefined) return 'restart: no host-failed before the quit'
+  const quitAt = Date.now()
+  await quitApp(until)
+  const quitUntil = quitAt + 30_000
+  let alive = await groupPids()
+  let electron = []
+  while (Date.now() < quitUntil) {
+    alive = await groupPids()
+    electron = []
+    for (const pid of alive) if (/Electron|desktop-host/u.test(await commandOf(pid))) electron.push(pid)
+    if (electron.length === 0) break
+    await delay(250)
+  }
+  note(`restart quit: ${String(Date.now() - quitAt)} ms, left=${electron.join(',')} restarts=${JSON.stringify(supervisorEvents(second.at).map((event) => event.event))}`)
+  if (electron.length > 0) return `restart: the app did not quit in 30 s: ${electron.join(',')}`
+  if (supervisorEvents(second.at).some((event) => event.event === 'restart')) return 'restart: a restart ran after the quit'
+  return undefined
+}
+
+async function checkHostGiveUp(deadline) {
+  const url = 'dsh-app://app/widget/?slug=sample'
+  const widget = await findWidgetPage('sample', deadline)
+  if (widget === undefined) return 'give-up: no sample widget page'
+  const until = Math.min(deadline, Date.now() + 120_000)
+  const installed = await installBundle(join(root, 'deepwidgets', 'widgets', 'fixtures', 'safe-mode-widget'), deadline)
+  note(`give-up install=${JSON.stringify(installed)}`)
+  if (installed?.application !== 'applied') return `give-up: the test widget did not install: ${JSON.stringify(installed)}`
+  const before = await pollList(widget, until, (list) => list.some((item) => item.slug === TEST_WIDGET && item.off === undefined))
+  note(`give-up normal list=${JSON.stringify(before.value)}`)
+  if (!before.ok) return `give-up: the test widget is not live before safe mode: ${JSON.stringify(before.value)}`
+  const start = Date.now()
+  for (let crash = 1; crash <= 3; crash += 1) {
+    const kill = await killHost(`give-up ${String(crash)}`)
+    const failedEvent = await waitForSupervisor(kill.at, (event) => event.event === 'host-failed', until)
+    note(`give-up ${String(crash)} host-failed=${JSON.stringify(failedEvent)}`)
+    if (failedEvent?.crashes !== crash) return `give-up: crash ${String(crash)}: ${JSON.stringify(failedEvent)}`
+    const ready = await waitForSupervisor(kill.at, (event) => event.event === 'ready', until)
+    if (ready === undefined) return `give-up: crash ${String(crash)}: the host did not come back`
+    if (ready.safeMode !== (crash >= 2)) return `give-up: crash ${String(crash)}: safeMode ${String(ready.safeMode)}`
+    if (!await waitForNewHost(kill.pid, until)) return `give-up: crash ${String(crash)}: no new host`
+    if (crash === 2) {
+      const reason = await checkSafeMode(widget, url, until)
+      if (reason !== undefined) return `give-up: safe mode: ${reason}`
+    }
+  }
+  const last = await killHost('give-up 4')
+  const gaveUp = await waitForSupervisor(last.at, (event) => event.event === 'give-up', until)
+  note(`give-up event=${JSON.stringify(gaveUp)} ${String(last.at - start)} ms after the first kill`)
+  if (gaveUp?.crashes !== 4) return `give-up: no give-up after 4 crashes: ${JSON.stringify(gaveUp)}`
+  // No restart follows the give-up; the DSH fatal dialog owns the next step. 10 s is longer than the longest backoff.
+  await delay(10_000)
+  const after = supervisorEvents(last.at).map((event) => event.event)
+  note(`give-up events after the fourth kill=${after.join(',')}`)
+  if (after.includes('restart') || after.includes('ready')) return `give-up: the host restarted after the give-up: ${after.join(',')}`
+  // DesktopFatalRecovery writes the crash report, then shows the dialog. Its show() logs `deepwidgets-fatal-dialog`.
+  const text = readFileSync(logPath, 'utf8')
+  const dialog = /deepwidgets-fatal-dialog (\{.*\})/u.exec(text.slice(text.indexOf('deepwidgets-supervisor {"at":' + String(gaveUp.at))))
+  note(`give-up dialog=${dialog?.[1] ?? 'none'}`)
+  if (dialog === null) return 'give-up: the fatal dialog did not open after the give-up'
+  let reports = []
+  try { reports = readdirSync(join(appLogs, 'logs')).filter((file) => /^crash-.*-host\.log$/u.test(file)) } catch { /* no folder */ }
+  note(`give-up crash reports=${reports.join(',')}`)
+  if (reports.length !== 1) return `give-up: want one host crash report in the temp logs folder, got ${reports.join(',') || 'none'}`
+  return undefined
+}
+
+/** Install a local bundle through pluginManager.installBundle on the host Loader. */
+async function installBundle(folder, deadline) {
+  return withHostLoader(deadline, async (session, loaderId) => {
+    const call = await cdpCall(session, 'Runtime.callFunctionOn', {
+      objectId: loaderId,
+      awaitPromise: true,
+      returnByValue: true,
+      arguments: [{ value: `file:${folder}` }],
+      functionDeclaration: `async function (spec) {
+        if (this.length !== 1) throw new Error("Loader instances " + this.length);
+        const manager = this[0].ctx?.get?.("pluginManager") ?? this[0].ctx?.pluginManager;
+        if (manager === undefined || typeof manager.installBundle !== "function") throw new Error("no pluginManager on Loader ctx");
+        return await manager.installBundle(spec);
+      }`,
+    })
+    if (call?.exceptionDetails) throw new Error(String(call.exceptionDetails.exception?.description ?? call.exceptionDetails.text ?? 'install failed'))
+    return call?.result?.value
+  })
+}
+
+/** GET /api/widgets from the widget page until `accept` takes the list. */
+async function pollList(widget, until, accept) {
+  let last
+  while (Date.now() < until) {
+    try {
+      const answer = JSON.parse(String(await evaluate(widget.webSocketDebuggerUrl,
+        "fetch('/api/widgets').then(async (response) => JSON.stringify({ status: response.status, body: await response.json() }))", until, true)))
+      last = answer.body?.widgets ?? answer
+      if (Array.isArray(last) && accept(last)) return { value: last, ok: true }
+    } catch (error) {
+      last = { error: error instanceof Error ? error.message : 'evaluate failed' }
+    }
+    await delay(250)
+  }
+  return { value: last, ok: false }
+}
+
+/**
+ * Safe mode: sample (built in) stays live in its window, the test widget is off with reason safe-mode,
+ * and turning its row off and on through the plugin manager does not bring it back.
+ */
+async function checkSafeMode(widget, url, until) {
+  const offIn = (list) => list.find((item) => item.slug === TEST_WIDGET)?.off?.reason === 'safe-mode'
+  const sampleLive = (list) => list.some((item) => item.slug === 'sample' && item.off === undefined)
+  const first = await pollList(widget, until, (list) => offIn(list) && sampleLive(list))
+  note(`give-up safe mode list=${JSON.stringify(first.value)}`)
+  if (!first.ok) return `the test widget is not off, or sample is not live: ${JSON.stringify(first.value)}`
+  const page = await pollWidget(widget, until, (value) => value.count !== null && value.dw?.stream === 'open')
+  const windows = await countPages(url)
+  note(`give-up safe mode sample page=${JSON.stringify(page.value)} windows=${String(windows)}`)
+  if (!page.ok || windows !== 1) return `sample is not live in its window: ${JSON.stringify(page.value)} windows=${String(windows)}`
+  const offResult = await setHostPlugin(TEST_WIDGET_MODULE, false, until)
+  const onResult = await setHostPlugin(TEST_WIDGET_MODULE, true, until)
+  note(`give-up safe mode toggle off=${JSON.stringify(offResult)} on=${JSON.stringify(onResult)}`)
+  const after = await pollList(widget, until, (list) => offIn(list))
+  const program = JSON.parse(String(await evaluate(widget.webSocketDebuggerUrl,
+    `fetch('/api/widgets/${TEST_WIDGET}/program').then((response) => JSON.stringify({ status: response.status }))`, until, true)))
+  note(`give-up safe mode after enable list=${JSON.stringify(after.value)} program=${JSON.stringify(program)}`)
+  if (!after.ok) return `a plugin-manager enable turned the test widget on: ${JSON.stringify(after.value)}`
+  if (program.status !== 404) return `the test widget answers its program route after an enable: ${String(program.status)}`
+  return undefined
+}
+
+/** Kill the host as soon as it is first ready, while the main window boots. The main window must come back. */
+async function checkHostBootKill(deadline) {
+  let pid
+  let ready
+  while (Date.now() < deadline) {
+    if (pid === undefined) {
+      for (const candidate of await groupPids()) {
+        if ((await commandOf(candidate)).includes('desktop-host')) { pid = candidate; break }
+      }
+    }
+    ready = supervisorEvents(0).find((event) => event.event === 'ready')
+    if (ready !== undefined && pid !== undefined) break
+    await delay(20)
+  }
+  if (ready === undefined || pid === undefined) return 'boot: the host was not ready'
+  hostPid = pid
+  const kill = await killHost('boot')
+  note(`boot: killed ${String(kill.at - ready.at)} ms after ready`)
+  const until = Math.min(deadline, Date.now() + 90_000)
+  const restarted = await waitForSupervisor(ready.at, (event) => event.event === 'restarted', until)
+  if (restarted === undefined) return 'boot: the host did not restart'
+  if (!await waitForNewHost(kill.pid, until)) return 'boot: no new host'
+  const page = await waitForRenderer(until)
+  if (page === undefined) return 'boot: no main window'
+  const probe = await checkProbe(page, until)
+  if (probe !== undefined) return `boot: the main window did not come back: ${probe}`
+  const text = readFileSync(logPath, 'utf8')
+  const gated = text.includes('deepwidgets-supervisor: the main window boot failed during a Host restart')
+  const dialog = text.includes('deepwidgets-fatal-dialog')
+  note(`boot: gate line=${String(gated)} fatal dialog=${String(dialog)}`)
+  if (dialog) return 'boot: the fatal dialog opened'
+  if (!gated) return 'boot: the kill did not meet the main window boot (no gate line), so the check did not test the boot path'
+  return undefined
 }
 
 async function checkWidget(page, deadline) {
