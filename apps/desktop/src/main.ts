@@ -66,6 +66,8 @@ import { DesktopBackgroundNotice } from './background-notice.ts'
 import { DesktopTraceSteps, openTraceWindow } from './deepwidgets-trace.ts'
 // deepwidgets-trim: widget_mvp.windows opens one panel window for each widget.
 import { DesktopWidgetWindows } from './deepwidgets-windows.ts'
+// deepwidgets-trim: widget_phase2.isolation.supervisor restarts a Host that exits unexpectedly.
+import { DesktopHostSupervisor } from './deepwidgets-supervisor.ts'
 
 /** deepWidgets trace: the start-up steps for `POST /api/trace` (`floating_widget.sources`). */
 const traceSteps = new DesktopTraceSteps()
@@ -474,10 +476,14 @@ async function main(): Promise<void> {
   const platformView = new DesktopPlatformView(join(app.getAppPath(), 'lib', 'preload-platform-account.cjs'),
     () => locale.id === 'zh-CN' ? 'zh_CN' : 'en_US', process.platform === 'win32' ? 'win32' : 'darwin',
     owner => isMandatory() || updateOverlays.input(owner).blocked)
+  // deepwidgets-trim: widget_phase2.isolation.supervisor. `restartHost` is set below, after the backend exists.
+  const supervisor = new DesktopHostSupervisor(() => restartHost())
   const backend = new DesktopBackendController((onFailure) => {
     const hostInspectPort = developmentHostInspectPort(development)
     const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
-      hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion() }, onFailure,
+      // deepwidgets-trim: widget_phase2.isolation.supervisor passes safe mode to the Host in its environment.
+      // hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion() }, onFailure,
+      hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion(), ...supervisor.hostEnvironment() }, onFailure,
       primaryRuntime,
       resources, (next) => { platformView.setSession(next) })
     return {
@@ -550,7 +556,11 @@ async function main(): Promise<void> {
     // deepwidgets-trim: widget_mvp.windows reads GET /api/widgets/events of each ready Host. The windows stay open in the gap.
     if (state.phase === 'ready' && hostUrl !== undefined && hostCookie !== undefined && !quitting) widgetWindows.hostReady(hostUrl, hostCookie)
     if (state.phase !== 'ready') widgetWindows.hostGone()
-    if (state.phase === 'error') reportFatal(state.failure, 'host')
+    // deepwidgets-trim: widget_phase2.isolation.supervisor restarts the Host with backoff. It gives up, and the
+    // fatal dialog shows, after 4 crashes in 60 s. A Host that never was ready fails loudly at once, as before.
+    // if (state.phase === 'error') reportFatal(state.failure, 'host')
+    if (state.phase === 'ready') supervisor.ready()
+    if (state.phase === 'error' && !supervisor.failed(state.failure, quitting || shuttingDown)) reportFatal(state.failure, 'host')
     else if (!shuttingDown) backendReady = state.phase === 'ready'
   })
 
@@ -609,6 +619,22 @@ async function main(): Promise<void> {
     return welcomeBackend.read()
   }
   stopForRecovery = () => backend.close()
+
+  // deepwidgets-trim: widget_phase2.isolation.supervisor restarts the Host as the update-failure branch does:
+  // a new Host, then the main window loads again. The widget windows stay open; their pages reconnect.
+  const restartHost = async (): Promise<void> => {
+    const hostReady = backend.start(prepareHostEnvironment)
+    startup = hostReady
+    try {
+      await hostReady
+      if (quitting) return
+      // A replacement Host has a new port, cookie, and boot injections.
+      navigation = undefined
+      await navigateMain(applicationUrl)
+    } finally {
+      if (startup === hostReady) startup = undefined
+    }
+  }
 
   const reconcileBackend = (): Promise<void> => {
     startup ??= (async () => {
@@ -758,6 +784,10 @@ async function main(): Promise<void> {
       throw new Error('dsh desktop: rejected startup failure from a non-primary frame')
     }
     if (typeof message !== 'string') throw new Error('dsh desktop: startup failure must be text')
+    // deepwidgets-trim: widget_phase2.isolation.supervisor. A Host that dies while the main window boots fails that boot.
+    // The restart loads the main window again, so the boot failure is not fatal while the supervisor recovers.
+    // reportFatal(new Error(message), 'web-boot')
+    if (supervisor.recovering) { console.warn('deepwidgets-supervisor: the main window boot failed during a Host restart', message); return }
     reportFatal(new Error(message), 'web-boot')
   })
 
@@ -1310,6 +1340,8 @@ async function main(): Promise<void> {
     quitting = true
     // deepwidgets-trim: widget_mvp.windows stops its stream at once. It awaits nothing, so it cannot hold the quit.
     widgetWindows.stop()
+    // deepwidgets-trim: widget_phase2.isolation.supervisor drops a waiting restart, so it cannot hold the quit.
+    supervisor.dispose()
     shuttingDown = true
     updateJournal?.action('quit-requested')
     quitConfirmation.dispose()
@@ -1332,6 +1364,8 @@ async function main(): Promise<void> {
       shuttingDown = true
       // deepwidgets-trim: widget_mvp.windows stops its stream at once.
       widgetWindows.stop()
+      // deepwidgets-trim: widget_phase2.isolation.supervisor drops a waiting restart.
+      supervisor.dispose()
       quitConfirmation.dispose()
       backgroundNotice?.dispose()
       updateJournal?.action('quit-requested')
