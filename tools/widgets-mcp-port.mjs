@@ -11,11 +11,13 @@
  *   while the first host holds P. It fails with `listen EADDRINUSE` for P, and Electron main keeps
  *   a port file whose owner is alive.
  * - clean_stop: SIGTERM of the host removes its port file.
+ * - pid_reuse: a file whose pid is alive but whose start time differs is not owned; a new host replaces it.
+ * - epoch: a token of an earlier host start gets 401 after a restart.
  * - replay: an attacker that never reads the file records a token answer; the host is SIGKILLed;
  *   the file stays; a fake server on P replays or echoes. The agent refuses each fake token. The
  *   mutant agent (no proof check) accepts it, so the check can fail.
- * - crash_cleanup: the desktop app fails on P while its home holds a port file of a dead host;
- *   Electron main removes the file.
+ * - crash_cleanup: the desktop app fails on P while its home holds a port file of a dead host (its pid
+ *   reused by a live process with another start time); Electron main removes the file.
  * Prints `widgets-mcp-port: pass` and exits 0 only when every check passes.
  * WIDGETS_MCP_PORT_SKIP_DESKTOP=1 skips second_instance and crash_cleanup (for quick mutant runs;
  * the run then does not pass).
@@ -209,8 +211,8 @@ async function main() {
   const file = await waitFor(() => readJson(portFile), 60_000)
   let mode
   try { mode = statSync(portFile).mode & 0o777 } catch { mode = undefined }
-  check('the host writes $DSH_HOME/deepwidgets/mcp.json as { port, nonce, pid } with mode 0600',
-    file?.port === port && file?.pid === first.pid && typeof file?.nonce === 'string' && file.nonce.length >= 16 && Object.keys(file).sort().join() === 'nonce,pid,port' && mode === 0o600,
+  check('the host writes $DSH_HOME/deepwidgets/mcp.json as { port, nonce, pid, started } with mode 0600',
+    file?.port === port && file?.pid === first.pid && typeof file?.nonce === 'string' && file.nonce.length >= 16 && Math.abs((file?.started ?? 0) - Date.now()) < 300_000 && Object.keys(file).sort().join() === 'nonce,pid,port,started' && mode === 0o600,
     `${JSON.stringify(file === undefined ? null : { ...file, nonce: file.nonce === undefined ? undefined : '<set>' })} mode ${mode === undefined ? 'missing' : mode.toString(8)}`)
   let issued
   try { issued = await agentToken(portFile, true) } catch (error) { console.log(`  agent: ${error.message}`) }
@@ -252,7 +254,7 @@ async function main() {
       seeded = join(smokeHome, 'deepwidgets', 'mcp.json')
       writeFileSync(seeded, live, { mode: 0o600 })
     })
-    check('the desktop app reached its Host start', run.started, 'no app output in the desktop log')
+    check('the desktop app reached its Host start', run.started, run.started ? '' : 'no app output in the desktop log')
     check('a second app instance on the same fixed port fails loudly with listen EADDRINUSE for that port', run.smoke.code !== 0 && run.inUse !== undefined, run.inUse?.trim().slice(0, 200) ?? 'no EADDRINUSE line in the desktop log')
     check('Electron main keeps a port file whose owner is alive', seeded !== undefined && existsSync(seeded) && readFileSync(seeded, 'utf8') === live)
     let after
@@ -265,9 +267,27 @@ async function main() {
   await stopped(first)
   check('SIGTERM of the host removes its port file', await waitFor(() => !existsSync(portFile), 10_000))
 
+  // pid_reuse: a live pid (this check process) with another start time does not own the file.
+  writeFileSync(portFile, `${JSON.stringify({ port: 1, nonce: 'reused-pid-file-nonce', pid: process.pid, started: 1 })}\n`, { mode: 0o600 })
   // replay: the reviewer's case. The attacker never reads the file.
   const third = await startHost(port)
-  await waitFor(() => readJson(portFile)?.pid === third.pid, 60_000)
+  check('a file whose pid is alive with another start time is replaced by the new host', await waitFor(() => readJson(portFile)?.pid === third.pid, 60_000), JSON.stringify(readJson(portFile)?.pid))
+  // epoch: the token of the first host start is void on this start.
+  if (issued !== undefined) {
+    const auth = (token) => new Promise((resolve, reject) => {
+      const req = httpRequest(`http://127.0.0.1:${String(port)}/mcp`, {
+        method: 'POST', agent: false,
+        headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${token}`, connection: 'close' },
+      }, (res) => { res.resume(); resolve({ status: res.statusCode }) })
+      req.once('error', reject)
+      req.end(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'epoch', version: '0' } } }))
+    })
+    const old = await auth(issued.token)
+    let fresh
+    try { fresh = await agentToken(portFile, true) } catch (error) { console.log(`  new handshake: ${error.message}`) }
+    const now = fresh === undefined ? undefined : await auth(fresh.token)
+    check('after a restart a token of the earlier start gets 401, and a new handshake gives a working token', old.status === 401 && now?.status === 200, `old ${String(old.status)}, new ${String(now?.status)}`)
+  }
   const recorded = await postToken(port, { agent: 'Attacker', challenge: challenge() })
   third.kill('SIGKILL')
   await stopped(third)
@@ -310,10 +330,11 @@ async function main() {
       const run = await desktopOnTakenPort(port, 'crash-cleanup', (smokeHome) => {
         mkdirSync(join(smokeHome, 'deepwidgets'), { recursive: true, mode: 0o700 })
         seeded = join(smokeHome, 'deepwidgets', 'mcp.json')
-        writeFileSync(seeded, stale, { mode: 0o600 })
+        // The dead host's pid, as if reused by a live process (this check) with another start time.
+        writeFileSync(seeded, `${JSON.stringify({ ...JSON.parse(stale), pid: process.pid, started: 1 })}\n`, { mode: 0o600 })
       })
       check('crash_cleanup: the app fails with listen EADDRINUSE', run.smoke.code !== 0 && run.inUse !== undefined, run.inUse?.trim().slice(0, 200) ?? `app started ${String(run.started)}`)
-      check('Electron main removes a port file whose owner is dead when its Host fails', seeded !== undefined && !existsSync(seeded))
+      check('Electron main removes a port file whose owner is dead (pid reused, start time differs) when its Host fails', seeded !== undefined && !existsSync(seeded))
     } finally {
       await new Promise((resolve) => squatter.close(resolve))
     }
