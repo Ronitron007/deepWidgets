@@ -21,6 +21,7 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import { linuxGroupWatcherSource, linuxListenPorts } from './smoke-desktop-linux.mjs'
 
 const root = join(import.meta.dirname, '..')
 const timeoutMs = positiveInteger(process.env.DSH_SMOKE_TIMEOUT_MS, 240_000)
@@ -286,7 +287,9 @@ function pythonBin() {
 function startGroupWatcher(file) {
   const python = pythonBin()
   if (python === undefined) return Promise.reject(new Error('python3 unavailable'))
-  const watcher = spawn(python, ['-c', groupWatcherSource, file], {
+  // deepwidgets-trim: linux-x64 development target; old line:
+  // const watcher = spawn(python, ['-c', groupWatcherSource, file], {
+  const watcher = spawn(python, ['-c', process.platform === 'linux' ? linuxGroupWatcherSource : groupWatcherSource, file], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, PATH: commandPath },
   })
@@ -493,8 +496,13 @@ async function waitForHost(deadline) {
       const command = await commandOf(pid)
       if (!command.includes('desktop-host')) continue
       hostPid = pid
-      const listeners = await capture('lsof', ['-a', '-p', pid, '-iTCP', '-sTCP:LISTEN', '-nP'])
-      const ports = listenPorts(listeners.stdout).filter((port) => port !== hostInspectPort)
+      // deepwidgets-trim: linux-x64 development target; old lines:
+      // const listeners = await capture('lsof', ['-a', '-p', pid, '-iTCP', '-sTCP:LISTEN', '-nP'])
+      // const ports = listenPorts(listeners.stdout).filter((port) => port !== hostInspectPort)
+      const listeners = process.platform === 'linux'
+        ? { stdout: '', status: 'linux', ports: linuxListenPorts(Number(pid)) }
+        : await capture('lsof', ['-a', '-p', pid, '-iTCP', '-sTCP:LISTEN', '-nP'])
+      const ports = (listeners.ports ?? listenPorts(listeners.stdout)).filter((port) => port !== hostInspectPort)
       note(`groups=${[...knownGroups].join(',')} hostPid=${pid} ports=${ports.join(',')} lsofStatus=${String(listeners.status)}`)
       for (const port of ports) {
         try {

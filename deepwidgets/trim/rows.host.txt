@@ -3,6 +3,7 @@ deepwidgets-probe   # start keep set
 deepwidgets-trace   # start keep set
 deepwidgets-widgets   # widget runtime (widget.runtime_core)
 deepwidgets-widget-sample   # sample widget (widget.runtime_core)
+deepwidgets-mcp   # MCP server for widgets (widget.mcp)
 mcp-resources pending tools   # tools: row tools, off
 settings   # start keep set
 config-editor   # start keep set

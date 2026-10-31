@@ -526,6 +526,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: link:../../vendor/schemastery
         version: link:../../vendor/schemastery
+      '@deepwidgets/mcp':
+        specifier: workspace:*
+        version: link:../../deepwidgets/mcp
       '@deepwidgets/probe':
         specifier: workspace:*
         version: link:../../deepwidgets/probe
@@ -1215,6 +1218,34 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+
+  deepwidgets/mcp:
+    dependencies:
+      '@deepseek-ai/dsh-home-paths':
+        specifier: workspace:*
+        version: link:../../packages/util/home-paths
+      '@modelcontextprotocol/node':
+        specifier: 2.0.0
+        version: 2.0.0(@modelcontextprotocol/server@2.2.0)(hono@4.13.7)
+      '@modelcontextprotocol/server':
+        specifier: 2.2.0
+        version: 2.2.0
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:~
+        version: link:../../vendor/cordis
+      '@deepseek-ai/dsh-host-webserver':
+        specifier: workspace:*
+        version: link:../../packages/host/webserver
+      '@deepwidgets/widgets':
+        specifier: workspace:*
+        version: link:../widgets
+      '@modelcontextprotocol/client':
+        specifier: 2.2.0
+        version: 2.2.0
 
   deepwidgets/probe:
     devDependencies:

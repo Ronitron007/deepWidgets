@@ -37,6 +37,7 @@ The runtime row `deepwidgets-widgets` provides the service `widgets`. It injects
 | `register(def)` | Registers one widget. The caller fiber owns the registration. The registration ends when the fiber ends. A second live registration of one slug throws `conflict`. |
 | `list()` | Gives `{ slug, title, rev, programRev }` for each live widget. |
 | `get(slug)` | Gives the state and its revision. |
+| `describe(slug)` | Gives `{ slug, title, rev, programRev, actions }`. Each action is `{ name, kind, args, timeoutMs }`, where `args` is the JSON Schema of the zod schema, or null. An unknown slug throws `unknown-widget`. The MCP tool `widget_describe` uses it. |
 | `call(slug, action, args, { caller, requestId? })` | Runs one action through the action contract. Gives `{ result, rev, replayed? }`. |
 | `update(slug, fn, { by })` | Writes the state from a timer or a plugin. It uses the same queue as a mutation. |
 | `setProgram(slug, text, { by })` | Stores new program text. |
@@ -58,7 +59,7 @@ The runtime opens the storage domain `widgets`, version 1, with the json backend
 
 - `program`: one record for each slug: `{ rev, text, updatedAt }`. A stored program wins over the seed.
 
-- `requests`: one record for each `(caller, requestId)`: the hash of the call, the result, and the time. A record older than 10 minutes is void. This table makes a retried call idempotent after a host restart (`standing.checked.crash_only`).
+- `requests`: one record for each `(caller, requestId)`: the hash of the call, the result, and the time. A record older than the runtime config `requestTtlMs` (default 10 minutes) is void. This table makes a retried call idempotent after a host restart (`standing.checked.crash_only`).
 
 ### Action contract `widget_mvp.runtime.contract`
 
@@ -74,7 +75,7 @@ The runtime opens the storage domain `widgets`, version 1, with the json backend
 
 ### Routes `widget_mvp.runtime.routes`
 
-The runtime registers each route with `ctx.connection.fetch.register`, so each route has the cookie check of `connection`.
+The runtime registers each route with `ctx.connection.fetch.register`, so each route has the cookie check of `connection`. `connection` matches exact paths only. Thus a route of a slug that is not registered gives a plain 404 from `connection`, not the JSON error body. The JSON error body is for registered slugs only.
 
 | Route | Answer |
 |---|---|
