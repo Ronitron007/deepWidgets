@@ -6,6 +6,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomUUID } from 'node:crypto'
 import { Service } from '@deepseek-ai/cordis'
+import Schema from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
@@ -23,7 +24,7 @@ const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/
 const ACTION = /^[A-Za-z][A-Za-z0-9_]{0,62}$/
 const DEFAULT_TIMEOUT_MS = 5_000
 const CHANGE_LOG_SIZE = 1_000
-const REQUEST_TTL_MS = 10 * 60_000
+const DEFAULT_REQUEST_TTL_MS = 10 * 60_000
 const PING_MS = 15_000
 const encoder = new TextEncoder()
 
@@ -366,7 +367,17 @@ async function readBody(request: Request): Promise<unknown> {
 export const name = 'deepwidgets-widgets'
 export const inject = ['connection', 'storageDomain']
 
-export function apply(ctx: Context): void {
+export interface Config {
+  /** A `requests` record older than this is void. The checks set a short value. */
+  requestTtlMs: number
+}
+
+export const Config: Schema<Config> = Schema.object({
+  requestTtlMs: Schema.natural().default(DEFAULT_REQUEST_TTL_MS),
+})
+
+export function apply(ctx: Context, config: Config): void {
+  const requestTtlMs = config.requestTtlMs
   const widgets = new Map<string, Entry>()
   const events = new Set<OpenStream>()
   const slot = new AsyncLocalStorage<Slot>()
@@ -376,7 +387,7 @@ export function apply(ctx: Context): void {
   const ready = ctx.storageDomain.open(widgetsDomain).then(async (opened) => {
     domain = opened
     const now = Date.now()
-    const expired = [...opened.table('requests').entries()].filter(([, record]) => now - record.at > REQUEST_TTL_MS).map(([key]) => key)
+    const expired = [...opened.table('requests').entries()].filter(([, record]) => now - record.at > requestTtlMs).map(([key]) => key)
     if (expired.length > 0) await opened.table('requests').deleteMany(expired)
     return opened
   })
@@ -570,7 +581,7 @@ export function apply(ctx: Context): void {
       return runAction(entry, action, parsed, caller)
     }
 
-    // Idempotent mutation: one real run for each (caller, requestId), kept in storage for 10 minutes.
+    // Idempotent mutation: one real run for each (caller, requestId), kept in storage for `requestTtlMs`.
     // The in-flight entry is set before the first await, so parallel retries share one run.
     const key = hashOf([caller, requestId])
     const hash = hashOf([slug, name, parsed])
@@ -593,7 +604,7 @@ export function apply(ctx: Context): void {
     await entry.seeded
     const requests = (await ready).table('requests')
     const stored = requests.get(key)
-    if (stored !== undefined && Date.now() - stored.at <= REQUEST_TTL_MS) {
+    if (stored !== undefined && Date.now() - stored.at <= requestTtlMs) {
       if (stored.hash !== hash) throw new WidgetError('idempotency-conflict', `the requestId ${requestId} was used for a different call`)
       if (stored.outcome.ok) return { result: stored.outcome.result, rev: stored.outcome.rev, replayed: true }
       throw new WidgetError(stored.outcome.code, stored.outcome.message)
@@ -612,10 +623,10 @@ export function apply(ctx: Context): void {
     }
   }
 
-  /** Store the outcome of an idempotent call, and drop the records older than 10 minutes. */
+  /** Store the outcome of an idempotent call, and drop the records older than `requestTtlMs`. */
   async function remember(requests: KvTable<string, StoredRequest>, key: string, record: StoredRequest): Promise<void> {
     const now = Date.now()
-    const expired = [...requests.entries()].filter(([, old]) => now - old.at > REQUEST_TTL_MS).map(([old]) => old)
+    const expired = [...requests.entries()].filter(([, old]) => now - old.at > requestTtlMs).map(([old]) => old)
     if (expired.length > 0) await requests.deleteMany(expired)
     await requests.put(key, record)
   }

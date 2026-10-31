@@ -203,6 +203,15 @@ function openStream(host, path) {
   }
 }
 
+async function waitFor(test, ms = 10_000) {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    if (await test().catch(() => false)) return true
+    await sleep(100)
+  }
+  return false
+}
+
 // ---- the checks ----
 
 /** The in-host check widget: actions that probe the queue, the timeout, and the errors. */
@@ -343,6 +352,16 @@ async function firstHost(host) {
   const ticked = (await host.post('/api/widgets/sample/call', { action: 'get' })).body.result.count
   check('sample timer: tickMs 100 adds 1 at that interval', ticked - tickStart >= 3, `count ${String(tickStart)} -> ${String(ticked)}`)
   await host.inspector.run(`const entry = [...wc.loader.entries()].find((e) => e.options.id === 'deepwidgets-widget-sample'); await entry.fiber.update({ tickMs: 0 }, true)`)
+
+  // The requests TTL: restart the runtime row with requestTtlMs 300; a record older than that is void.
+  await host.inspector.run(`const entry = [...wc.loader.entries()].find((e) => e.options.id === 'deepwidgets-widgets'); await entry.fiber.update({ requestTtlMs: 300 }, true)`)
+  const back = await waitFor(async () => (await host.getJson('/api/widgets')).body?.widgets?.some((w) => w.slug === 'sample'))
+  const ttlFirst = await host.post('/api/widgets/sample/call', { action: 'add', args: { by: 1 }, requestId: 'ttl-1' })
+  const ttlSoon = await host.post('/api/widgets/sample/call', { action: 'add', args: { by: 1 }, requestId: 'ttl-1' })
+  await sleep(500)
+  const ttlLate = await host.post('/api/widgets/sample/call', { action: 'add', args: { by: 1 }, requestId: 'ttl-1' })
+  check('requests TTL: a record older than requestTtlMs is void, so the retry runs again', back && ttlSoon.body?.replayed === true && ttlLate.status === 200 && ttlLate.body.replayed === undefined && ttlLate.body.result.count === ttlFirst.body.result.count + 1,
+    `first=${JSON.stringify(ttlFirst.body)} soon=${JSON.stringify(ttlSoon.body)} late=${JSON.stringify(ttlLate.body)}`)
 
   events.close()
   stream.close()
