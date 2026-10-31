@@ -27,6 +27,8 @@ import {
   PluginPackages,
   PROFILE_PATCH_FILENAME,
   resolveProfileDir,
+  type FailLoudEvent,
+  type FailLoudProcess,
   type ProfileContext,
   type Profile,
   type RuntimeResolution,
@@ -306,7 +308,14 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
     // complete; SIGINT is a user interrupt and reports 130.
     process.on('SIGTERM', () => { interrupt(0) })
     process.on('SIGINT', () => { interrupt(130) })
-    installFailLoud(NAME, process, async () => {
+    // deepwidgets-trim: widget_phase2.isolation.blame. After the fail-loud diagnostic, the widget runtime writes the
+    // crash record and exits at once, without the slow fiber dispose. With no hook, the release is as before.
+    // installFailLoud(NAME, process, async () => {
+    //   await app.current?.fiber.dispose()
+    // })
+    const fatal = withFatalHooks(process)
+    installFailLoud(NAME, fatal.process, async () => {
+      fatal.run()
       await app.current?.fiber.dispose()
     })
 
@@ -349,5 +358,46 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
       throw new AggregateError([error, cleanupError], 'dsh: profile startup and cleanup failed')
     }
     throw error
+  }
+}
+
+/**
+ * deepWidgets (`widget_phase2.isolation.blame`): the process slice for `installFailLoud`, and a step for its release.
+ * The slice keeps the error of the last fail-loud event. The release runs inside that event, after the filter of
+ * `installFailLoud` and its diagnostic, so `run` gives each hook under `Symbol.for('deepwidgets.fatal.hooks')`
+ * the error in its own async context. A hook may exit the process; a hook that throws does not stop the release.
+ */
+function withFatalHooks(proc: NodeJS.Process): { process: FailLoudProcess; run(): void } {
+  type Hook = (error: unknown, event: FailLoudEvent) => void
+  const registry = globalThis as { [key: symbol]: Set<Hook> | undefined }
+  const key = Symbol.for('deepwidgets.fatal.hooks')
+  let last: { error: unknown; event: FailLoudEvent } | undefined
+  const wrapped = new Map<(error: unknown) => void, (error: unknown) => void>()
+  return {
+    process: {
+      on(event, handler) {
+        const keep = (error: unknown): void => {
+          last = { error, event }
+          handler(error)
+        }
+        wrapped.set(handler, keep)
+        return proc.on(event, keep)
+      },
+      off(event, handler) {
+        return proc.off(event, wrapped.get(handler) ?? handler)
+      },
+      stderr: proc.stderr,
+      exit: code => proc.exit(code),
+    },
+    run() {
+      if (last === undefined) return
+      for (const hook of registry[key] ?? []) {
+        try {
+          hook(last.error, last.event)
+        } catch (error) {
+          proc.stderr.write(`${NAME}: a fatal hook failed: ${String(error)}\n`)
+        }
+      }
+    },
   }
 }
