@@ -9,10 +9,12 @@
  * the port that is not this host (`standing.hard.port_squat`). See README.md.
  * @module @deepwidgets/mcp
  */
+import { execFile } from 'node:child_process'
 import { createHash, createHmac, randomBytes } from 'node:crypto'
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname } from 'node:path'
+import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type {} from '@deepseek-ai/dsh-host-webserver'
@@ -27,6 +29,7 @@ export const name = 'deepwidgets-mcp'
 export const inject = ['webServer', 'widgets']
 
 const TOKEN_BODY_LIMIT = 4_096
+const execFileAsync = promisify(execFile)
 /** The token file keeps the newest agents up to this count; a new token drops the oldest (decision `widget.agent_identity`: tokens only name the caller). */
 const MAX_AGENTS = 64
 const LOOPBACK_HOST = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i
@@ -59,7 +62,8 @@ interface ToolError {
   nextStep: string
 }
 
-const tokenRowSchema = z.object({ agentId: z.string(), agent: z.string(), issuedAt: z.string() }).strict()
+/** `epoch` names the host start that issued the token; rows of an earlier start (or with no epoch) are void. */
+const tokenRowSchema = z.object({ agentId: z.string(), agent: z.string(), issuedAt: z.string(), epoch: z.string().optional() }).strict()
 /** The token file: the SHA-256 hash of each bearer token to its row. The file never holds a token. */
 const tokenFileSchema = z.record(z.string(), tokenRowSchema)
 type TokenRow = z.infer<typeof tokenRowSchema>
@@ -132,12 +136,17 @@ export interface Config {
   portFile?: string
 }
 
-/** The port file: the port of the host web server, the nonce of this host start, and the host process id. */
+/** The port file: the port of the host web server, the nonce of this host start, the host process id, and its start time. */
 export interface PortFile {
   port: number
   nonce: string
   pid: number
+  /** The start of the host process in ms since the epoch, so a reused pid does not count as the owner. */
+  started: number
 }
+
+/** How far the start time from `ps` may differ from the recorded one; `ps` gives whole seconds. */
+const START_TOLERANCE_MS = 3_000
 
 /** The proof of one token answer: HMAC-SHA256 with the nonce as key over the challenge, in hex. */
 export function mcpProof(nonce: string, challenge: string): string {
@@ -154,17 +163,41 @@ function processAlive(pid: number): boolean {
   }
 }
 
+/** The start of process `pid` in ms since the epoch, from `ps -o etime=`; undefined when `ps` cannot tell. */
+async function processStartMs(pid: number): Promise<number | undefined> {
+  try {
+    const { stdout } = await execFileAsync('ps', ['-o', 'etime=', '-p', String(pid)], { env: { ...process.env, LC_ALL: 'C' } })
+    const match = /^\s*(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)\s*$/.exec(stdout)
+    if (match === null) return undefined
+    const [, days = '0', hours = '0', minutes = '0', seconds = '0'] = match
+    return Date.now() - (((Number(days) * 24 + Number(hours)) * 60 + Number(minutes)) * 60 + Number(seconds)) * 1000
+  } catch {
+    // ps is missing or the process ended; the caller falls back to the pid check.
+    return undefined
+  }
+}
+
+/** True when the process of a port file is alive and is the same process: its start time matches. */
+async function ownerAlive(pid: number, started: unknown): Promise<boolean> {
+  if (!processAlive(pid)) return false
+  if (typeof started !== 'number') return true
+  const actual = await processStartMs(pid)
+  // ps rounds the elapsed time down, so the actual start may look up to a second later.
+  return actual === undefined || Math.abs(actual - started) <= START_TOLERANCE_MS
+}
+
 /** The live process that owns the port file, or `undefined` when no other live host owns it. */
 async function otherOwner(portFile: string): Promise<number | undefined> {
-  let pid: unknown
+  let current: Partial<PortFile> | null
   try {
-    pid = (JSON.parse(await readFile(portFile, 'utf8')) as Partial<PortFile> | null)?.pid
+    current = JSON.parse(await readFile(portFile, 'utf8')) as Partial<PortFile> | null
   } catch {
     // A missing or unreadable file has no owner; this host replaces it.
     return undefined
   }
+  const pid = current?.pid
   if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) return undefined
-  return processAlive(pid) ? pid : undefined
+  return await ownerAlive(pid, current?.started) ? pid : undefined
 }
 
 /** Replace `path` in one rename with `text`, with mode 0600 in a folder of mode 0700. */
@@ -215,9 +248,13 @@ async function loadTokens(tokenFile: string): Promise<Map<string, TokenRow>> {
 export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const tokenFile = config.tokenFile ?? dshHomePath('deepwidgets', 'mcp-tokens.json')
   const portFile = config.portFile ?? dshHomePath('deepwidgets', 'mcp.json')
-  const tokens = await loadTokens(tokenFile)
   /** New for each host start (each plugin start), so a stale port file or another server does not match. */
   const nonce = randomBytes(16).toString('base64url')
+  /** Names this host start in the token rows. It is not secret; the nonce stays only in the port file. */
+  const epoch = randomBytes(16).toString('hex')
+  const tokens = await loadTokens(tokenFile)
+  // A token of an earlier start is void: after a restart an agent does a new handshake with a proof.
+  for (const [key, row] of tokens) if (row.epoch !== epoch) tokens.delete(key)
 
   // One write at a time; each write replaces the file in one rename, with mode 0600.
   let writes: Promise<void> = Promise.resolve()
@@ -232,7 +269,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     const token = /^Bearer (\S+)$/.exec(authorization ?? '')?.[1]
     if (token === undefined) return undefined
     const row = tokens.get(hashToken(token))
-    return row === undefined ? undefined : { ...row, token }
+    return row === undefined || row.epoch !== epoch ? undefined : { ...row, token }
   }
 
   /** Run one tool body. A runtime error keeps its code; any other error is `internal-error`. */
@@ -366,7 +403,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     const base = agent.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'agent'
     const agentId = `${base}-${randomBytes(3).toString('hex')}`
     const key = hashToken(token)
-    tokens.set(key, { agentId, agent, issuedAt: new Date().toISOString() })
+    tokens.set(key, { agentId, agent, issuedAt: new Date().toISOString(), epoch })
     // The map keeps insertion order, so the first keys are the oldest tokens.
     const dropped: [string, TokenRow][] = []
     for (const [oldKey, oldRow] of tokens) {
@@ -377,7 +414,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     try {
       await persist()
     } catch (error) {
-      // An unsaved token would stop working after a restart; do not hand it out, and keep the old rows.
+      // Hand out only a token that the file holds; keep the old rows.
       tokens.delete(key)
       const kept = [...tokens]
       tokens.clear()
@@ -430,7 +467,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       ctx.logger.warn(`mcp: ${portFile} belongs to the live host process ${String(owner)}; this host on port ${String(port)} does not write it`)
       return () => {}
     }
-    const content: PortFile = { port, nonce, pid: process.pid }
+    const content: PortFile = { port, nonce, pid: process.pid, started: Math.round(performance.timeOrigin) }
     await writeFileAtomic(portFile, `${JSON.stringify(content)}\n`)
     return async () => {
       try {
