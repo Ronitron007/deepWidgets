@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@deepseek-ai/dsh-storage-domain": "workspace:*",
+    "@deepseek-ai/schemastery": "workspace:~",
     "zod": "4.4.3"
   },
   "devDependencies": {
@@ -30,7 +31,9 @@
     "@deepseek-ai/dsh-storage": "workspace:*"
   },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" }
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   },
   "scripts": {
     "bundle": "tsdown",
