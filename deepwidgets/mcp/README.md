@@ -80,8 +80,25 @@ The host keeps the 64 newest tokens.
 | `widget_describe` | Gives the actions of one widget, the argument schemas, and the state. |
 | `widget_call` | Runs one action. For a change, send a new `requestId`. |
 | `widget_changes` | Gives the changes after a cursor. |
+| `widget_template` | Gives the files of the TypeScript widget template. |
+| `widget_guide` | Gives the widget API types, the gate rules, and the OpenUI guide of the component set. |
+| `widget_install` | Runs the gates on a widget folder and installs the widget. A second install of one slug replaces the bundle. The state stays. |
+| `widget_reload` | Runs the gates on the install folder of a widget again and replaces the bundle. |
+| `widget_remove` | Removes the bundle of a widget. The state stays. |
 
-Each tool error gives `code`, `message`, and `nextStep`.
+Each tool error gives `code`, `message`, and `nextStep`. A creation error also gives `gate` and `diagnostics`.
+
+## Gates `mcp_readme.gates`
+
+`widget_install` and `widget_reload` copy `src/` of the widget folder into a temporary folder. Then they run these gates in order:
+
+1. Compile: esbuild bundles `src/index.ts` and zod into one file.
+
+2. Lint: oxlint, type-aware, with a type check against `widget/widget.d.ts`. The rules refuse a raw `setTimeout`, `setInterval`, `setImmediate`, or `queueMicrotask`, a floating promise, and a loop with no exit.
+
+3. Test run: a new process with a 256 MB heap runs `apply`, calls each action once, and lets timers run for 1.5 s.
+
+Code that fails a gate does not go into the host. The plugin manager installs a bundle that passes from the folder `<profile>/deepwidgets-widgets/<slug>`.
 
 ## Limits `mcp_readme.limits`
 

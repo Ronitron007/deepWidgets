@@ -12,6 +12,9 @@
  * Then it writes a new program with ctx.widgets.setProgram over the host Loader and finds its text in the page.
  * Then it registers a second widget over the Loader, loads its page (with a bar chart of two bars), ends the
  * registration, and checks that the page shows the removed state and does not open its stream again.
+ * With DSH_SMOKE_CREATE set to a widget source folder (src/index.ts), an MCP client does the token
+ * handshake with the proof of mcp.json, installs the folder with widget_install, finds the window of
+ * its slug, removes it with widget_remove, and finds the window closed (widget.creation).
  * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://app/widget/?slug=sample.
  * It turns the sample row off through the host plugin manager and finds that window closed.
  * The trace test also needs the start-up steps of Electron main and a message for each client row.
@@ -20,6 +23,7 @@
  */
 
 import { spawn, execFile } from 'node:child_process'
+import { createHmac, randomBytes } from 'node:crypto'
 import { appendFileSync, existsSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp } from 'node:fs/promises'
 import { createServer } from 'node:net'
@@ -388,6 +392,7 @@ try {
       if (failed === undefined && (process.env.DSH_SMOKE_INSTALL ?? '') !== '') failed = await checkInstall(deadline)
       if (failed === undefined && (process.env.DSH_SMOKE_WIDGET ?? '') !== '') failed = await checkWidget(page, deadline)
       if (failed === undefined && process.env.DSH_SMOKE_WINDOWS === '1') failed = await checkWindows(deadline)
+      if (failed === undefined && (process.env.DSH_SMOKE_CREATE ?? '') !== '') failed = await checkCreate(deadline)
     }
   }
 } catch (error) {
@@ -772,6 +777,77 @@ async function checkWindows(deadline) {
   failed = await waitHello(hellos, soon())
   if (failed !== undefined) return failed
   return waitPages(url, 0, soon(), 'after hello without sample')
+}
+
+/**
+ * A minimal MCP client over plain fetch: the token handshake of mcp_readme.handshake, then JSON-RPC
+ * requests to the stateless /mcp route. Gives `call(method, params)` with the JSON-RPC result.
+ */
+async function mcpClient(deadline) {
+  const portFile = join(home, 'deepwidgets', 'mcp.json')
+  while (Date.now() < deadline) {
+    let info
+    try { info = JSON.parse(readFileSync(portFile, 'utf8')) } catch { info = undefined }
+    if (typeof info?.port === 'number' && typeof info?.nonce === 'string') {
+      const base = `http://127.0.0.1:${String(info.port)}`
+      const challenge = randomBytes(16).toString('base64url')
+      const answer = await fetch(`${base}/mcp/token`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agent: 'smoke create', challenge }),
+      }).catch(() => undefined)
+      if (answer?.status === 200) {
+        const issued = await answer.json()
+        if (createHmac('sha256', info.nonce).update(challenge).digest('hex') !== issued.proof) throw new Error('create: the MCP server did not prove the nonce')
+        let id = 0
+        const call = async (method, params) => {
+          id += 1
+          const response = await fetch(`${base}/mcp`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${String(issued.token)}`, 'mcp-protocol-version': '2025-06-18' },
+            body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+            signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
+          })
+          const text = await response.text()
+          const messages = (response.headers.get('content-type') ?? '').includes('text/event-stream')
+            ? text.split('\n').filter((line) => line.startsWith('data:')).map((line) => JSON.parse(line.slice(5)))
+            : [JSON.parse(text)]
+          const reply = messages.find((message) => message?.id === id)
+          if (reply === undefined) throw new Error(`create: ${method}: no reply (${String(response.status)} ${text.slice(0, 200)})`)
+          if (reply.error !== undefined) throw new Error(`create: ${method}: ${JSON.stringify(reply.error)}`)
+          return reply.result
+        }
+        await call('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'smoke-create', version: '0' } })
+        return call
+      }
+    }
+    await delay(250)
+  }
+  throw new Error('create: no MCP token before the deadline')
+}
+
+async function checkCreate(deadline) {
+  const dir = process.env.DSH_SMOKE_CREATE ?? ''
+  if (!existsSync(join(dir, 'src', 'index.ts'))) return `create: no src/index.ts in ${dir}`
+  const call = await mcpClient(deadline)
+  const tool = async (name, args) => {
+    const result = await call('tools/call', { name, arguments: args })
+    return { isError: result?.isError === true, body: result?.structuredContent ?? JSON.parse(result?.content?.[0]?.text ?? 'null') }
+  }
+  const started = Date.now()
+  const installed = await tool('widget_install', { dir })
+  note(`create install ms=${String(Date.now() - started)} result=${JSON.stringify({ isError: installed.isError, slug: installed.body?.slug, application: installed.body?.application, error: installed.body?.error })}`)
+  const slug = installed.body?.slug
+  if (installed.isError || typeof slug !== 'string') return `create: widget_install failed: ${JSON.stringify(installed.body)}`
+  const url = `dsh-app://app/widget/?slug=${slug}`
+  const soon = () => Math.min(deadline, Date.now() + 15_000)
+  let failed = await waitPages(url, 1, soon(), 'after widget_install')
+  if (failed !== undefined) return `create: ${failed}`
+  const added = await tool('widget_call', { slug, action: 'add', args: { by: 1 }, requestId: 'smoke-create-1' })
+  if (added.isError || typeof added.body?.result?.count !== 'number') return `create: widget_call failed: ${JSON.stringify(added.body)}`
+  const removed = await tool('widget_remove', { slug })
+  note(`create remove result=${JSON.stringify(removed.body)}`)
+  if (removed.isError) return `create: widget_remove failed: ${JSON.stringify(removed.body)}`
+  failed = await waitPages(url, 0, soon(), 'after widget_remove')
+  return failed === undefined ? undefined : `create: ${failed}`
 }
 
 async function checkWidget(page, deadline) {
