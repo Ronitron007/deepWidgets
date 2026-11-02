@@ -82,42 +82,68 @@ describe('DesktopHostSupervisor provisional record (widget_phase2.isolation.watc
     vi.restoreAllMocks()
   })
 
-  /** A supervisor whose crash record and provisional record the test sets. */
+  /** The failure of a Host child `pid` that ended with `signal`, or with `code` and no signal. */
+  const endOf = (pid: number, signal: string | null, code: number | null = null): Error =>
+    Object.assign(new Error('dsh desktop host stopped'), { hostPid: pid, hostCode: code, hostSignal: signal })
+
+  /** A supervisor whose crash record and provisional record the test sets, and which records each discard. */
   function provisionalFixture() {
     let crash: unknown
     let provisional: unknown
-    const supervisor = new DesktopHostSupervisor(() => Promise.resolve(), () => crash, () => provisional)
+    const discarded: number[] = []
+    const supervisor = new DesktopHostSupervisor(() => Promise.resolve(), () => crash, () => provisional, (pid) => { discarded.push(pid) })
     return {
       supervisor,
+      discarded,
       set: (nextCrash: unknown, nextProvisional: unknown): void => { crash = nextCrash; provisional = nextProvisional },
-      fail: async (pid: number): Promise<boolean> => {
-        const restarting = supervisor.failed(exitOf(pid), false)
+      fail: async (failure: Error): Promise<boolean> => {
+        const restarting = supervisor.failed(failure, false)
         await vi.runOnlyPendingTimersAsync()
         return restarting
       },
     }
   }
 
-  it('counts an abort that only the provisional record blames as blamed', async () => {
-    const { supervisor, set, fail } = provisionalFixture()
+  /** An older crash record that a Host applied, and a provisional record of the Host `pid`. */
+  const records = (pid: number): [unknown, unknown] => [
+    { row: null, pid: 1, at: 0, applied: true },
+    { row: 'deepwidgets-widget-watchdog', pid, at: Date.now(), applied: false },
+  ]
+
+  it('counts an abort that only the provisional record blames as blamed, and keeps the record', async () => {
+    const { supervisor, discarded, set, fail } = provisionalFixture()
     supervisor.ready()
-    for (let pid = 400; pid < 405; pid += 1) {
-      // An out-of-memory abort leaves an older crash record and a provisional record of the dead Host.
-      set({ row: null, pid: 1, at: 0, applied: true }, { row: 'deepwidgets-widget-watchdog', pid, at: Date.now(), applied: false })
-      expect(await fail(pid)).toBe(true)
+    const ends = [endOf(400, 'SIGABRT'), endOf(401, 'SIGTRAP'), endOf(402, 'SIGILL'), endOf(403, null, 134), endOf(404, 'SIGABRT')]
+    for (const end of ends) {
+      set(...records((end as unknown as { hostPid: number }).hostPid))
+      expect(await fail(end)).toBe(true)
       supervisor.ready()
     }
     expect(supervisor.hostEnvironment()).toEqual({})
+    expect(discarded).toEqual([])
+  })
+
+  it('counts another end with only a provisional record as unblamed, and discards the record', async () => {
+    const { supervisor, discarded, set, fail } = provisionalFixture()
+    supervisor.ready()
+    set(...records(410))
+    expect(await fail(endOf(410, 'SIGKILL'))).toBe(true)
+    set(...records(411))
+    expect(await fail(endOf(411, null, 1))).toBe(true)
+    expect(discarded).toEqual([410, 411])
+    // Two unblamed crashes: safe mode.
+    expect(supervisor.hostEnvironment()).toEqual({ DEEPWIDGETS_SAFE_MODE: '1' })
   })
 
   it('lets a crash record of the dead Host win over its provisional record', async () => {
-    const { supervisor, set, fail } = provisionalFixture()
+    const { supervisor, discarded, set, fail } = provisionalFixture()
     supervisor.ready()
     set({ row: null, pid: 500, at: Date.now(), applied: false }, { row: 'deepwidgets-widget-watchdog', pid: 500, at: Date.now(), applied: false })
-    expect(await fail(500)).toBe(true)
+    expect(await fail(endOf(500, 'SIGABRT'))).toBe(true)
     set({ row: null, pid: 501, at: Date.now(), applied: false }, { row: 'deepwidgets-widget-watchdog', pid: 500, at: Date.now(), applied: true })
-    expect(await fail(501)).toBe(true)
+    expect(await fail(endOf(501, 'SIGABRT'))).toBe(true)
     // Two unblamed crashes: safe mode.
     expect(supervisor.hostEnvironment()).toEqual({ DEEPWIDGETS_SAFE_MODE: '1' })
+    expect(discarded).toEqual([])
   })
 })

@@ -186,7 +186,9 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
   if (record !== undefined && !record.applied) apply(crashFile(), record)
   // widget_phase2.isolation.watchdog: a provisional record that is left means that its host ended in the stall, for
   // example by an out-of-memory abort. A crash record of the same host wins: it saw the end. A record of this process
-  // is from a runtime instance that is still alive, so it is not a crash.
+  // is from a runtime instance that is still alive, so it is not a crash. In the desktop app, Electron main removes
+  // the record before the restart when the host did not end like an abort (deepwidgets-supervisor.ts). A host with no
+  // supervisor, such as the CLI host, cannot see how the last host ended, so it applies the record.
   const provisional = readJson(provisionalFile()) as CrashRecord | undefined
   if (provisional !== undefined && !provisional.applied && provisional.pid !== process.pid) {
     if (record?.pid === provisional.pid) writeJsonSync(provisionalFile(), { ...provisional, applied: true })
