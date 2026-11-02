@@ -15,7 +15,7 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { z } from 'zod'
-import { callerRoot, createIsolation, runAs, widgetPlugin } from './isolation.ts'
+import { callerRoot, createIsolation, runAs, widgetRow } from './isolation.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -249,8 +249,8 @@ interface Registration {
   initialState: unknown
   timeoutMs: number | undefined
   actions: Map<string, WidgetAction<unknown>>
-  /** The widget plugin that registered it; its code runs in the blame store. */
-  plugin?: string
+  /** The widget row that registered it; its code runs in the blame store of that row. */
+  row?: string
 }
 
 /** The internal side of the service, made by `apply`. */
@@ -260,7 +260,7 @@ interface Runtime {
    * @param builtIn - whether the code of that row is a built-in bundle. Safe mode calls it.
    */
   add(registration: Registration, bundle: string | undefined, builtIn: () => boolean): () => Promise<void>
-  track(plugin: string, root: string | undefined, slug: string): void
+  track(row: string, root: string | undefined, slug: string): void
   list(): WidgetSummary[]
   describe(slug: string): WidgetDescription
   get(slug: string): { rev: number, data: unknown }
@@ -320,11 +320,11 @@ export class WidgetsService extends Service {
   register<S, const T extends readonly unknown[]>(def: WidgetDef<S, T>): () => Promise<void> {
     const registration = buildRegistration(def)
     const runtime = this.runtime
-    // widget_phase2.isolation.blame: the plugin is the blame key, and the caller package holds its files.
-    const plugin = widgetPlugin(this.ctx.fiber.runtime?.name)
-    if (plugin !== undefined) {
-      registration.plugin = plugin
-      runtime.track(plugin, callerRoot(), registration.slug)
+    // widget_phase2.isolation.blame: the Loader row is the blame key, and the caller package holds its files.
+    const row = widgetRow(this.ctx.fiber)
+    if (row !== undefined) {
+      registration.row = row
+      runtime.track(row, callerRoot(), registration.slug)
     }
     // The Loader adds `entry` to the fiber of each row. A caller without a row is not built in.
     const fiber = this.ctx.fiber
@@ -696,8 +696,8 @@ export function apply(ctx: Context, config: Config): void {
       }, timeoutMs)
     })
     try {
-      // widget_phase2.isolation.blame: the handler runs in the blame store of its widget plugin.
-      return await Promise.race([Promise.resolve().then(() => runAs(entry.registration.plugin, () => action.handler(args, scope))), timeout])
+      // widget_phase2.isolation.blame: the handler runs in the blame store of its widget row.
+      return await Promise.race([Promise.resolve().then(() => runAs(entry.registration.row, () => action.handler(args, scope))), timeout])
     } catch (error) {
       if (error instanceof WidgetError) throw error
       ctx.logger.warn(`widgets: ${entry.slug}.${action.name} threw`, error)
@@ -963,11 +963,11 @@ export function apply(ctx: Context, config: Config): void {
     fetch: guarded((request) => Promise.resolve(eventStream(request, events, () => ({ type: 'hello', slugs: [...widgets.keys()] })))),
   })
 
-  // widget_phase2.isolation.blame: a quarantined widget plugin loads as one failed entry for each of its slugs.
+  // widget_phase2.isolation.blame: a quarantined widget row loads as one failed entry for each of its slugs.
   const isolation = createIsolation(ctx, {
-    hold(slugs, plugin, reason) {
+    hold(slugs, row, reason) {
       const disposers = slugs.filter((slug) => !widgets.has(slug)).map((slug) => add({
-        slug, title: slug, program: '', initialState: null, timeoutMs: undefined, actions: new Map(), plugin,
+        slug, title: slug, program: '', initialState: null, timeoutMs: undefined, actions: new Map(), row,
       }, undefined, () => false, reason))
       return async () => { for (const dispose of disposers) await dispose() }
     },
@@ -976,7 +976,7 @@ export function apply(ctx: Context, config: Config): void {
   // The service methods report each failure as a WidgetError, so the caller sees one form.
   new WidgetsService(ctx, {
     add: (registration, bundle, builtIn) => add(registration, bundle, builtIn),
-    track: (plugin, root, slug) => { isolation.track(plugin, root, slug) },
+    track: (row, root, slug) => { isolation.track(row, root, slug) },
     list,
     describe,
     get: (slug) => {

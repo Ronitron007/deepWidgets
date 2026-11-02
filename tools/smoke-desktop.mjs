@@ -1107,7 +1107,7 @@ function noCrashSince(since, what) {
 }
 
 async function checkHostBlame(deadline) {
-  const plugin = 'deepwidgets-widget-blame-timer'
+  const row = 'deepwidgets-widget-blame-timer'
   const sample = await findWidgetPage('sample', deadline)
   if (sample === undefined) return 'blame: no sample widget page'
   const first = await pollWidget(sample, deadline, (value) => value.count !== null && value.dw?.stream === 'open')
@@ -1144,12 +1144,12 @@ async function checkHostBlame(deadline) {
   if (failed !== undefined) return failed
   if (await countPages('dsh-app://app/widget/?slug=sample') !== 1) return 'blame: the sample window closed'
   if (ready?.safeMode !== false) return `blame: the restart is in safe mode: ${JSON.stringify(ready)}`
-  if (crash.blamed !== plugin || crash.crashes !== 0) return `blame: the supervisor did not see a blamed crash: ${JSON.stringify(crash)}`
+  if (!(crash.blamed === row || String(crash.blamed).endsWith(`:${row}`)) || crash.crashes !== 0) return `blame: the supervisor did not see a blamed crash: ${JSON.stringify(crash)}`
 
   // A changed file of the widget lifts the quarantine at the next start. THROW false keeps the widget alive.
   let quarantine
   try { quarantine = JSON.parse(readFileSync(join(home, 'deepwidgets', 'quarantine.json'), 'utf8')) } catch { quarantine = undefined }
-  const item = Array.isArray(quarantine) ? quarantine.find((entry) => entry.plugin === plugin) : undefined
+  const item = Array.isArray(quarantine) ? quarantine.find((entry) => (entry.row === row || String(entry.row).endsWith(`:${row}`))) : undefined
   note(`blame quarantine=${JSON.stringify(item)}`)
   if (typeof item?.root !== 'string') return `blame: no quarantine entry: ${JSON.stringify(quarantine)}`
   const file = join(item.root, 'index.js')

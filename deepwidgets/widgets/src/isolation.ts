@@ -1,12 +1,15 @@
 /**
  * Blame at exit and quarantine (`widget_phase2.isolation.blame` in `docs/specs/widget-phase2.md`).
  *
- * The runtime runs the plugin body of each widget plugin (`deepwidgets-widget-*`) and each action handler inside
- * an AsyncLocalStorage store that names the widget plugin. Timers, promises, and listeners that the widget code
- * creates there keep the store. On a fatal error, the claimer reads the store; when the store is empty, it matches
- * the stack against the package folder of each widget plugin. It writes `$DSH_HOME/deepwidgets/crash.json` with a
- * synchronous write and exits the host at once. The next host reads the record and does not run the blamed plugin
- * until the hash of its package files changes.
+ * The runtime runs the plugin body of each widget row (a Loader row with an id `deepwidgets-widget-*`) and each
+ * action handler inside an AsyncLocalStorage store that names the row. Timers, promises, and listeners that the
+ * widget code creates there keep the store. On a fatal error, the claimer reads the store; when the store is empty,
+ * it matches the stack against the package folder of each widget row. It writes `$DSH_HOME/deepwidgets/crash.json`
+ * with a synchronous write and exits the host at once. The next host reads the record and does not run the blamed
+ * row until the hash of its package files changes.
+ *
+ * The key is the Loader row, not the exported plugin `name`: a bundle can export any name, so a name key would let
+ * one bundle get another widget quarantined.
  * @module @deepwidgets/widgets/isolation
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
@@ -18,8 +21,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { Context, Fiber } from '@deepseek-ai/cordis'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 
-/** The plugin names that the runtime treats as widget code. */
-const WIDGET_PLUGIN = /^deepwidgets-widget-/
+/** The Loader row ids that the runtime treats as widget code. */
+const WIDGET_ROW = /^deepwidgets-widget-/
 /** The key under which the DSH fail-loud release finds the fatal hooks (`apps/cli/src/profile-boot.ts`). */
 const FATAL_HOOKS = Symbol.for('deepwidgets.fatal.hooks')
 /** At most this many files of one package go into its hash. */
@@ -30,16 +33,16 @@ export type BlameMethod = 'store' | 'stack'
 
 /** The crash record `$DSH_HOME/deepwidgets/crash.json`. The host that starts next applies it. */
 export interface CrashRecord {
-  /** The blamed widget plugin, or null for an unblamed crash. */
-  plugin: string | null
-  /** The slugs that the blamed plugin registered. */
+  /** The Loader row id of the blamed widget, or null for an unblamed crash. */
+  row: string | null
+  /** The slugs that the blamed row registered. */
   slugs: string[]
   error: { name: string, message: string, stack: string }
   /** Epoch milliseconds of the crash. */
   at: number
   event: 'uncaughtException' | 'unhandledRejection'
   method: BlameMethod | null
-  /** The package folder of the blamed plugin, and the hash of its files at the crash. */
+  /** The package folder of the blamed row, and the hash of its files at the crash. */
   root: string | null
   hash: string | null
   pid: number
@@ -47,9 +50,9 @@ export interface CrashRecord {
   applied: boolean
 }
 
-/** One quarantined widget plugin in `$DSH_HOME/deepwidgets/quarantine.json`. */
+/** One quarantined widget row in `$DSH_HOME/deepwidgets/quarantine.json`. */
 export interface Quarantine {
-  plugin: string
+  row: string
   slugs: string[]
   /** The text that the failed widget shows. */
   reason: string
@@ -58,17 +61,41 @@ export interface Quarantine {
   hash: string | null
 }
 
-/** The store: the name of the widget plugin whose code runs. */
+/** The store: the id of the widget row whose code runs. */
 const blameStore = new AsyncLocalStorage<string>()
 
-/** The plugin name when it is widget code, else undefined. */
-export function widgetPlugin(name: string | undefined): string | undefined {
-  return name !== undefined && WIDGET_PLUGIN.test(name) ? name : undefined
+/** The part of a Loader entry that the isolation reads. The Loader sets `fiber.entry` on the fiber of each row. */
+interface RowView {
+  readonly id: string
+  readonly options: { readonly id?: unknown }
 }
 
-/** Run `fn` inside the store of `plugin`. With no plugin, run it as is. */
-export function runAs<T>(plugin: string | undefined, fn: () => T): T {
-  return plugin === undefined ? fn() : blameStore.run(plugin, fn)
+/** The widget row id of a Loader entry, or undefined when the entry is not a widget row. */
+function widgetRowOfEntry(entry: RowView): string | undefined {
+  return typeof entry.options.id === 'string' && WIDGET_ROW.test(entry.options.id) ? entry.id : undefined
+}
+
+const entryOf = (fiber: Fiber | undefined): RowView | undefined => (fiber as { entry?: RowView } | undefined)?.entry
+
+/** The Loader row of `fiber` itself, when it is a widget row. A child fiber that shares the entry of its parent is not. */
+function ownRow(fiber: Fiber): string | undefined {
+  const entry = entryOf(fiber)
+  if (entry === undefined || entryOf(fiber.parent.fiber) === entry) return undefined
+  return widgetRowOfEntry(entry)
+}
+
+/** The widget row that owns `fiber`: the entry of the nearest fiber at or above it that has one. */
+export function widgetRow(fiber: Fiber): string | undefined {
+  for (let current = fiber; current.runtime !== null; current = current.parent.fiber) {
+    const entry = entryOf(current)
+    if (entry !== undefined) return widgetRowOfEntry(entry)
+  }
+  return undefined
+}
+
+/** Run `fn` inside the store of `row`. With no row, run it as is. */
+export function runAs<T>(row: string | undefined, fn: () => T): T {
+  return row === undefined ? fn() : blameStore.run(row, fn)
 }
 
 const stateDir = (): string => join(resolveDshHome(), 'deepwidgets')
@@ -189,14 +216,14 @@ export function callerRoot(): string | undefined {
 /** What the runtime gives the isolation: how to show a held widget. */
 export interface IsolationHost {
   /** Show each slug as failed with the reason. The returned disposer removes them. */
-  hold(slugs: string[], plugin: string, reason: string): () => Promise<void>
+  hold(slugs: string[], row: string, reason: string): () => Promise<void>
 }
 
 /** The isolation of one runtime instance. */
 export interface Isolation {
-  /** A widget plugin registered a slug from code in the package folder `root`. */
-  track(plugin: string, root: string | undefined, slug: string): void
-  /** The quarantined plugins of this start. */
+  /** A widget row registered a slug from code in the package folder `root`. */
+  track(row: string, root: string | undefined, slug: string): void
+  /** The quarantined rows of this start. */
   quarantined(): Quarantine[]
 }
 
@@ -210,26 +237,27 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
 
   // ---- quarantine at start: move a blame of the last host into the quarantine ----
   const stored = readJson(quarantineFile())
-  if (Array.isArray(stored)) for (const item of stored as Quarantine[]) quarantine.set(item.plugin, item)
+  // An entry without a row id is from an older format; it is dropped.
+  if (Array.isArray(stored)) for (const item of stored as Quarantine[]) if (typeof item.row === 'string') quarantine.set(item.row, item)
   const record = readJson(crashFile()) as CrashRecord | undefined
   if (record !== undefined && !record.applied) {
-    if (record.plugin !== null) {
+    if (typeof record.row === 'string') {
       const reason = `quarantined after a crash (${record.event}, blamed by ${String(record.method)}): ${record.error.message}`.slice(0, 500)
-      quarantine.set(record.plugin, { plugin: record.plugin, slugs: record.slugs, reason, at: record.at, root: record.root, hash: record.hash })
+      quarantine.set(record.row, { row: record.row, slugs: record.slugs, reason, at: record.at, root: record.root, hash: record.hash })
       writeJsonSync(quarantineFile(), [...quarantine.values()])
-      ctx.logger.warn(`widgets: ${record.plugin} crashed the last host; it does not run until its files change`)
+      ctx.logger.warn(`widgets: the row ${record.row} crashed the last host; it does not run until its files change`)
     }
     writeJsonSync(crashFile(), { ...record, applied: true })
   }
 
-  /** True when the quarantine holds `plugin`. A changed hash lifts it. */
-  function held(plugin: string): Quarantine | undefined {
-    const item = quarantine.get(plugin)
+  /** The quarantine item of `row`, when it holds the row. A changed hash lifts it. */
+  function held(row: string): Quarantine | undefined {
+    const item = quarantine.get(row)
     if (item === undefined) return undefined
     if (item.root !== null && item.hash !== null && packageHash(item.root) !== item.hash) {
-      quarantine.delete(plugin)
+      quarantine.delete(row)
       writeJsonSync(quarantineFile(), [...quarantine.values()])
-      ctx.logger.info(`widgets: ${plugin} left the quarantine: its files changed`)
+      ctx.logger.info(`widgets: the row ${row} left the quarantine: its files changed`)
       return undefined
     }
     return item
@@ -237,33 +265,39 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
 
   // ---- the store around the plugin body of each widget fiber ----
   // Cordis has no documented hook around a plugin body. The fiber runner `execute` runs the body on each load,
-  // so the runtime wraps it (vendor/cordis/src/fiber.ts). A held plugin loads with no effect but the failed slugs.
+  // so the runtime wraps it (vendor/cordis/src/fiber.ts). A held row loads with no effect but the failed slugs.
+  // The Loader sets `fiber.entry` in its own `internal/plugin` listener, which runs before this one.
+  // The dispose step puts each original `execute` back, so a reload of the runtime does not stack wrappers.
   type Runner = { execute: (this: Fiber) => unknown }
-  const wrapped = new WeakSet<Runner>()
+  const originals = new Map<Runner, Runner['execute']>()
   function wrap(fiber: Fiber): void {
-    const plugin = widgetPlugin(fiber.runtime?.name)
+    const row = ownRow(fiber)
     const runner = (fiber as unknown as { _runner?: Runner })._runner
-    if (plugin === undefined || runner === undefined || wrapped.has(runner)) return
-    wrapped.add(runner)
+    if (row === undefined || runner === undefined || originals.has(runner)) return
     const execute = runner.execute
+    originals.set(runner, execute)
     runner.execute = function (this: Fiber) {
-      const item = held(plugin)
+      const item = held(row)
       if (item !== undefined) {
-        ctx.logger.warn(`widgets: ${plugin} is quarantined: ${item.reason}`)
-        return host.hold(item.slugs, plugin, item.reason)
+        ctx.logger.warn(`widgets: the row ${row} is quarantined: ${item.reason}`)
+        return host.hold(item.slugs, row, item.reason)
       }
-      return blameStore.run(plugin, () => execute.call(this))
+      return blameStore.run(row, () => execute.call(this))
     }
   }
+  ctx.effect(() => () => {
+    for (const [runner, execute] of originals) runner.execute = execute
+    originals.clear()
+  }, 'widgets: restore the fiber runners')
   for (const runtime of ctx.registry.values()) for (const fiber of runtime.fibers) wrap(fiber)
   ctx.on('internal/plugin', wrap)
 
   // ---- the claimer ----
   function stackBlame(stack: string): string | undefined {
     if (stack === '') return undefined
-    for (const [plugin, item] of known) {
+    for (const [row, item] of known) {
       if (item.root === undefined) continue
-      if (stack.includes(item.root + sep) || stack.includes(pathToFileURL(item.root).href + '/')) return plugin
+      if (stack.includes(item.root + sep) || stack.includes(pathToFileURL(item.root).href + '/')) return row
     }
     return undefined
   }
@@ -274,11 +308,11 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
       const info = errorInfo(error)
       const store = blameStore.getStore()
       const stack = store === undefined ? stackBlame(info.stack) : undefined
-      const plugin = store ?? stack ?? null
-      const item = plugin === null ? undefined : known.get(plugin)
+      const row = store ?? stack ?? null
+      const item = row === null ? undefined : known.get(row)
       const root = item?.root ?? null
       const crash: CrashRecord = {
-        plugin,
+        row,
         slugs: [...(item?.slugs ?? [])],
         error: info,
         at: Date.now(),
@@ -290,7 +324,7 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
         applied: false,
       }
       writeJsonSync(crashFile(), crash)
-      process.stderr.write(`deepwidgets: ${event} blamed on ${plugin ?? 'no widget'} (${crash.method ?? 'none'}); the host exits now\n`)
+      process.stderr.write(`deepwidgets: ${event} blamed on ${row ?? 'no widget'} (${crash.method ?? 'none'}); the host exits now\n`)
     } catch (failure) {
       process.stderr.write(`deepwidgets: the crash record was not written: ${String(failure)}\n`)
     }
@@ -305,11 +339,11 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
   }, 'widgets: the crash claimer')
 
   return {
-    track(plugin, root, slug) {
-      const item = known.get(plugin) ?? { root, slugs: new Set<string>() }
+    track(row, root, slug) {
+      const item = known.get(row) ?? { root, slugs: new Set<string>() }
       item.root ??= root
       item.slugs.add(slug)
-      known.set(plugin, item)
+      known.set(row, item)
     },
     quarantined: () => [...quarantine.values()],
   }

@@ -28,6 +28,8 @@ const logPath = join(work, 'host.log')
 const results = []
 const children = new Set()
 const WIDGET = 'deepwidgets-widget-blame'
+/** True when the Loader row id `row` (with the ids of its parent rows) ends in the row id `id`. */
+const isRow = (row, id) => typeof row === 'string' && (row === id || row.endsWith(`:${id}`))
 
 function check(name, ok, detail = '') {
   results.push({ name, ok: Boolean(ok) })
@@ -153,7 +155,7 @@ const widgetIn = async (host, test) => {
   return list.body?.widgets?.some((widget) => widget.slug === 'blame' && test(widget)) === true
 }
 
-// [case, how to arm, expected blamed plugin]
+// [case, how to arm, expected blamed Loader row]
 const CASES = [
   ['timer-throw', 'widget', WIDGET],
   ['interval-throw', 'widget', WIDGET],
@@ -203,8 +205,8 @@ async function main() {
         else void host.post('/api/blamehost/arm', {}).catch(() => undefined)
         const exit = await Promise.race([host.exited, sleep(20_000).then(() => null)])
         const record = readRecord()
-        const detail = JSON.stringify({ exit: exit === null ? 'alive after 20 s' : exit.code ?? exit.signal, ms: exit === null ? null : exit.at - armedAt, plugin: record?.plugin, method: record?.method, event: record?.event, message: record?.error?.message })
-        check(`${name}: the host exits and blames ${expected ?? 'no widget'}`, exit !== null && exit.code === 1 && record !== undefined && record.plugin === expected && record.applied === false
+        const detail = JSON.stringify({ exit: exit === null ? 'alive after 20 s' : exit.code ?? exit.signal, ms: exit === null ? null : exit.at - armedAt, row: record?.row, method: record?.method, event: record?.event, message: record?.error?.message })
+        check(`${name}: the host exits and blames ${expected ?? 'no widget'}`, exit !== null && exit.code === 1 && record !== undefined && (expected === null ? record.row === null : isRow(record.row, expected)) && record.applied === false
           && (expected === null || (typeof record.hash === 'string' && record.slugs.includes('blame'))), detail)
       } finally {
         await host.stop()
@@ -213,7 +215,7 @@ async function main() {
 
     // Quarantine and lift: the next host does not run the blamed widget; a changed file brings it back.
     const blamed = readRecord()
-    if (blamed?.plugin !== null) throw new Error('the last case must leave an unblamed record')
+    if (blamed?.row !== null) throw new Error('the last case must leave an unblamed record')
     rmSync(join(state, 'crash.json'), { force: true })
     rmSync(join(state, 'quarantine.json'), { force: true })
     host = await startHost(port, inspectPort)
@@ -225,7 +227,7 @@ async function main() {
       await host.stop()
     }
     const record = readRecord()
-    check('quarantine: a timer throw is blamed', record?.plugin === WIDGET, JSON.stringify(record?.plugin))
+    check('quarantine: a timer throw is blamed', isRow(record?.row, WIDGET), JSON.stringify(record?.row))
 
     host = await startHost(port, inspectPort)
     let root
@@ -238,7 +240,7 @@ async function main() {
       const program = await host.getJson('/api/widgets/blame/program')
       check('quarantine: the program gives 503 widget-failed', program.status === 503 && program.body?.error?.code === 'widget-failed', JSON.stringify(program))
       const quarantine = JSON.parse(readFileSync(join(state, 'quarantine.json'), 'utf8'))
-      root = quarantine.find((item) => item.plugin === WIDGET)?.root
+      root = quarantine.find((item) => isRow(item.row, WIDGET))?.root
       check('quarantine: the record is applied', readRecord()?.applied === true)
     } finally {
       await host.stop()
@@ -264,6 +266,40 @@ async function main() {
       check('lift: a changed file brings the widget back', live && call.status === 500 && call.body?.error?.code === 'handler-error', JSON.stringify(call))
       const quarantine = JSON.parse(readFileSync(join(state, 'quarantine.json'), 'utf8'))
       check('lift: the quarantine is empty', Array.isArray(quarantine) && quarantine.length === 0, JSON.stringify(quarantine))
+    } finally {
+      await host.stop()
+    }
+
+    // Spoof: a bundle in its own row that exports the plugin name of sample. Its crash must quarantine its own row
+    // and leave sample live. A blame key by plugin name would quarantine sample too.
+    const spoof = join(fixtures, 'spoof')
+    cpSync(join(fixtures, 'blame-widget'), spoof, { recursive: true })
+    const edit = (file, from, to) => { writeFileSync(join(spoof, file), readFileSync(join(spoof, file), 'utf8').replaceAll(from, to)) }
+    edit('index.js', "name = 'deepwidgets-widget-blame'", "name = 'deepwidgets-widget-sample'")
+    edit('index.js', "slug: 'blame'", "slug: 'spoof'")
+    edit('package.json', 'deepwidgets-widget-blame', 'deepwidgets-widget-spoof')
+    edit('cordis.patch.yml', 'deepwidgets-widget-blame', 'deepwidgets-widget-spoof')
+    const listOf = async (host) => (await host.getJson('/api/widgets')).body?.widgets ?? []
+    host = await startHost(port, inspectPort)
+    try {
+      const result = await installBundle(inspectPort, spoof)
+      check('spoof: install applied', result?.application === 'applied', JSON.stringify(result?.application))
+      check('spoof: the spoof widget is live', await waitFor(async () => (await listOf(host)).some((w) => w.slug === 'spoof' && w.failed === undefined), 20_000))
+      void host.post('/api/widgets/spoof/call', { action: 'arm', args: { case: 'timer-throw' } }).catch(() => undefined)
+      await Promise.race([host.exited, sleep(20_000)])
+    } finally {
+      await host.stop()
+    }
+    const spoofRecord = readRecord()
+    check('spoof: the crash blames the spoof row', isRow(spoofRecord?.row, 'deepwidgets-widget-spoof'), JSON.stringify(spoofRecord?.row))
+    host = await startHost(port, inspectPort)
+    try {
+      await waitFor(async () => (await listOf(host)).some((w) => w.slug === 'spoof' && typeof w.failed === 'string'), 20_000)
+      const widgets = await listOf(host)
+      const sample = widgets.find((w) => w.slug === 'sample')
+      const spoofed = widgets.find((w) => w.slug === 'spoof')
+      const add = await host.post('/api/widgets/sample/call', { action: 'add', args: { by: 1 } })
+      check('spoof: sample stays live and the spoof widget is failed', sample !== undefined && sample.failed === undefined && typeof spoofed?.failed === 'string' && add.status === 200, JSON.stringify({ widgets, add: add.status }))
     } finally {
       await host.stop()
     }
