@@ -1,8 +1,5 @@
 - insert:
     - id: deepwidgets-widget-sample
       name: '@deepwidgets/widget-sample'
-      # Safe mode (widget_phase2.isolation.supervisor): Electron main sets DEEPWIDGETS_SAFE_MODE=1 in the Host
-      # environment after 2 crashes in 60 s. Each deepwidgets-widget-* row is off for that start.
-      disabled: !!js "process.env.DEEPWIDGETS_SAFE_MODE === '1'"
       config:
         tickMs: 0

@@ -94,7 +94,15 @@ const rendererConsole = new RendererConsoleTail()
 
 // Platform-conventional logs directory (macOS ~/Library/Logs/<name>, otherwise under userData);
 // set before ready so the first fatal report already resolves under it.
-app.setAppLogsPath()
+// deepwidgets-trim: a smoke run sets DEEPWIDGETS_LOGS_DIR, so its crash reports and crash dumps stay in its temp folder.
+// app.setAppLogsPath()
+const deepwidgetsLogsDir = process.env.DEEPWIDGETS_LOGS_DIR
+if (deepwidgetsLogsDir !== undefined && deepwidgetsLogsDir !== '') {
+  app.setAppLogsPath(join(deepwidgetsLogsDir, 'logs'))
+  app.setPath('crashDumps', join(deepwidgetsLogsDir, 'crash-dumps'))
+} else {
+  app.setAppLogsPath()
+}
 
 function currentDesktopLocale(): ReturnType<typeof resolveDesktopLocale> {
   return resolveDesktopLocale(windowsLanguage ?? app.getLocale())
@@ -106,7 +114,12 @@ function quitWithoutConfirmation(): void {
 }
 const recovery = new DesktopFatalRecovery({
   messages: () => currentDesktopLocale().messages,
-  show: options => dialog.showMessageBox(options),
+  // deepwidgets-trim: widget_phase2.isolation.supervisor. The give-up smoke reads this line to see that the fatal dialog opened.
+  // show: options => dialog.showMessageBox(options),
+  show: (options) => {
+    console.info(`deepwidgets-fatal-dialog ${JSON.stringify({ at: Date.now(), title: options.title ?? '' })}`)
+    return dialog.showMessageBox(options)
+  },
   stop: () => { shuttingDown = true; return stopForRecovery() },
   disablePlugins: async () => {
     const manager = new DesktopProjectManager(resolveDesktopPaths(), runtimeResources())
