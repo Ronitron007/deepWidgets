@@ -6,11 +6,17 @@
     "tsBuildInfoFile": "lib/tsconfig.host.tsbuildinfo"
   },
   "files": [
-    "src/index.ts"
+    "src/index.ts",
+    "src/creation.ts",
+    "src/loop-check.ts",
+    "src/testrun-child.ts"
   ],
   "references": [
     {
       "path": "../../vendor/cordis"
+    },
+    {
+      "path": "../../vendor/timer"
     },
     {
       "path": "../../packages/host/webserver"
@@ -20,6 +26,12 @@
     },
     {
       "path": "../widgets/tsconfig.host.json"
+    },
+    {
+      "path": "../../packages/boot/plugin-manager"
+    },
+    {
+      "path": "../../packages/boot/app-boot"
     }
   ]
 }
