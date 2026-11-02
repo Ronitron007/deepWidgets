@@ -8,9 +8,11 @@
  * - widget_install of the template: the widget shows in widget_list, and widget_call works;
  * - a second install of the slug replaces the bundle, and the state stays;
  * - widget_reload picks up an edited file;
- * - a bundle with a raw setTimeout, or with while (true) and no exit, is refused by the lint gate;
+ * - a reinstall that passes the gates and fails in the host is rolled back: the old bundle and the state stay;
+ * - a bundle with a raw setTimeout, a globalThis.setTimeout, or an endless loop (also one with a
+ *   break of a nested switch, in a .mts file) is refused by the lint gate;
  * - a bundle whose apply throws is refused by the test run gate;
- * - widget_remove removes the widget, and a new install gets the old state back;
+ * - widget_remove removes the widget, and a new install gets the old state back and sets its new seed program;
  * - a host restart loads the agent widget again.
  * Window part: it runs tools/smoke-desktop.mjs with DSH_SMOKE_CREATE set to a template folder. The
  * smoke installs it over MCP into the desktop app and finds its window. Skip it with
@@ -38,6 +40,7 @@ const home = join(work, 'home')
 const logPath = join(work, 'host.log')
 const results = []
 let child
+let cookie = ''
 
 function check(name, ok, detail = '') {
   results.push({ name, ok: Boolean(ok) })
@@ -64,16 +67,26 @@ async function startHost(port, env = {}) {
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   child.stderr.pipe(out)
-  await new Promise((resolve, reject) => {
+  const url = await new Promise((resolve, reject) => {
     let text = ''
     const timer = setTimeout(() => reject(new Error('the host did not print its URL in 90 s')), 90_000)
     child.stdout.on('data', (chunk) => {
       out.write(chunk)
       text += chunk
-      if (/http:\/\/127\.0\.0\.1:\d+\/\?token=\S+/.test(text)) { clearTimeout(timer); resolve() }
+      const match = text.match(/(http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/)
+      if (match) { clearTimeout(timer); resolve(match[1]) }
     })
     child.once('exit', (code) => { clearTimeout(timer); reject(new Error(`the host exited with ${String(code)}`)) })
   })
+  // The login cookie, for the program route of the runtime.
+  const login = await fetch(url, { redirect: 'manual' })
+  cookie = login.headers.getSetCookie().map((line) => line.split(';')[0]).join('; ')
+}
+
+/** The program text that the runtime serves for `slug`. */
+async function programText(port, slug) {
+  const answer = await fetch(`http://127.0.0.1:${String(port)}/api/widgets/${slug}/program`, { headers: { cookie } })
+  return (await answer.json().catch(() => null))?.text ?? `(status ${String(answer.status)})`
 }
 
 async function stopHost() {
@@ -149,6 +162,8 @@ async function hostPart() {
     const guide = await call('widget_guide')
     const text = guide.body?.guide ?? ''
     check('widget_guide gives the widget API types and the OpenUI guide of the component set', !guide.isError && text.includes('interface WidgetContext') && text.includes('Card(') && text.includes('shadcn-widgets@1'), `${String(text.length)} characters`)
+    const chat = ['@ToAssistant', '@OpenUrl', 'ENTIRE response'].filter((part) => text.includes(part))
+    check('widget_guide has no chat preamble and no steps that the shell ignores', chat.length === 0, JSON.stringify(chat))
 
     const template = await call('widget_template', { slug: SLUG, title: 'Create Check' })
     const files = template.body?.files ?? []
@@ -181,14 +196,35 @@ async function hostPart() {
     const tripled = await call('widget_call', { slug: SLUG, action: 'triple', requestId: 'create-2' })
     check('widget_reload picks up the edited file', !reloaded.isError && tripled.body?.result?.count === 6, JSON.stringify([reloaded.body, tripled.body]))
 
+    // A reinstall that passes the gates (the stand-in widgets service of the test run has no
+    // setProgram) and throws in the host. The old bundle comes back with its actions and state.
+    const broken = await call('widget_install', { dir: writeWidget(`${SLUG}-broken`, files, (text) => addAction("{ name: 'broken', kind: 'query', handler: () => 0 }")(addToApply("if ('setProgram' in ctx.widgets) throw new Error('host only failure')")(text))) })
+    const rolledActions = (await call('widget_describe', { slug: SLUG })).body?.actions?.map((action) => action.name) ?? []
+    const rolledState = await call('widget_call', { slug: SLUG, action: 'get' })
+    check('a reinstall that fails in the host is rolled back: the old actions and the state stay', broken.isError && broken.body?.error?.code === 'install-failed' && rolledActions.includes('triple') && !rolledActions.includes('broken') && rolledState.body?.result?.count === 6,
+      `${JSON.stringify(broken.body?.error?.code)} actions=${JSON.stringify(rolledActions)} state=${JSON.stringify(rolledState.body)}`)
+
     const timer = await call('widget_install', { dir: writeWidget('create-timer', files, (text) => addToApply("setTimeout(() => { ctx.logger.info('tick') }, 10)")(text).replaceAll(`'${SLUG}'`, "'create-timer'")) })
     const timerError = timer.body?.error
     check('a bundle with a raw setTimeout is refused by the lint gate', timer.isError && timerError?.code === 'gate-failed' && timerError?.gate === 'lint' && timerError?.diagnostics?.some((line) => line.includes('setTimeout')) && typeof timerError?.nextStep === 'string',
       JSON.stringify(timerError))
+    const diagnosticPaths = (timerError?.diagnostics ?? []).filter((line) => /^\S+:\d+:\d+: /.test(line))
+    check('the gate diagnostics name the files relative to the source folder', diagnosticPaths.length > 0 && diagnosticPaths.every((line) => line.startsWith('src/')), JSON.stringify(timerError?.diagnostics))
+
+    const globalTimer = await call('widget_install', { dir: writeWidget('create-global-timer', files, (text) => addToApply("globalThis.setTimeout(() => { ctx.logger.info('tick') }, 10)")(text).replaceAll(`'${SLUG}'`, "'create-global-timer'")) })
+    const globalError = globalTimer.body?.error
+    check('a bundle with globalThis.setTimeout is refused by the lint gate', globalTimer.isError && globalError?.gate === 'lint' && globalError?.diagnostics?.some((line) => line.includes('globalThis')), JSON.stringify(globalError))
 
     const looper = await call('widget_install', { dir: writeWidget('create-loop', files, (text) => addToApply('let spins = 0\n  while (true) { spins += 1 }')(text).replaceAll(`'${SLUG}'`, "'create-loop'")) })
     const loopError = looper.body?.error
     check('a bundle with while (true) and no exit is refused by the lint gate', looper.isError && loopError?.gate === 'lint' && loopError?.diagnostics?.some((line) => line.includes('no-endless-loop')), JSON.stringify(loopError))
+
+    // The break leaves only the switch. The loop is in a .mts file and runs late, past the test window.
+    const mtsDir = writeWidget('create-loop-mts', files, (text) => `import { spin } from './spin.mjs'\n${addToApply('ctx.timeout(() => { spin(1) }, 2_000)')(text).replaceAll(`'${SLUG}'`, "'create-loop-mts'")}`)
+    writeFileSync(join(mtsDir, 'src', 'spin.mts'), 'export function spin(n: number): void {\n  while (true) {\n    switch (n) {\n      case -1: break\n    }\n  }\n}\n')
+    const mtsLoop = await call('widget_install', { dir: mtsDir })
+    const mtsError = mtsLoop.body?.error
+    check('a .mts loop whose only break leaves a nested switch is refused by the lint gate', mtsLoop.isError && mtsError?.gate === 'lint' && mtsError?.diagnostics?.some((line) => line.startsWith('src/spin.mts:') && line.includes('no-endless-loop')), JSON.stringify(mtsError))
 
     const thrower = await call('widget_install', { dir: writeWidget('create-throw', files, (text) => addToApply("if (Date.now() > 0) throw new Error('apply broke on purpose')")(text).replaceAll(`'${SLUG}'`, "'create-throw'")) })
     const throwError = thrower.body?.error
@@ -201,9 +237,14 @@ async function hostPart() {
     check('widget_remove removes the widget', !removed.isError && !(await slugs()).includes(SLUG), JSON.stringify(removed.body))
     const notAgent = await call('widget_remove', { slug: 'sample' })
     check('widget_remove refuses a widget that is not an agent bundle', notAgent.isError && notAgent.body?.error?.code === 'not-installed', JSON.stringify(notAgent.body))
-    const back = await call('widget_install', { dir: writeWidget(`${SLUG}-v3`, files) })
+    // The new install has a new seed program. The remove kept the stored program of the replace (v2).
+    const back = await call('widget_install', { dir: writeWidget(`${SLUG}-v3`, files, (text) => text.replace('"A counter"', '"A counter v3"')) })
     const kept = await call('widget_call', { slug: SLUG, action: 'get' })
     check('a new install after the remove gets the stored state back', !back.isError && kept.body?.result?.count === 6, JSON.stringify([back.body?.application, kept.body]))
+    const servedV3 = await programText(port, SLUG)
+    check('a new install after the remove sets its new seed program', back.body?.programUpdated === true && servedV3.includes('A counter v3'), `programUpdated=${JSON.stringify(back.body?.programUpdated)} program=${servedV3.slice(0, 120)}`)
+    const same = await call('widget_install', { dir: join(work, 'agent', `${SLUG}-v3`) })
+    check('a reinstall of the same seed program leaves the stored program alone', !same.isError && same.body?.replaced === true && same.body?.programUpdated === false, JSON.stringify(same.body?.programUpdated))
   } finally {
     await client.close()
   }

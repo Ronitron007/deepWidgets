@@ -12,7 +12,7 @@
  */
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative } from 'node:path'
@@ -27,8 +27,10 @@ const require = createRequire(import.meta.url)
 const TEST_HEAP_MB = 256
 /** How long timers run after `apply` and the action calls. */
 const TEST_WINDOW_MS = 1_500
-/** The test run fails when the child prints nothing for this long: a loop holds it. */
+/** The test run fails when the child prints nothing for this long after its first line: a loop holds it. */
 const TEST_STALL_MS = 750
+/** The child must print its first line within this time. A cold start of the executable is slow. */
+const TEST_START_MS = 10_000
 /** The hard limit of one test run, also when the child keeps printing. */
 const TEST_LIMIT_MS = 15_000
 const LINT_LIMIT_MS = 60_000
@@ -36,6 +38,13 @@ const MAX_DIAGNOSTICS = 20
 /** The live registration shows in `ctx.widgets.list()` within this time after an applied install. */
 const LIVE_WAIT_MS = 5_000
 const META_FILE = 'deepwidgets-widget.json'
+/**
+ * The folder under the widget root that keeps the hash of the last applied seed program of each
+ * slug. It is outside the bundle folders, so `widget_remove` keeps it, as it keeps the stored program.
+ */
+const SEEDS_DIR = '.seeds'
+/** The source files that the loop rule reads: each kind that esbuild bundles. */
+const SOURCE_FILE = /\.(?:[cm]?[jt]s|[jt]sx)$/
 
 /** One gate of `widget_phase2.creation.gates`, in order. */
 export type GateName = 'compile' | 'lint' | 'test'
@@ -94,7 +103,6 @@ interface WidgetMeta {
   slug: string
   /** The folder that the agent installed from; `widget_reload` reads it again. */
   source: string
-  programHash: string
   installedAt: string
 }
 
@@ -165,7 +173,8 @@ async function stage(dir: string): Promise<string> {
   const entry = join(dir, 'src', 'index.ts')
   const found = await stat(entry).catch(() => undefined)
   if (found?.isFile() !== true) throw new CreationError('bad-source', `the folder ${dir} has no src/index.ts`)
-  const staging = await mkdtemp(join(tmpdir(), 'deepwidgets-gates-'))
+  // tsgolint prints real paths. On macOS the temporary folder is behind a link (/var is /private/var).
+  const staging = await realpath(await mkdtemp(join(tmpdir(), 'deepwidgets-gates-')))
   await cp(join(dir, 'src'), join(staging, 'src'), { recursive: true, filter: (source) => !relative(dir, source).split(/[\\/]/).includes('node_modules') })
   return staging
 }
@@ -183,11 +192,13 @@ async function writeConfigs(staging: string): Promise<{ tsconfig: string, oxlint
       noEmit: true,
       skipLibCheck: true,
       types: [],
-      lib: ['es2024', 'dom'],
+      // No `dom` lib: it declares `globalThis.setTimeout` and the other host timers. The widget type
+      // file declares the few web types that the widget API uses.
+      lib: ['es2024'],
       paths: { zod: [t.zod] },
     },
     files: [t.widgetTypes],
-    include: ['src/**/*.ts'],
+    include: ['src/**/*'],
   }, null, 2))
   const oxlintrc = join(staging, 'oxlintrc.json')
   const timer = (name: string, use: string): { name: string, message: string } => ({ name, message: `a raw ${name} is not owned by the widget, so it runs on after the widget stops. Use ${use}.` })
@@ -209,10 +220,11 @@ async function writeConfigs(staging: string): Promise<{ tsconfig: string, oxlint
   return { tsconfig, oxlintrc }
 }
 
-async function compileGate(staging: string): Promise<GateReport> {
+/** The compile gate. `inputs` are the source files of the bundle, relative to the staging folder. */
+async function compileGate(staging: string): Promise<{ report: GateReport, inputs: string[] }> {
   const started = performance.now()
   try {
-    await tools().esbuild.build({
+    const built = await tools().esbuild.build({
       absWorkingDir: staging,
       entryPoints: [join(staging, 'src', 'index.ts')],
       outfile: join(staging, 'out', 'index.js'),
@@ -222,18 +234,21 @@ async function compileGate(staging: string): Promise<GateReport> {
       target: 'node22',
       tsconfig: join(staging, 'tsconfig.json'),
       logLevel: 'silent',
+      metafile: true,
     })
-    return { gate: 'compile', ok: true, ms: elapsed(started), diagnostics: [], warnings: [] }
+    const inputs = Object.keys(built.metafile.inputs).filter((file) => file.startsWith('src/') && SOURCE_FILE.test(file))
+    return { report: { gate: 'compile', ok: true, ms: elapsed(started), diagnostics: [], warnings: [] }, inputs }
   } catch (error) {
     const errors = (error as { errors?: { text: string, location?: { file: string, line: number, column: number } | null }[] }).errors
     const diagnostics = errors === undefined
       ? [errorText(error)]
       : errors.map(({ text, location }) => location == null ? text : `${location.file}:${String(location.line)}:${String(location.column + 1)}: ${text}`)
-    return { gate: 'compile', ok: false, ms: elapsed(started), diagnostics: diagnostics.slice(0, MAX_DIAGNOSTICS), warnings: [] }
+    return { report: { gate: 'compile', ok: false, ms: elapsed(started), diagnostics: diagnostics.slice(0, MAX_DIAGNOSTICS), warnings: [] }, inputs: [] }
   }
 }
 
-async function lintGate(staging: string, configs: { tsconfig: string, oxlintrc: string }): Promise<GateReport> {
+/** The lint gate. `inputs` are the bundled source files that the loop rule reads. */
+async function lintGate(staging: string, configs: { tsconfig: string, oxlintrc: string }, inputs: string[]): Promise<GateReport> {
   const started = performance.now()
   const t = tools()
   const args = [t.oxlint, '-c', configs.oxlintrc, '--type-aware', '--type-check', '--tsconfig', configs.tsconfig, '--format', 'unix', 'src']
@@ -252,9 +267,7 @@ async function lintGate(staging: string, configs: { tsconfig: string, oxlintrc: 
     })
   })
   const loops: string[] = []
-  for (const file of await readdir(join(staging, 'src'), { recursive: true })) {
-    if (file.endsWith('.ts')) loops.push(...endlessLoops(join('src', file), await readFile(join(staging, 'src', file), 'utf8')))
-  }
+  for (const file of inputs) loops.push(...endlessLoops(file, await readFile(join(staging, file), 'utf8')))
   if (code === 0 && loops.length === 0) return { gate: 'lint', ok: true, ms: elapsed(started), diagnostics: [], warnings: [] }
   const lines = output.split('\n').map((line) => line.trim()).filter((line) => /^[^\s:]+:\d+:\d+: /.test(line))
   const diagnostics = [...loops, ...lines]
@@ -271,7 +284,8 @@ async function testGate(staging: string): Promise<{ report: GateReport, widget: 
     env: { PATH: process.env.PATH ?? '', ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
-  let last = performance.now()
+  // The stall clock starts at the first line, so the start of the child is not a stall.
+  let last: number | undefined
   let step = 'load'
   let result: TestRunReport | undefined
   let stderr = ''
@@ -294,7 +308,9 @@ async function testGate(staging: string): Promise<{ report: GateReport, widget: 
   child.stderr.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4_000) })
   const watch = setInterval(() => {
     const now = performance.now()
-    if (now - last > TEST_STALL_MS) killed = `stall: the widget held the process for more than ${String(TEST_STALL_MS)} ms during ${step}. A loop or a long synchronous job blocks the host.`
+    if (last === undefined) {
+      if (now - started > TEST_START_MS) killed = `the test process printed nothing in ${String(TEST_START_MS)} ms after its start`
+    } else if (now - last > TEST_STALL_MS) killed = `stall: the widget held the process for more than ${String(TEST_STALL_MS)} ms during ${step}. A loop or a long synchronous job blocks the host.`
     else if (now - started > TEST_LIMIT_MS) killed = `the test run took longer than ${String(TEST_LIMIT_MS)} ms (during ${step})`
     if (killed !== undefined) child.kill('SIGKILL')
   }, 50)
@@ -346,10 +362,11 @@ export async function runGates(dir: string): Promise<GatesOutcome> {
   try {
     const configs = await writeConfigs(staging)
     const gates: GateReport[] = []
-    const compiled = relativize(await compileGate(staging), staging)
+    const { report: compileReport, inputs } = await compileGate(staging)
+    const compiled = relativize(compileReport, staging)
     gates.push(compiled)
     if (!compiled.ok) return { gates }
-    const linted = relativize(await lintGate(staging, configs), staging)
+    const linted = relativize(await lintGate(staging, configs, inputs), staging)
     gates.push(linted)
     if (!linted.ok) return { gates }
     const code = await readFile(join(staging, 'out', 'index.js'), 'utf8')
@@ -386,7 +403,7 @@ async function writeBundle(folder: string, widget: TestRunWidget, code: string, 
   }, null, 2)}\n`)
   await writeFile(join(folder, 'index.js'), code)
   await writeFile(join(folder, 'cordis.patch.yml'), patchText(widget.slug))
-  const meta: WidgetMeta = { slug: widget.slug, source, programHash: hashText(widget.program), installedAt: new Date().toISOString() }
+  const meta: WidgetMeta = { slug: widget.slug, source, installedAt: new Date().toISOString() }
   await writeFile(join(folder, META_FILE), `${JSON.stringify(meta, null, 2)}\n`)
 }
 
@@ -423,6 +440,20 @@ export class WidgetInstaller {
   private async installed(slug: string): Promise<boolean> {
     const name = bundleName(slug)
     return (await this.services.pluginManager.listBundles()).some((bundle) => bundle.name === name && bundle.installed)
+  }
+
+  private seedFile(slug: string): string {
+    return join(this.root, SEEDS_DIR, slug)
+  }
+
+  /** The hash of the last applied seed program of `slug`, or undefined when no install applied one. */
+  private async lastSeed(slug: string): Promise<string | undefined> {
+    try {
+      return (await readFile(this.seedFile(slug), 'utf8')).trim()
+    } catch {
+      // No record: no install of this slug applied a seed yet.
+      return undefined
+    }
   }
 
   private async meta(slug: string): Promise<WidgetMeta | undefined> {
@@ -482,7 +513,6 @@ export class WidgetInstaller {
     const warnings = outcome.gates.flatMap((gate) => gate.warnings)
     const folder = this.folderOf(slug)
     const name = bundleName(slug)
-    const previous = await this.meta(slug)
     const replaced = await this.installed(slug)
     if (!replaced && this.services.widgets.list().some((item) => item.slug === slug)) {
       throw new CreationError('slug-taken', `a widget that is not an agent bundle has the slug ${JSON.stringify(slug)}`)
@@ -508,10 +538,17 @@ export class WidgetInstaller {
     if (result.application === 'applied' && await this.waitLive(slug)) {
       await rm(backup, { recursive: true, force: true })
       let programUpdated = false
-      if (replaced && previous?.programHash !== hashText(widget.program)) {
-        // The stored program wins over the seed; a new seed in the code is the newer intent.
+      const seed = hashText(widget.program)
+      const last = await this.lastSeed(slug)
+      // The stored program wins over the seed, and it stays across a remove. A new seed in the code is
+      // the newer intent. With no record, the runtime stores the seed when it has no program yet.
+      if (last !== undefined && last !== seed) {
         await this.services.widgets.setProgram(slug, widget.program, { by: 'widget_install' })
         programUpdated = true
+      }
+      if (last !== seed) {
+        await mkdir(join(this.root, SEEDS_DIR), { recursive: true })
+        await writeFile(this.seedFile(slug), `${seed}\n`)
       }
       return { slug, replaced, application: result.application, programUpdated, gates: outcome.gates, warnings }
     }
