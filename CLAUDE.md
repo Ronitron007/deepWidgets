@@ -10,7 +10,7 @@ The goal is a floating desktop widget whose plugins run on Cordis. DSH already h
 
 ## Why most code does not run `head.why`
 
-Most code in this repository is DSH code that deepWidgets does not need. The repository has 387 workspace packages. At boot, the desktop app composes 197 plugin rows. The floating widget needs only a small part of them.
+Most code in this repository is DSH code that deepWidgets does not need. The repository has 387 workspace packages. At boot, the desktop app composes 200 plugin rows. The floating widget needs only a small part of them.
 
 The operator keeps the unused code on purpose. It shows how DSH writes Cordis plugins, and the operator reads it. Do not delete it to make the repository smaller.
 
@@ -28,22 +28,24 @@ Code without a comment can still be off. A plugin row is off when a patch layer 
 
 ## Status `head.status`
 
-| Item | State on 2026-10-31 |
+| Item | State on 2026-11-02 |
 |---|---|
-| Rows that deepWidgets turns off | `deepwidgets/trim/cordis.patch.yml` turns off 160 of the 197 rows. The rows `hmr` and `timer` are on again for the widget system (`widget_rows`). Some kept rows stay pending, because the agent rows are off. |
-| Our packages | `deepwidgets/probe` (merged, TypeScript). `deepwidgets/trace` (host half, client half, and trace window merged, TypeScript). `deepwidgets/trim` (merged). It holds the trim patch, the row lists, and the test bundle `fixtures/widget-rows-install` of the install check. |
+| Rows that deepWidgets turns off | `deepwidgets/trim/cordis.patch.yml` turns off 160 of the 200 rows. The rows `hmr` and `timer` are on again for the widget system (`widget_rows`). Some kept rows stay pending, because the agent rows are off. |
+| Our packages | `deepwidgets/probe` and `deepwidgets/trace` (TypeScript). `deepwidgets/trim`: the trim patch, the row lists, and the test bundle `fixtures/widget-rows-install`. The widget MVP (spec `widget_mvp`) adds these packages: `deepwidgets/widgets` (the runtime, service `widgets`), `deepwidgets/widget-sample` (the `sample` counter), `deepwidgets/shell` (the widget page, built with Vite), `deepwidgets/mcp` (the MCP server for agents, see its `README.md`). Electron main opens one floating window for each widget (`apps/desktop/src/deepwidgets-windows.ts`). |
+| MCP port | The desktop host binds the fixed port `DEEPWIDGETS_MCP_PORT` (default 47615). It writes `$DSH_HOME/deepwidgets/mcp.json`. Smoke runs use port 0. |
 | Main window | The app opens the main window at once, with no welcome window. The main window shows only `hello` and the probe text. |
-| Checks | `tools/smoke-desktop.mjs` boots the app. With `DSH_SMOKE_PROBE=1`, it also runs the probe test. With `DSH_SMOKE_TRACE=1`, it also runs the trace test. With `DSH_SMOKE_HELLO=1`, it also runs the hello test. With `DSH_SMOKE_ROWS=<folder>`, it also compares the loaded rows with the row lists in that folder. With `DSH_SMOKE_INSTALL=<absolute bundle folder>`, it also installs that bundle into the running host. The bundle must apply at once, and its plugin must run. `tools/trace-late-row.mjs` checks that the trace finds late rows. `tools/trace-client-rows.mjs` checks the client half with no app. |
+| Checks | `tools/smoke-desktop.mjs` boots the app. With `DSH_SMOKE_PROBE=1`, it also runs the probe test. With `DSH_SMOKE_TRACE=1`, it also runs the trace test. With `DSH_SMOKE_HELLO=1`, it also runs the hello test. With `DSH_SMOKE_ROWS=<folder>`, it also compares the loaded rows with the row lists in that folder. With `DSH_SMOKE_INSTALL=<absolute bundle folder>`, it also installs that bundle into the running host. The bundle must apply at once, and its plugin must run. With `DSH_SMOKE_WIDGET=<slug>`, it checks the widget page and its live refresh. With `DSH_SMOKE_WINDOWS=1`, it checks that `sample` gets one window, and that the window closes when the `sample` row turns off. `tools/widgets-runtime.mjs` and `tools/widgets-mcp.mjs` check the runtime and the MCP server with a host and no app. `tools/widgets-mcp-port.mjs` checks the fixed port. It also boots the app twice, unless `WIDGETS_MCP_PORT_SKIP_DESKTOP=1`. `tools/trace-late-row.mjs` checks that the trace finds late rows. `tools/trace-client-rows.mjs` checks the client half with no app. |
 
 ## Where things are `head.map`
 
 | Path | Content |
 |---|---|
-| `docs/specs/` | `fork-trim.md` (spec `fork_trim`), `floating-widget.md` (spec `floating_widget`), `ts-move.md` (spec `ts_move`) |
-| `docs/plans/` | One plan for each spec. Each plan unit is one PR. |
+| `docs/specs/` | `fork-trim.md` (`fork_trim`), `floating-widget.md` (`floating_widget`), `ts-move.md` (`ts_move`), `widget-rows.md` (`widget_rows`), `widget-mvp.md` (`widget_mvp`), `widget-phase2.md` (`widget_phase2`), `handoff.md` (`handoff`, proposed), `handoff-evidence.md` (`handoff_evidence`) |
+| `docs/explore/widget-system/` | The widget decisions (`where-we-stand.md`, `standing.decided`), the checked facts, and the open points |
+| `docs/plans/` | The plans of the specs. Each plan unit is one PR. |
 | `docs/canvas/` | JSON Canvas boards that show how a system works, such as `floating-widget-processes.canvas`. |
 | `docs/tasks/` | The task file of a unit, written before the unit starts. `docs/tasks/README.md` is the task protocol. |
-| `deepwidgets/` | The `@deepwidgets/*` packages. `probe` and `trace` are in TypeScript. `build:artifacts` compiles them into `lib/`. The app and the trace tools load `lib/` (spec `ts_move`). A widget bundle, such as `probe`, has a host half and a client half. |
+| `deepwidgets/` | The `@deepwidgets/*` packages. Each package with code is in TypeScript. `build:artifacts` compiles each one, except `shell`, into `lib/`. The app and the tools load `lib/` (spec `ts_move`). `build:web` builds `shell` with Vite into `deepwidgets/shell/dist/widget`. `trim` has no package code, only a test bundle. A widget bundle, such as `probe`, has a host half and a client half. |
 | `tools/` | deepWidgets scripts, such as the smoke check. |
 | `.agents/skills/` | The skills. `.claude/skills` is a link to this folder. |
 | `.claude/hooks/` | Claude Code hooks for this repository. |
@@ -95,6 +97,21 @@ DSH_SMOKE_PROBE=1 DSH_SMOKE_ROWS=deepwidgets/trim node tools/smoke-desktop.mjs
 DSH_SMOKE_TRACE=1 node tools/smoke-desktop.mjs
 DSH_SMOKE_HELLO=1 node tools/smoke-desktop.mjs
 DSH_SMOKE_INSTALL="$PWD/deepwidgets/trim/fixtures/widget-rows-install" node tools/smoke-desktop.mjs
+DSH_SMOKE_WIDGET=sample node tools/smoke-desktop.mjs
+DSH_SMOKE_WINDOWS=1 node tools/smoke-desktop.mjs
+node tools/widgets-runtime.mjs
+node tools/widgets-mcp.mjs
+node tools/widgets-mcp-port.mjs
 node tools/trace-late-row.mjs
 node tools/trace-client-rows.mjs
 ```
+
+Before an install that pulls `@openuidev` packages, set `OPENUI_TELEMETRY_DISABLED=1`.
+
+Several agents share this Mac. Thus only one app or smoke run can occur at a time. Do these steps for each run:
+
+1. Take the lock with `until mkdir /tmp/deepwidgets-smoke.lock 2>/dev/null; do sleep 15; done`.
+
+2. Do the run.
+
+3. Remove the lock with `rmdir /tmp/deepwidgets-smoke.lock`.
