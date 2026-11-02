@@ -4,6 +4,8 @@
  * It boots the CLI host (web profile) on free loopback ports and installs two fixture bundles from
  * deepwidgets/widgets/fixtures: the widget `deepwidgets-widget-watchdog` and the host plugin `deepwidgets-watchdoghost`.
  * - parse: a 150 MB JSON.parse in host code does not kill the host, and writes no record.
+ * - suspend: SIGSTOP for 4 s, then SIGCONT, 10 times. The host lives each time. In every second cycle, the stop
+ *   comes during CPU work in a widget action, so the watchdog thread runs before the heartbeat after the SIGCONT.
  * - stall: a 900 ms stall in a widget action writes the provisional record, which goes when the heartbeat comes back.
  * - spin: a loop in a widget action kills the host within 2.5 s. The crash record blames the widget, and the next
  *   host shows the widget as failed while `sample` stays live.
@@ -210,6 +212,38 @@ async function main() {
     check('parse: a 150 MB JSON.parse does not kill the host', parsed.status === 200 && alive(host) && crash?.pid !== host.child.pid,
       JSON.stringify({ parse: parsed.body, alive: alive(host), crash: crash === undefined ? null : { pid: crash.pid, event: crash.event } }))
     check('parse: host code writes no provisional record', readState('provisional.json') === undefined)
+  } finally {
+    await host.stop()
+  }
+
+  // suspend: the whole process does not run, so no stall is proven. The watchdog must not kill.
+  clearState()
+  host = await startHost(port, inspectPort)
+  try {
+    await live(host)
+    const pid = host.child.pid
+    const probe = await host.post('/api/widgets/watchdog/call', { action: 'work', args: { n: 5_000_000 } })
+    const perMs = 5_000_000 / Math.max(1, probe.body?.result?.ms ?? 1)
+    // About 1 s of work: 0.3 s before the stop, and about 0.7 s after the SIGCONT.
+    const n = Math.round(perMs * 1_000)
+    const cycles = []
+    for (let cycle = 1; cycle <= 10 && alive(host); cycle += 1) {
+      const busy = cycle % 2 === 0
+      const call = busy ? host.post('/api/widgets/watchdog/call', { action: 'work', args: { n } }) : undefined
+      if (busy) await sleep(300)
+      process.kill(pid, 'SIGSTOP')
+      await sleep(4_000)
+      process.kill(pid, 'SIGCONT')
+      const answer = await call
+      await sleep(1_000)
+      cycles.push({ cycle, busy, alive: alive(host), status: answer?.status })
+    }
+    await sleep(2_500)
+    const crash = readState('crash.json')
+    check('suspend: 10 cycles of SIGSTOP for 4 s, then SIGCONT, do not kill the host',
+      cycles.length === 10 && cycles.every((item) => item.alive && (!item.busy || item.status === 200)) && alive(host) && crash?.pid !== pid,
+      JSON.stringify({ workMs: probe.body?.result?.ms, cycles, crash: crash === undefined ? null : { pid: crash.pid, message: crash.error?.message } }))
+    check('suspend: no provisional record is left', readState('provisional.json') === undefined)
   } finally {
     await host.stop()
   }

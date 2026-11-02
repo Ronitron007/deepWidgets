@@ -6,8 +6,12 @@
  * and leaves no other record. When the heartbeat comes back, it removes that record. When the stall reaches the
  * threshold, it writes the crash record `crash.json` and kills the host with SIGKILL.
  *
+ * The stall clock is monotonic. When a poll of this thread comes far too late, the whole process did not run
+ * (SIGSTOP, sleep), so the stall clock starts again instead of a kill.
+ *
  * The blame order is: the running-widget slot, then the store and the stack of the stuck thread from
- * `@sentry/node-native-stacktrace`, when that module loaded on the main thread.
+ * `@sentry/node-native-stacktrace`, when that module loaded on the main thread. The provisional record uses the slot
+ * only, because the native read waits for the main thread.
  * Ported from the spike `crash_only` (deepwidgets/widgets/watchdog-worker.cjs at a7c6a12d).
  * @module @deepwidgets/widgets/watchdog-worker
  */
@@ -61,33 +65,41 @@ function frameFile(name: string): string {
   }
 }
 
-/** Find the widget whose code holds the main thread. */
-function blame(): Blame {
+/** The blame by the running-widget slot alone. It does not wait for the main thread. */
+function slotBlame(): Blame {
   const slot = byIndex.get(Atomics.load(slots, RUNNING_SLOT))
+  return slot === undefined ? { row: undefined, method: null, stack: '' } : { row: slot, method: 'slot', stack: '' }
+}
+
+/**
+ * The blame by the store and the stack of the stuck main thread, read with the native module.
+ * The module interrupts the main thread and waits for it. When the main thread is inside native code, such as a long
+ * `JSON.parse`, this call waits until that code returns, for 5 s at most. So only the kill path calls it, and only
+ * after the slot found no widget.
+ */
+function nativeBlame(): Blame {
+  if (native === undefined) return { row: undefined, method: null, stack: '' }
   let stack = ''
   let store: WatchdogRowMessage | undefined
   let frameRow: WatchdogRowMessage | undefined
-  if (native !== undefined) {
-    try {
-      const main = native.captureStackTrace()[data.mainThread]
-      const frames = main?.frames ?? []
-      stack = frames.slice(0, 20).map((frame) => `    at ${frame.function || '<anonymous>'} (${frame.filename}:${String(frame.lineno)}:${String(frame.colno)})`).join('\n')
-      // The module gives the store as JSON text on Node 24 (Electron 44), and no store on Node 22.
-      let state = main?.asyncState
-      if (typeof state === 'string') {
-        try { state = JSON.parse(state) as unknown } catch { /* keep the text */ }
-      }
-      if (typeof state === 'string') store = byRow.get(state)
-      for (const frame of frames) {
-        const file = frameFile(frame.filename)
-        frameRow = [...byRow.values()].find((row) => row.root !== null && file.startsWith(row.root + sep))
-        if (frameRow !== undefined) break
-      }
-    } catch (error) {
-      stack = `the native stack capture failed: ${String(error)}`
+  try {
+    const main = native.captureStackTrace()[data.mainThread]
+    const frames = main?.frames ?? []
+    stack = frames.slice(0, 20).map((frame) => `    at ${frame.function || '<anonymous>'} (${frame.filename}:${String(frame.lineno)}:${String(frame.colno)})`).join('\n')
+    // The module gives the store as JSON text on Node 24 (Electron 44), and no store on Node 22.
+    let state = main?.asyncState
+    if (typeof state === 'string') {
+      try { state = JSON.parse(state) as unknown } catch { /* keep the text */ }
     }
+    if (typeof state === 'string') store = byRow.get(state)
+    for (const frame of frames) {
+      const file = frameFile(frame.filename)
+      frameRow = [...byRow.values()].find((row) => row.root !== null && file.startsWith(row.root + sep))
+      if (frameRow !== undefined) break
+    }
+  } catch (error) {
+    stack = `the native stack capture failed: ${String(error)}`
   }
-  if (slot !== undefined) return { row: slot, method: 'slot', stack }
   if (store !== undefined) return { row: store, method: 'native-store', stack }
   if (frameRow !== undefined) return { row: frameRow, method: 'native-stack', stack }
   return { row: undefined, method: null, stack }
@@ -117,13 +129,23 @@ function removeProvisional(at: number): void {
   } catch { /* no record */ }
 }
 
+/**
+ * A poll gap of this length means that this thread did not run either: the process was stopped (SIGSTOP), the
+ * machine slept, or the CPU was not given to the process. Then a stall of the main thread is not proven.
+ */
+const SUSPEND_GAP_MS = data.thresholdMs / 2
+
+// The stall clock is monotonic, so a step of the wall clock does not change a stall. Records keep epoch times.
 let last = Atomics.load(slots, BEAT_SLOT)
-let since = Date.now()
-/** The time of the provisional record of this stall, or undefined when there is none. */
+let since = performance.now()
+let polled = since
+/** The epoch time of the provisional record of this stall, or undefined when there is none. */
 let provisionalAt: number | undefined
 
 setInterval(() => {
-  const now = Date.now()
+  const now = performance.now()
+  const gap = now - polled
+  polled = now
   const beat = Atomics.load(slots, BEAT_SLOT)
   if (beat !== last) {
     last = beat
@@ -134,27 +156,44 @@ setInterval(() => {
     }
     return
   }
-  const stalledMs = now - since
+  if (gap >= SUSPEND_GAP_MS) {
+    // The main thread gets the same time to beat as after any other start of the stall clock.
+    say(`this thread did not run for ${String(Math.round(gap))} ms, so the process was stopped or asleep; the stall clock starts again`)
+    since = now
+    return
+  }
+  const stalledMs = Math.round(now - since)
   if (provisionalAt === undefined && stalledMs >= data.thresholdMs / 4) {
-    const found = blame()
+    // The slot only, as in the spike: a native read here would wait for the main thread.
+    const found = slotBlame()
     // An unblamed provisional record would change nothing at the next start.
     if (found.row !== undefined) {
       const message = `the event loop stalled for at least ${String(stalledMs)} ms, and the host ended before it came back (for example an out-of-memory abort)`
       try {
-        writeJsonSync(data.provisionalFile, recordOf(found, 'provisional-stall', 'ProvisionalStall', message, now))
-        provisionalAt = now
+        const at = Date.now()
+        writeJsonSync(data.provisionalFile, recordOf(found, 'provisional-stall', 'ProvisionalStall', message, at))
+        provisionalAt = at
       } catch (error) {
         say(`the provisional record was not written: ${String(error)}`)
       }
     }
   }
   if (stalledMs < data.thresholdMs) return
-  const found = blame()
-  try {
-    writeJsonSync(data.crashFile, recordOf(found, 'stall', 'WatchdogStall', `the event loop stalled for ${String(stalledMs)} ms (threshold ${String(data.thresholdMs)} ms)`, now))
-    if (provisionalAt !== undefined) removeProvisional(provisionalAt)
-  } catch (error) {
-    say(`the crash record was not written: ${String(error)}`)
+  const message = `the event loop stalled for ${String(stalledMs)} ms (threshold ${String(data.thresholdMs)} ms)`
+  const write = (blame: Blame): void => {
+    try {
+      writeJsonSync(data.crashFile, recordOf(blame, 'stall', 'WatchdogStall', message, Date.now()))
+      if (provisionalAt !== undefined) removeProvisional(provisionalAt)
+    } catch (error) {
+      say(`the crash record was not written: ${String(error)}`)
+    }
+  }
+  let found = slotBlame()
+  // Write the record first, so a long wait in the native read below cannot leave no record.
+  write(found)
+  if (found.row === undefined && native !== undefined) {
+    found = nativeBlame()
+    write(found)
   }
   say(`stall of ${String(stalledMs)} ms blamed on ${found.row?.row ?? 'no widget'} (${found.method ?? 'none'}); the host is killed now`)
   process.kill(process.pid, 'SIGKILL')
