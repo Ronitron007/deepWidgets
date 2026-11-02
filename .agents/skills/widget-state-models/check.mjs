@@ -125,7 +125,10 @@ for (const [run, want] of Object.entries(runs)) {
     problems.push(`breaks [${got.breaks.join(', ')}], baseline [${want.breaks.join(', ')}]`)
   }
   const notHeld = want.holds.filter((rule) => !got.holds.includes(rule))
-  if (notHeld.length > 0) problems.push(`does not hold: ${notHeld.join(', ')}`)
+  const unchecked = notHeld.filter((rule) => got.notChecked.includes(rule))
+  const otherNotHeld = notHeld.filter((rule) => !unchecked.includes(rule))
+  if (otherNotHeld.length > 0) problems.push(`does not hold: ${otherNotHeld.join(', ')}`)
+  if (unchecked.length > 0) problems.push(`not checked after the first break: ${unchecked.join(', ')}`)
   if (problems.length === 0) {
     console.log(`OK      ${run}: breaks [${got.breaks.join(', ')}]`)
   } else {
