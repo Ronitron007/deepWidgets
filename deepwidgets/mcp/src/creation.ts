@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto'
 import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, isAbsolute, join, relative } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { BundleInfo, ChangeResult } from '@deepseek-ai/dsh-plugin-manager/types'
 import { endlessLoops } from './loop-check.ts'
@@ -447,14 +447,25 @@ export class WidgetInstaller {
   }
 
   /**
-   * The installed agent bundles of `slug`: the current name, and the older name when the slug has an agent folder.
+   * The installed agent bundles of `slug`: the current name, and the older name when the profile dependency of that
+   * name is the agent folder of the slug. Another bundle with the older name is not an agent bundle and stays.
    * A built-in widget is not installed in the profile, so its row never shows here.
    */
   private async installedNames(slug: string): Promise<string[]> {
-    const installed = new Set((await this.services.pluginManager.listBundles()).filter((bundle) => bundle.installed).map((bundle) => bundle.name))
+    const installed = new Map((await this.services.pluginManager.listBundles()).filter((bundle) => bundle.installed).map((bundle) => [bundle.name, bundle]))
     const names = installed.has(bundleName(slug)) ? [bundleName(slug)] : []
-    if (installed.has(legacyBundleName(slug)) && await this.meta(slug) !== undefined) names.push(legacyBundleName(slug))
+    const legacy = installed.get(legacyBundleName(slug))
+    if (legacy !== undefined && await this.isAgentFolder(legacy.source, slug)) names.push(legacyBundleName(slug))
     return names
+  }
+
+  /** Whether the dependency spec `source` (`link:<path>` or `file:<path>`) is the agent folder of `slug`. */
+  private async isAgentFolder(source: string | undefined, slug: string): Promise<boolean> {
+    const local = source === undefined ? null : /^(?:file|link):(.+)$/s.exec(source)
+    if (local?.[1] === undefined) return false
+    // The profile can record the folder behind a link (on macOS /var is /private/var), so the real paths are compared.
+    const real = (path: string): Promise<string> => realpath(path).catch(() => resolve(path))
+    return await real(local[1]) === await real(this.folderOf(slug))
   }
 
   private seedFile(slug: string): string {
@@ -510,9 +521,14 @@ export class WidgetInstaller {
       const names = meta === undefined ? [] : await this.installedNames(slug)
       if (names.length === 0) throw new CreationError('not-installed', `no agent widget bundle has the slug ${JSON.stringify(slug)}`)
       let application: ChangeResult['application'] = 'applied'
+      const removed: string[] = []
       for (const name of names) {
         const result = await this.services.pluginManager.removeBundle(name)
-        if (result.application !== 'applied') throw new CreationError('install-failed', `the plugin manager did not remove ${name}`, { diagnostics: resultDiagnostics(result) })
+        if (result.application !== 'applied') {
+          const done = removed.length === 0 ? '' : `; ${removed.join(', ')} was removed`
+          throw new CreationError('install-failed', `the plugin manager did not remove ${name}${done}`, { diagnostics: resultDiagnostics(result) })
+        }
+        removed.push(name)
         application = result.application
       }
       await rm(this.folderOf(slug), { recursive: true, force: true })
@@ -544,12 +560,15 @@ export class WidgetInstaller {
     const backup = `${folder}.previous`
     await writeBundle(next, widget, code, dir)
     if (replaced) {
+      const removed: string[] = []
       for (const old of previous) {
         const removal = await this.services.pluginManager.removeBundle(old)
         if (removal.application !== 'applied') {
           await rm(next, { recursive: true, force: true })
-          throw new CreationError('install-failed', `the plugin manager did not remove the old bundle ${old}; the old bundle stays`, { diagnostics: resultDiagnostics(removal) })
+          const state = removed.length === 0 ? 'the old bundle stays' : `${removed.join(', ')} was removed, and ${old} stays`
+          throw new CreationError('install-failed', `the plugin manager did not remove the old bundle ${old}; ${state}`, { diagnostics: resultDiagnostics(removal) })
         }
+        removed.push(old)
       }
       await rm(backup, { recursive: true, force: true })
       await rename(folder, backup)

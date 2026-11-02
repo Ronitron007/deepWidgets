@@ -20,6 +20,7 @@
  * - an install of the slug `sample` is refused with slug-taken, and the built-in sample stays live;
  * - a profile with an agent bundle of the older row id deepwidgets-widget-<slug> has one row after a
  *   reinstall of the slug, and the state stays;
+ * - a bundle named deepwidgets-widget-<slug> from another folder is not the agent bundle: widget_remove keeps it;
  * - a crash in an agent widget is blamed on its deepwidgets-agent-<slug> row, and the next host start quarantines it.
  * Window part: it runs tools/smoke-desktop.mjs with DSH_SMOKE_CREATE set to a template folder. The
  * smoke installs it over MCP into the desktop app and finds its window. Skip it with
@@ -160,7 +161,9 @@ const installInHost = (folder) => inHost(`
   const manager = loader.ctx.get('pluginManager')
   const hmr = loader.ctx.get('hmr')
   const run = () => manager.installBundle(arg)
-  const result = typeof hmr?.executing?.exit === 'function' ? await hmr.executing.exit(run) : await run()
+  // A host with hmr must have the exit; without it the install can nest in a running transaction.
+  if (hmr !== undefined && typeof hmr.executing?.exit !== 'function') throw new Error('the hmr service has no executing.exit')
+  const result = hmr === undefined ? await run() : await hmr.executing.exit(run)
   return { application: result.application, error: result.error }`, folder)
 
 /** The handshake of mcp_readme.handshake: a token only from a server that proves the nonce of mcp.json. */
@@ -334,6 +337,7 @@ async function hostPart() {
     check('a reinstall of the same seed program leaves the stored program alone', !same.isError && same.body?.replaced === true && same.body?.programUpdated === false, JSON.stringify(same.body?.programUpdated))
 
     await legacyPart(call, slugs)
+    await foreignPart(call)
   } finally {
     await client.close()
   }
@@ -415,6 +419,35 @@ async function legacyPart(call, slugs) {
   check('a reinstall over the older row id leaves one row, deepwidgets-agent-<slug>', !again.isError && again.body?.replaced === true && JSON.stringify(rows) === JSON.stringify([`deepwidgets-agent-${LEGACY}`]) && JSON.stringify(dependencies) === JSON.stringify([`deepwidgets-agent-${LEGACY}`]),
     `install=${JSON.stringify(again.body?.error ?? again.body?.replaced)} rows=${JSON.stringify(rows)} dependencies=${JSON.stringify(dependencies)}`)
   check('a reinstall over the older row id keeps the state', kept.body?.result?.count === 5, JSON.stringify(kept.body))
+}
+
+const FOREIGN = 'create-foreign'
+
+/**
+ * A bundle with the older row name deepwidgets-widget-<slug> that is not from the agent folder. It is a plain plugin
+ * with no widget. widget_remove of the agent widget <slug> removes only the agent bundle.
+ */
+async function foreignPart(call) {
+  const source = writeWidget(FOREIGN, [{ path: 'src/index.ts', text: readFileSync(join(work, 'agent', SLUG, 'src', 'index.ts'), 'utf8').replaceAll(`'${SLUG}'`, `'${FOREIGN}'`) }])
+  const agent = await call('widget_install', { dir: source })
+  if (agent.isError) throw new Error(`the install of ${FOREIGN} failed: ${JSON.stringify(agent.body)}`)
+  const foreignName = `deepwidgets-widget-${FOREIGN}`
+  const folder = join(work, 'foreign-bundle')
+  mkdirSync(folder, { recursive: true })
+  writeFileSync(join(folder, 'package.json'), `${JSON.stringify({ name: foreignName, version: '1.0.0', private: true, type: 'module', exports: './index.js', dsh: { bundle: { patch: './cordis.patch.yml' } } }, null, 2)}\n`)
+  writeFileSync(join(folder, 'index.js'), "export const name = 'foreign-plugin'\nexport function apply() {}\n")
+  writeFileSync(join(folder, 'cordis.patch.yml'), ['- insert:', `    - id: ${foreignName}`, `      name: ${foreignName}`, ''].join('\n'))
+  const foreign = await installInHost(folder)
+  const both = await rowsOf(FOREIGN)
+  check('the profile has the agent bundle and a foreign bundle with the older row name', foreign?.application === 'applied' && JSON.stringify(both) === JSON.stringify([`deepwidgets-agent-${FOREIGN}`, foreignName]),
+    `install=${JSON.stringify(foreign)} rows=${JSON.stringify(both)}`)
+
+  const removed = await call('widget_remove', { slug: FOREIGN })
+  const rows = await rowsOf(FOREIGN)
+  const profileDir = await inHost("return loader.ctx.get('pluginManager').profile.dir")
+  const dependencies = Object.keys(JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')).dependencies ?? {}).filter((name) => name.endsWith(`-${FOREIGN}`))
+  check('widget_remove of the agent widget keeps the foreign bundle with the older row name', !removed.isError && JSON.stringify(rows) === JSON.stringify([foreignName]) && JSON.stringify(dependencies) === JSON.stringify([foreignName]),
+    `remove=${JSON.stringify(removed.body)} rows=${JSON.stringify(rows)} dependencies=${JSON.stringify(dependencies)}`)
 }
 
 /** Window part: the desktop smoke installs a template copy over MCP and finds its window. */
