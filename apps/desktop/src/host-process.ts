@@ -241,8 +241,12 @@ export class DesktopHostProcess {
         // deepwidgets-trim: added line; a crashed or failed Host leaves no MCP port file behind (widget_phase2.mcp_port).
         removeDeadMcpPortFile(child.pid, this.environment)
         const suffix = this.stderr.trim() === '' ? '' : `: ${this.stderr.trim()}`
-        if (code !== 0 && code !== null) this.fail(new Error(`dsh desktop host exited with ${String(code)}${suffix}`))
-        else this.fail(new Error(`dsh desktop host stopped${suffix}`))
+        // deepwidgets-trim: widget_phase2.isolation.blame. The exit failure carries the child pid, so the supervisor
+        // matches only the crash record of this Host.
+        // if (code !== 0 && code !== null) this.fail(new Error(`dsh desktop host exited with ${String(code)}${suffix}`))
+        // else this.fail(new Error(`dsh desktop host stopped${suffix}`))
+        const exited = code !== 0 && code !== null ? new Error(`dsh desktop host exited with ${String(code)}${suffix}`) : new Error(`dsh desktop host stopped${suffix}`)
+        this.fail(Object.assign(exited, { hostPid: child.pid }))
         resolve()
       })
     })

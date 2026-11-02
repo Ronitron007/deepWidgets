@@ -17,24 +17,33 @@ function log(event: string, detail: Record<string, unknown> = {}): void {
   console.log(`deepwidgets-supervisor ${JSON.stringify({ at: Date.now(), event, ...detail })}`)
 }
 
-/**
- * The widget plugin that the dead Host blamed, from the crash record `$DSH_HOME/deepwidgets/crash.json`.
- * Only a record written after the Host was ready, and not yet applied by a new Host, belongs to this failure.
- * The Host writes it with a rename before it exits, so the file is whole when the exit reaches main.
- * @param since - the time the dead Host was ready.
- */
-function blamedPlugin(since: number): string | undefined {
-  let record: unknown
+/** Read `$DSH_HOME/deepwidgets/crash.json`, or undefined when it is missing or not JSON. */
+function readCrashRecord(): unknown {
   try {
-    record = JSON.parse(readFileSync(join(resolveDshHome(), 'deepwidgets', 'crash.json'), 'utf8'))
+    return JSON.parse(readFileSync(join(resolveDshHome(), 'deepwidgets', 'crash.json'), 'utf8'))
   } catch {
     // No record, or not readable: the crash counts as unblamed, which is the safe side.
     return undefined
   }
-  if (typeof record !== 'object' || record === null) return undefined
-  const { plugin, at, applied } = record as { plugin?: unknown; at?: unknown; applied?: unknown }
-  if (typeof plugin !== 'string' || typeof at !== 'number' || at < since || applied === true) return undefined
-  return plugin
+}
+
+/** The pid of the dead Host child, which `DesktopHostProcess` puts on the failure of an exit. */
+function hostPidOf(failure: unknown): number | undefined {
+  const pid = (failure as { hostPid?: unknown } | null)?.hostPid
+  return typeof pid === 'number' ? pid : undefined
+}
+
+/**
+ * The widget row that the dead Host blamed in its crash record.
+ * The record belongs to this failure only when its pid is the pid of the dead child and no new Host applied it.
+ * A Host that dies at boot before it applies an older record thus counts as unblamed.
+ * The Host writes the record with a rename before it exits, so the file is whole when the exit reaches main.
+ */
+function blamedRow(record: unknown, deadPid: number | undefined): string | null {
+  if (deadPid === undefined || typeof record !== 'object' || record === null) return null
+  const { row, pid, applied } = record as { row?: unknown; pid?: unknown; applied?: unknown }
+  if (typeof row !== 'string' || pid !== deadPid || applied === true) return null
+  return row
 }
 
 function messageOf(failure: unknown): string {
@@ -49,7 +58,6 @@ export class DesktopHostSupervisor {
   private readonly policy = new HostCrashPolicy()
   private safeMode = false
   private armed = false
-  private readyAt = 0
   private timer: ReturnType<typeof setTimeout> | undefined
   private disposed = false
   private recoveringNow = false
@@ -57,8 +65,9 @@ export class DesktopHostSupervisor {
   /**
    * @param restart - Start a new Host and bring the main window back. A rejection is a failed start;
    * the controller publishes its `error` state, and {@link failed} counts it.
+   * @param crashRecord - reads the crash record; tests give their own.
    */
-  constructor(private readonly restart: () => Promise<void>) {}
+  constructor(private readonly restart: () => Promise<void>, private readonly crashRecord: () => unknown = readCrashRecord) {}
 
   /**
    * True from an owned failure until the restart has loaded the main window again.
@@ -74,7 +83,6 @@ export class DesktopHostSupervisor {
   /** A Host is ready: from now on the supervisor owns unexpected exits. */
   ready(): void {
     this.armed = true
-    this.readyAt = Date.now()
     log('ready', { safeMode: this.safeMode })
   }
 
@@ -88,7 +96,7 @@ export class DesktopHostSupervisor {
     // One failure gives one `error` state. A second one while a restart waits is the same outage.
     if (this.timer !== undefined) return true
     // A blamed crash is the quarantine's job: the next Host does not run that widget (`widget_phase2.isolation.blame`).
-    const decision = this.policy.crash(blamedPlugin(this.readyAt) ?? null)
+    const decision = this.policy.crash(blamedRow(this.crashRecord(), hostPidOf(failure)))
     if (decision.kind === 'give-up') {
       log('give-up', { crashes: decision.crashes, message: messageOf(failure) })
       this.dispose()
