@@ -11,11 +11,11 @@ function fixture() {
 describe('HostCrashPolicy (widget_phase2.isolation.supervisor)', () => {
   it('backs off 0.5 s, 2 s, 8 s; safe mode from crash 2; gives up at crash 4', () => {
     const { policy, advance } = fixture()
-    expect(policy.crash()).toEqual({ kind: 'restart', crashes: 1, delayMs: 500, safeMode: false })
+    expect(policy.crash()).toEqual({ kind: 'restart', crashes: 1, delayMs: 500, safeMode: false, blamed: null })
     advance(5_000)
-    expect(policy.crash()).toEqual({ kind: 'restart', crashes: 2, delayMs: 2_000, safeMode: true })
+    expect(policy.crash()).toEqual({ kind: 'restart', crashes: 2, delayMs: 2_000, safeMode: true, blamed: null })
     advance(5_000)
-    expect(policy.crash()).toEqual({ kind: 'restart', crashes: 3, delayMs: 8_000, safeMode: true })
+    expect(policy.crash()).toEqual({ kind: 'restart', crashes: 3, delayMs: 8_000, safeMode: true, blamed: null })
     advance(5_000)
     expect(policy.crash()).toEqual({ kind: 'give-up', crashes: 4 })
   })
@@ -26,7 +26,7 @@ describe('HostCrashPolicy (widget_phase2.isolation.supervisor)', () => {
     advance(10_000)
     expect(policy.crash()).toMatchObject({ crashes: 2, safeMode: true })
     advance(60_001)
-    expect(policy.crash()).toEqual({ kind: 'restart', crashes: 1, delayMs: 500, safeMode: false })
+    expect(policy.crash()).toEqual({ kind: 'restart', crashes: 1, delayMs: 500, safeMode: false, blamed: null })
   })
 
   it('counts a crash at 59.999 s and drops it at exactly 60 s', () => {
@@ -43,5 +43,27 @@ describe('HostCrashPolicy (widget_phase2.isolation.supervisor)', () => {
     const { policy, advance } = fixture()
     for (let crash = 0; crash < 3; crash += 1) { policy.crash(); advance(25_000) }
     expect(policy.crash()).toMatchObject({ kind: 'restart', crashes: 3, delayMs: 8_000 })
+  })
+
+  it('counts a blamed crash toward neither safe mode nor the give-up (widget_phase2.isolation.blame)', () => {
+    const { policy, advance } = fixture()
+    const blamed = 'deepwidgets-widget-blame-timer'
+    for (let crash = 0; crash < 6; crash += 1) {
+      expect(policy.crash(blamed)).toEqual({ kind: 'restart', crashes: 0, delayMs: 500, safeMode: false, blamed })
+      advance(1_000)
+    }
+    // One unblamed crash after six blamed ones is the first counted crash: no safe mode yet.
+    expect(policy.crash()).toEqual({ kind: 'restart', crashes: 1, delayMs: 500, safeMode: false, blamed: null })
+    advance(1_000)
+    // A blamed crash after an unblamed one keeps the count, so safe mode does not start and the backoff stays short.
+    expect(policy.crash(blamed)).toEqual({ kind: 'restart', crashes: 1, delayMs: 500, safeMode: false, blamed })
+    advance(1_000)
+    expect(policy.crash()).toMatchObject({ crashes: 2, safeMode: true, blamed: null })
+    advance(1_000)
+    expect(policy.crash()).toMatchObject({ crashes: 3 })
+    advance(1_000)
+    expect(policy.crash(blamed)).toMatchObject({ kind: 'restart', crashes: 3, safeMode: true })
+    advance(1_000)
+    expect(policy.crash()).toEqual({ kind: 'give-up', crashes: 4 })
   })
 })

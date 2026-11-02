@@ -6,7 +6,8 @@
     "tsBuildInfoFile": "lib/tsconfig.host.tsbuildinfo"
   },
   "files": [
-    "src/index.ts"
+    "src/index.ts",
+    "src/isolation.ts"
   ],
   "references": [
     {
@@ -14,6 +15,9 @@
     },
     {
       "path": "../../vendor/schemastery"
+    },
+    {
+      "path": "../../packages/util/home-paths"
     },
     {
       "path": "../../packages/storage/storage"

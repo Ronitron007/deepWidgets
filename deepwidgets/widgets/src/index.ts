@@ -15,6 +15,7 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { z } from 'zod'
+import { callerRoot, createIsolation, runAs, widgetRow } from './isolation.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -109,6 +110,8 @@ export const WIDGET_ERROR_STATUS = {
   'conflict': 409,
   'bad-request': 400,
   'safe-mode': 503,
+  // widget_phase2.isolation.blame: the widget crashed the host and is quarantined.
+  'widget-failed': 503,
 } as const
 
 /** One error code of the action contract. */
@@ -183,6 +186,8 @@ export interface WidgetSummary {
   programRev: number
   /** Present only when the widget is off. A widget that is off has no routes and no window. */
   off?: { reason: 'safe-mode', message: string }
+  /** Set when the widget is quarantined: the reason (`widget_phase2.isolation.blame`). It keeps its routes and window. */
+  failed?: string
 }
 
 /** The answer of `call()`. */
@@ -244,6 +249,8 @@ interface Registration {
   initialState: unknown
   timeoutMs: number | undefined
   actions: Map<string, WidgetAction<unknown>>
+  /** The widget row that registered it; its code runs in the blame store of that row. */
+  row?: string
 }
 
 /** The internal side of the service, made by `apply`. */
@@ -253,6 +260,7 @@ interface Runtime {
    * @param builtIn - whether the code of that row is a built-in bundle. Safe mode calls it.
    */
   add(registration: Registration, bundle: string | undefined, builtIn: () => boolean): () => Promise<void>
+  track(row: string, root: string | undefined, slug: string): void
   list(): WidgetSummary[]
   describe(slug: string): WidgetDescription
   get(slug: string): { rev: number, data: unknown }
@@ -312,6 +320,12 @@ export class WidgetsService extends Service {
   register<S, const T extends readonly unknown[]>(def: WidgetDef<S, T>): () => Promise<void> {
     const registration = buildRegistration(def)
     const runtime = this.runtime
+    // widget_phase2.isolation.blame: the Loader row is the blame key, and the caller package holds its files.
+    const row = widgetRow(this.ctx.fiber)
+    if (row !== undefined) {
+      registration.row = row
+      runtime.track(row, callerRoot(), registration.slug)
+    }
     // The Loader adds `entry` to the fiber of each row. A caller without a row is not built in.
     const fiber = this.ctx.fiber
     const bundle = (fiber as { entry?: { options: { name?: unknown } } }).entry?.options.name
@@ -397,6 +411,8 @@ interface Entry {
   /** Resolves when the stored records of the slug exist. */
   seeded: Promise<void>
   routes: (() => Promise<void>)[]
+  /** Set for a quarantined widget: the reason. It has no actions and no seed. */
+  failure?: string
 }
 
 /** State of one running call or write. */
@@ -585,6 +601,7 @@ export function apply(ctx: Context, config: Config): void {
   function liveEntry(slug: string): Entry {
     const entry = widgets.get(slug)
     if (entry === undefined) throw new WidgetError('unknown-widget', `no widget ${JSON.stringify(slug)}`)
+    if (entry.failure !== undefined) throw new WidgetError('widget-failed', `${slug} failed: ${entry.failure}`)
     return entry
   }
   function opened(): WidgetsDomain {
@@ -679,7 +696,8 @@ export function apply(ctx: Context, config: Config): void {
       }, timeoutMs)
     })
     try {
-      return await Promise.race([Promise.resolve().then(() => action.handler(args, scope)), timeout])
+      // widget_phase2.isolation.blame: the handler runs in the blame store of its widget row.
+      return await Promise.race([Promise.resolve().then(() => runAs(entry.registration.row, () => action.handler(args, scope))), timeout])
     } catch (error) {
       if (error instanceof WidgetError) throw error
       ctx.logger.warn(`widgets: ${entry.slug}.${action.name} threw`, error)
@@ -796,6 +814,7 @@ export function apply(ctx: Context, config: Config): void {
         requestBody: 'buffered',
         fetch: guarded(async () => {
           try {
+            if (entry.failure !== undefined) throw new WidgetError('widget-failed', `${slug} failed: ${entry.failure}`)
             await entry.seeded
             const program = opened().table('program').get(slug)
             return json(200, { rev: program?.rev ?? 0, text: program?.text ?? entry.registration.program })
@@ -832,7 +851,8 @@ export function apply(ctx: Context, config: Config): void {
           return eventStream(request, entry.streams, () => ({
             type: 'hello',
             rev: stateOf(slug)?.rev ?? 0,
-            programRev: domain?.table('program').get(slug)?.rev ?? 0,
+            // A failed widget says -1, so the page loads the program again when the widget comes back.
+            programRev: entry.failure === undefined ? domain?.table('program').get(slug)?.rev ?? 0 : -1,
           }))
         }),
       }),
@@ -850,9 +870,10 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
-  function add(registration: Registration, bundle: string | undefined, builtIn: () => boolean): () => Promise<void> {
+  /** @param failure - set for a quarantined widget: its failed entry runs no widget code, so safe mode lets it show. */
+  function add(registration: Registration, bundle: string | undefined, builtIn: () => boolean, failure?: string): () => Promise<void> {
     const { slug } = registration
-    if (safeMode && !builtIn()) {
+    if (failure === undefined && safeMode && !builtIn()) {
       const message = `safe mode: the widget ${slug} of ${bundle ?? 'an unknown bundle'} is off for this Host start; only built-in widgets run`
       off.set(slug, { title: registration.title, message })
       ctx.logger.warn(`widgets: ${message}`)
@@ -867,8 +888,9 @@ export function apply(ctx: Context, config: Config): void {
       registration,
       streams: new Set(),
       tail: Promise.resolve(),
-      seeded: seed(registration),
+      seeded: failure === undefined ? seed(registration) : Promise.resolve(),
       routes: [],
+      ...(failure === undefined ? {} : { failure }),
     }
     entry.seeded.catch((error: unknown) => { ctx.logger.error(`widgets: the seed of ${slug} failed; its calls fail`, error) })
     widgets.set(slug, entry)
@@ -896,6 +918,7 @@ export function apply(ctx: Context, config: Config): void {
       title: entry.registration.title,
       rev: stateOf(entry.slug)?.rev ?? 0,
       programRev: domain?.table('program').get(entry.slug)?.rev ?? 0,
+      ...(entry.failure === undefined ? {} : { failed: entry.failure }),
     }
   }
   function offSummary(slug: string, item: { title: string, message: string }): WidgetSummary {
@@ -940,9 +963,20 @@ export function apply(ctx: Context, config: Config): void {
     fetch: guarded((request) => Promise.resolve(eventStream(request, events, () => ({ type: 'hello', slugs: [...widgets.keys()] })))),
   })
 
+  // widget_phase2.isolation.blame: a quarantined widget row loads as one failed entry for each of its slugs.
+  const isolation = createIsolation(ctx, {
+    hold(slugs, row, reason) {
+      const disposers = slugs.filter((slug) => !widgets.has(slug)).map((slug) => add({
+        slug, title: slug, program: '', initialState: null, timeoutMs: undefined, actions: new Map(), row,
+      }, undefined, () => false, reason))
+      return async () => { for (const dispose of disposers) await dispose() }
+    },
+  })
+
   // The service methods report each failure as a WidgetError, so the caller sees one form.
   new WidgetsService(ctx, {
-    add,
+    add: (registration, bundle, builtIn) => add(registration, bundle, builtIn),
+    track: (row, root, slug) => { isolation.track(row, root, slug) },
     list,
     describe,
     get: (slug) => {

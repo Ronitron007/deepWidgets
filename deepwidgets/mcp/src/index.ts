@@ -60,6 +60,7 @@ const NEXT_STEP: Record<ToolErrorCode, string> = {
   'conflict': 'The slug already has a live registration. Pick another slug.',
   'bad-request': 'Fix the request as the message says, then retry.',
   'safe-mode': 'The host runs in safe mode after repeated crashes, so this widget is off. Tell the user. Do not retry until the host restarts normally.',
+  'widget-failed': 'The widget crashed the host and is quarantined. Do not retry. Change its files to bring it back, or tell the user the message.',
   'stale-cursor': 'The change feed was reset (a host restart or a gap). Call widget_list for the current state and use its cursor.',
   'internal-error': 'The host failed. Tell the user the message. Do not retry in a loop.',
   'bad-source': 'Pass the absolute path of a folder that holds src/index.ts. widget_template gives the files.',
