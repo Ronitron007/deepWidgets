@@ -34,7 +34,7 @@ export const state = (v) => {
 }
 export const group = (v) => (v.job.pc === 'err' ? 'failed' : v.job.pc === 'ok' ? 'ok' : v.job.pc === 'idle' ? 'idle' : 'running')
 export const colors = { failed: 'pink', ok: 'teal', idle: 'tan', running: 'blue' }
-export const title = 'widget_install, widget_reload, widget_remove at 38df710e'
+export const title = 'widget_install, widget_reload, widget_remove'
 export const step = (action, from, to) => {
   const j = to.job
   switch (action) {

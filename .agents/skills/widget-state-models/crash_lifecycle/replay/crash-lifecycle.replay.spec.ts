@@ -1,4 +1,4 @@
-// Replays of the TLC bug paths of crash_lifecycle.tla on the real code at 38df710e.
+// Replays of the TLC bug paths of crash_lifecycle.tla on the real code at aa7cd518.
 // Each host is a real child process; Electron main is the real DesktopHostSupervisor with
 // its real file readers; the next Host is the real createIsolation (ISO:167) in this process.
 import { spawn } from 'node:child_process'
@@ -47,7 +47,7 @@ const raceHost = (mode: string, onMessage?: (m: unknown, kill: () => void) => vo
 const claimHost = (row: string, register: boolean, root = '') =>
   // node itself runs the host (tsx as a loader), so the child pid is the pid that writes crash.json
   host(process.execPath, ['--import', 'tsx', join(HERE, 'host-claim.ts'), row, register ? '1' : '0', root])
-/** The failure that DesktopHostProcess gives for a child exit (HP:251-252). */
+/** The failure that DesktopHostProcess gives for a child exit (HP:274-275). */
 const exitFailure = (e: Exit) => Object.assign(new Error('dsh desktop host stopped'), { hostPid: e.pid, hostCode: e.code, hostSignal: e.signal })
 /** The next Host: the real isolation start, then the Loader loads each widget row. */
 function nextHost(): { a1: string, sample: string, quarantine: unknown } {
@@ -101,7 +101,7 @@ describe('crash_lifecycle replays', () => {
     home('prov-bootfail')
     const { supervisor } = supervisorWithLog()
     supervisor.ready()
-    // the boot fails: DesktopHostProcess reports the IPC 'fatal' error first, which has no hostPid (HP:229, HP:356-366)
+    // the boot fails: DesktopHostProcess reports the IPC 'fatal' error first, which has no hostPid (HP:254, HP:379-391)
     const end = await raceHost('boot-fail-after-return')
     expect(end.code).toBe(1)
     expect(supervisor.failed(new Error('startup failed'), false)).toBe(true)

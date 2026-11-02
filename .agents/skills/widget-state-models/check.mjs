@@ -1,14 +1,21 @@
 #!/usr/bin/env node
-// Compares /statechart reports of the widget state models with the baseline at the sync commit.
+// Runs the widget state models with /statechart, and compares the reports with the baseline at the sync commit.
 //
-//   node check.mjs                       list each model and its runs
-//   node check.mjs <model>               list the runs of one model
-//   node check.mjs <model> <out>         compare <out>/<run>/report.md with the baseline
-//   node check.mjs <model> <out> --mutants   also compare the mutant runs
+//   node check.mjs                                  list each model and its runs
+//   node check.mjs <model> [--mutants]              list the runs of one model
+//   node check.mjs <model> <out> [--mutants]        compare <out>/<run>/report.md with the baseline
+//   node check.mjs run <model> <out> [--mutants]    run each listed run with /statechart, then compare
+//
+// A config path is relative to the model folder, for example crash_lifecycle/cfg/mut/keep_prov.cfg.
+// Without --mutants, a command uses the main runs only. With --mutants, it also uses the mutant runs.
+//
+// `run` needs the environment variable STATECHART_RUN: the command line of one /statechart run, as the
+// /statechart skill gives it, with the placeholders {spec}, {config}, {view}, and {out}. This script fills in
+// absolute paths. It does not keep a copy of the /statechart command line, because that changes between releases.
 //
 // Exit 0: every run matches the baseline. Exit 1: a run differs. Exit 2: a report is missing or the usage is wrong.
-// This script does not run TLC. Run each listed config with /statechart first, with --out <out>/<run>.
-import { existsSync, readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -25,7 +32,12 @@ const INSTALL_HOLDS = ['TypeOK', 'GatesGuardHost', 'StateKept', 'BuiltInUntouche
 const actionMutants = {
   any_turn: 'FIFO', dup_no_flag: 'ReplayFlag', no_cancel: 'BusyNeverRuns', no_drain: 'DrainBeforeClose',
   no_hash_check: 'ConflictOnOtherArgs', no_stop_check: 'NoAdmitAfterStop', query_queued: 'QueryNoQueue',
-  stale_rev: 'RevCountsWrites',
+  stale_rev: 'RevCountsWrites', replay_live_rev: 'ReplaySameResult',
+}
+const crashMutants = {
+  no_blame_skip: 'BlamedCrashNeverCounts', safe_off_by_one: 'SafeModeAfterTwo', give_up_late: 'GiveUpAtFour',
+  no_dispose: 'NoRestartAfterGiveUp', no_quarantine: 'QuarantinedNeverRuns', no_pid_check: 'RecordOnlyBlamesItsHost',
+  keep_prov: 'ProvisionalGoneAfterBeat',
 }
 const installMutants = {
   'M-builtinRow-BuiltInUntouched': 'BuiltInUntouched', 'M-builtinRow-OneBundlePerSlug': 'OneBundlePerSlug',
@@ -42,7 +54,9 @@ const MODELS = {
       'one-launch': { config: 'crash_lifecycle-one-launch.cfg', breaks: CRASH_BREAKS, holds: [] },
       holds: { config: 'crash_lifecycle-holds.cfg', breaks: [], holds: CRASH_HOLDS },
     },
-    mutants: {},
+    mutants: Object.fromEntries(Object.entries(crashMutants).map(([m, rule]) => [
+      `mut-${m}`, { config: `cfg/mut/${m}.cfg`, breaks: [rule], holds: [] },
+    ])),
   },
   action_contract: {
     spec: 'ActionContract.tla',
@@ -86,31 +100,59 @@ function readReport(file) {
 
 const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x))
 
-function list(name) {
+function list(name, runs = { ...MODELS[name].runs, ...MODELS[name].mutants }) {
   const model = MODELS[name]
-  const runs = { ...model.runs, ...model.mutants }
-  console.log(`${name}: spec ${join(HERE, name, model.spec)}, view ${join(HERE, name, 'view.mjs')}`)
+  console.log(`${name}: folder ${join(HERE, name)}, spec ${model.spec}, view view.mjs, configs relative to the folder`)
   for (const [run, r] of Object.entries(runs)) {
     console.log(`  ${run.padEnd(34)} config ${r.config.padEnd(40)} breaks: ${r.breaks.join(' ') || '-'}`)
   }
 }
 
-const [name, out, flag] = process.argv.slice(2)
-if (name === undefined) {
+const args = process.argv.slice(2)
+const withMutants = args.includes('--mutants')
+const words = args.filter((a) => a !== '--mutants')
+const running = words[0] === 'run'
+const [name, out] = running ? words.slice(1) : words
+const usage = () => {
+  console.error(`usage: node check.mjs [run] [${Object.keys(MODELS).join('|')}] [<out>] [--mutants]`)
+  process.exit(2)
+}
+if (name === undefined && !running && !withMutants) {
   for (const n of Object.keys(MODELS)) list(n)
   process.exit(0)
 }
-if (!(name in MODELS) || (flag !== undefined && flag !== '--mutants')) {
-  console.error(`usage: node check.mjs [${Object.keys(MODELS).join('|')}] [<out> [--mutants]]`)
-  process.exit(2)
-}
+if (!(name in MODELS) || words.length > (running ? 3 : 2) || (running && out === undefined)) usage()
+
+const model = MODELS[name]
+const runs = withMutants ? { ...model.runs, ...model.mutants } : model.runs
 if (out === undefined) {
-  list(name)
+  list(name, runs)
   process.exit(0)
 }
 
-const model = MODELS[name]
-const runs = flag === '--mutants' ? { ...model.runs, ...model.mutants } : model.runs
+if (running) {
+  const template = process.env.STATECHART_RUN
+  if (template === undefined || !['{spec}', '{config}', '{view}', '{out}'].every((p) => template.includes(p))) {
+    console.error('set STATECHART_RUN to the /statechart command line of one run, with {spec}, {config}, {view}, and {out}')
+    process.exit(2)
+  }
+  const dir = join(HERE, name)
+  const quote = (path) => `'${path.replaceAll("'", "'\\''")}'`
+  for (const [run, r] of Object.entries(runs)) {
+    const target = join(out, run)
+    if (existsSync(target)) {
+      console.error(`${target} exists. Give a new out folder.`)
+      process.exit(2)
+    }
+    mkdirSync(out, { recursive: true })
+    const line = template.replaceAll('{spec}', quote(join(dir, model.spec))).replaceAll('{config}', quote(join(dir, r.config)))
+      .replaceAll('{view}', quote(join(dir, 'view.mjs'))).replaceAll('{out}', quote(target))
+    const started = Date.now()
+    const result = spawnSync('sh', ['-c', line], { cwd: dir, stdio: ['ignore', 'ignore', 'inherit'] })
+    console.log(`ran     ${run}: exit ${String(result.status)}, ${String(Math.round((Date.now() - started) / 1000))} s`)
+  }
+}
+
 let worst = 0
 for (const [run, want] of Object.entries(runs)) {
   const file = join(out, run, 'report.md')

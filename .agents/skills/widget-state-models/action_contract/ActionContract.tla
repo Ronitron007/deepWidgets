@@ -1,7 +1,7 @@
 ---- MODULE ActionContract ----
 (***************************************************************************)
 (* The action contract of the deepWidgets widget runtime, for one slug.   *)
-(* Code: deepwidgets/widgets/src/index.ts at 38df710e.                    *)
+(* Code: deepwidgets/widgets/src/index.ts at aa7cd518.                    *)
 (* Spec: docs/specs/widget-mvp.md, widget_mvp.runtime.contract,          *)
 (*       widget_mvp.runtime.storage, widget_mvp.runtime.api.             *)
 (*                                                                         *)
@@ -158,7 +158,8 @@ Lookup(j) ==
   /\ IF rec # NoRec
      THEN /\ IF rec.args # Args(j) /\ Mutant # "no_hash_check" THEN Finish(j, Ans("conflict", 0))  \* :768
              ELSE IF rec.code = "ok"
-                  THEN Finish(j, [code |-> "ok", rp |-> TRUE, rev |-> rec.rev])  \* :769
+                  THEN Finish(j, [code |-> "ok", rp |-> TRUE,
+                                  rev |-> IF Mutant = "replay_live_rev" THEN rev ELSE rec.rev])  \* :769
                   ELSE Finish(j, Ans(rec.code, 0))                               \* :770
           /\ UNCHANGED <<queue, enqOrd>>
      ELSE /\ pc' = [pc EXCEPT ![j] = "queued"]
@@ -213,7 +214,7 @@ HandlerWrites(j) ==
                  inflight, rec, rev, stopping, dom, restarts, expires, ghosts>>
 
 (* write() after its awaits: the first abort check (index.ts:648), then  *)
-(* table.update queues on the domain chain (domain.ts:387-388).          *)
+(* table.update queues on the domain chain (domain.ts:375-376).          *)
 WriteQueues(j) ==
   /\ w[j] = "pre"
   /\ IF aborted[j] \/ dom # "open"
@@ -226,7 +227,7 @@ WriteQueues(j) ==
                  late, overlap, enqOrd, startOrd, afterStop>>
 
 (* The write reaches its chain slot: fn runs with the second abort check *)
-(* (index.ts:652), then `await putRecord` (domain.ts:396) starts.        *)
+(* (index.ts:652), then `await putRecord` (domain.ts:384) starts.        *)
 WriteSlot(j) ==
   /\ w[j] = "chain" /\ chain # <<>> /\ Head(chain) = [t |-> "state", j |-> j]
   /\ IF aborted[j] /\ Mutant # "no_slot_abort_check"
@@ -235,7 +236,7 @@ WriteSlot(j) ==
   /\ UNCHANGED <<pc, h, aborted, wrote, ran, ans, pend, waitOn, queue, holder, inflight,
                  rec, rev, stopping, dom, restarts, expires, ghosts>>
 
-(* putRecord is durable; memory takes the new value (domain.ts:396-398);*)
+(* putRecord is durable; memory takes the new value (domain.ts:384-386);*)
 (* write() continues: run.wrote = true (index.ts:657). These microtasks  *)
 (* run before any timer, so they are one step.                            *)
 WriteLands(j) ==
@@ -394,25 +395,25 @@ Spec == Init /\ [][Next]_vars
 ----------------------------------------------------------------------------
 (* Rules. Each cites the spec line or code line that promises it.         *)
 
-\* rules.at_most_once (rule 1). widget_mvp.runtime.storage: "This table makes a
+\* rules.at_most_once. widget_mvp.runtime.storage: "This table makes a
 \* retried call idempotent after a host restart"; index.ts:204 "a retried mutation
 \* runs once (also after a host restart)"; index.ts:744-745,777.
 AtMostOnce == cnt <= 1
 
-\* rules.replay_recorded (rule 2). index.ts:751,769: a replay gives the recorded
+\* rules.replay_recorded. index.ts:751,769: a replay gives the recorded
 \* { result, rev } with replayed: true; a fresh run never says replayed.
 ReplaySameResult == Cardinality(okRevs) <= 1
 ReplayFlag == \A j \in Jobs :
   (pc[j] = "answered" /\ Keyed(j) /\ ans[j].code = "ok") => (ans[j].rp = ~ran[j])
-\* rules.replay_conflict (rule 2). index.ts:750,768: other args under one requestId
+\* rules.replay_conflict. index.ts:750,768: other args under one requestId
 \* give idempotency-conflict, so two ok answers never carry different args.
 ConflictOnOtherArgs == Cardinality(okArgs) <= 1
 
-\* rules.no_late_write (rule 3). widget_mvp.runtime.contract: "At the timeout, the
+\* rules.no_late_write. widget_mvp.runtime.contract: "At the timeout, the
 \* runtime aborts w.signal and refuses each later write of that call"; index.ts:139,644.
 NoLateWrite == ~late
 
-\* rules.one_at_a_time (rule 4). widget_mvp.runtime.contract: "one FIFO queue for
+\* rules.one_at_a_time. widget_mvp.runtime.contract: "one FIFO queue for
 \* mutations and update"; index.ts:615-641. A write lands only from the slot holder.
 OneAtATime == ~overlap
 FIFO == \A i, k \in 1..Len(startOrd) :
@@ -421,16 +422,16 @@ FIFO == \A i, k \in 1..Len(startOrd) :
 \* "A query does not wait in the queue" (contract; index.ts:724-725).
 QueryNoQueue == \A j \in Jobs : Kind(j) = "qry" => (j \notin Range(queue) /\ holder # j)
 
-\* rules.busy_never_runs (rule 5). contract: "fails with busy and does not run";
+\* rules.busy_never_runs. contract: "fails with busy and does not run";
 \* index.ts:617-618,626-632.
 BusyNeverRuns == \A j \in Jobs : ans[j].code = "busy" => ~ran[j]
 
-\* rules.dispose_drain (rule 6). index.ts:521 "Each call, update, and setProgram
+\* rules.dispose_drain. index.ts:521 "Each call, update, and setProgram
 \* that is admitted runs to its end before the domain closes"; index.ts:526,536-537.
 NoAdmitAfterStop == ~afterStop
 DrainBeforeClose == dom # "open" => \A j \in Jobs : pc[j] \notin Pending
 
-\* rules.rev_counts_writes (rule 7). index.ts:655 { rev: current.rev + 1 } on the
+\* rules.rev_counts_writes. index.ts:655 { rev: current.rev + 1 } on the
 \* domain chain (domain.ts:101-102).
 RevCountsWrites == rev = Len(log)
 

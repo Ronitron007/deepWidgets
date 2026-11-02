@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Replay of the TLC bug paths of ActionContract.tla against the real runtime at 38df710e.
+// Replay of the TLC bug paths of ActionContract.tla against the real runtime at the sync commit (see SKILL.md).
 // Drives a CLI host as tools/widgets-runtime.mjs does (helpers copied from it).
 // Usage: node replay.mjs <crash|late|overlap>
 import { spawn } from 'node:child_process'

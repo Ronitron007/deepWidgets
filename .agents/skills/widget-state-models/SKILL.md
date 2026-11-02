@@ -1,6 +1,6 @@
 ---
 name: widget-state-models
-description: Check a deepWidgets change against the TLA+ models crash_lifecycle, action_contract, and widget_install. Use for each change to a file that these models cover. These files are the crash supervisor and policy, the isolation, the watchdog, the widget call queue, the storage-domain write chain, and the install tools. Use it also when you fix a finding of spec widget_fv.
+description: Check a deepWidgets change against the TLA+ models crash_lifecycle, action_contract, and widget_install. Use for each change to a file that these models cover. Some of these files are in apps/desktop (the crash supervisor and policy, host-process.ts, main.ts) and apps/desktop-host. The others are in deepwidgets/widgets, deepwidgets/mcp (the install tools), the storage domain, and the plugin manager. Use it also when you fix a finding of spec widget_fv.
 ---
 
 # Widget state models `widget_state_models`
@@ -16,12 +16,12 @@ Use this skill when your change touches a file in `widget_state_models.coverage`
 To see if the covered code changed after the sync commit, run this command:
 
 ```bash
-git diff --stat 38df710e HEAD -- apps/desktop/src/deepwidgets-supervisor.ts apps/desktop/src/deepwidgets-crash-policy.ts apps/desktop/src/host-process.ts apps/desktop/src/main.ts apps/desktop-host/src/index.ts deepwidgets/widgets/src/isolation.ts deepwidgets/widgets/src/watchdog.ts deepwidgets/widgets/src/watchdog-worker.ts deepwidgets/widgets/src/index.ts deepwidgets/mcp/src/creation.ts packages/storage/storage-domain/src/domain.ts packages/boot/plugin-manager/src/index.ts
+git diff --stat aa7cd518 HEAD -- apps/desktop/src/deepwidgets-supervisor.ts apps/desktop/src/deepwidgets-crash-policy.ts apps/desktop/src/host-process.ts apps/desktop/src/main.ts apps/desktop-host/src/index.ts deepwidgets/widgets/src/isolation.ts deepwidgets/widgets/src/watchdog.ts deepwidgets/widgets/src/watchdog-worker.ts deepwidgets/widgets/src/index.ts deepwidgets/mcp/src/creation.ts packages/storage/storage-domain/src/domain.ts packages/boot/plugin-manager/src/index.ts
 ```
 
 ## Sync commit `widget_state_models.sync`
 
-The sync commit is `38df710e`. At this commit, each model describes the covered code. Each line number in this skill and in the models is a line at this commit.
+The sync commit is `aa7cd518`. At this commit, each model describes the covered code. The first check ran at `38df710e`. The resync to `aa7cd518` moved line numbers only. Each line number in this skill and in the models is a line at this commit.
 
 Move the sync commit only after you confirm that each model still describes the code at the new commit. To confirm it, do these steps:
 
@@ -49,16 +49,16 @@ Each model covers these files and functions. The line ranges are at the sync com
 | `deepwidgets/widgets/src/watchdog.ts` | `inSlot` 40-49, `startWatchdog` 92-146 (the heartbeat 123, `track` 139-144) |
 | `deepwidgets/widgets/src/watchdog-worker.ts` | `recordOf` 108-122, `removeProvisional` 125-130, the poll loop 145-200 |
 | `deepwidgets/widgets/src/index.ts` | `SAFE_MODE_ENV` and `BUILT_IN_WIDGET_FOLDERS` 37-45, safe mode in `apply` 504, `add` 874-913 |
-| `apps/desktop/src/host-process.ts` | `DesktopHostProcess.start` 199-257 (229, 251-252), `fail` 356-367 |
-| `apps/desktop/src/main.ts` | the safe-mode environment 499, `supervisor.ready` and `supervisor.failed` 575-576 |
-| `apps/desktop-host/src/index.ts` | the IPC `fatal` message of a failed boot 150-160 |
+| `apps/desktop/src/host-process.ts` | `DesktopHostProcess.start` 210-280 (the `fatal` event 254, the exit failure 274-275), `fail` 379-391 |
+| `apps/desktop/src/main.ts` | the safe-mode environment 549, `supervisor.ready` and `supervisor.failed` 630-631 |
+| `apps/desktop-host/src/index.ts` | the IPC `fatal` message of a failed boot 154-166 |
 
 ### `action_contract`
 
 | File | Functions and lines |
 |---|---|
 | `deepwidgets/widgets/src/index.ts` | in `apply` 501-992: `admit` 525-532, `guarded` 539-541, the drain effect 543-558, `opened` 607-610, `enqueue` 621-642, `write` 645-660, `update` 667-677, `execute` 681-708, `runAction` 710-727, `call` 729-760, `runOnce` 763-784, `remember` 787-792, the service methods 984-987 |
-| `packages/storage/storage-domain/src/domain.ts` | `DomainImpl.close` 251-254, `runClose` 256-264, the write chain `enqueue` 283-300, `KvTableImpl.put` 340-346, `update` 387-400 |
+| `packages/storage/storage-domain/src/domain.ts` | `DomainImpl.close` 251-254, `runClose` 256-264, the write chain `enqueue` 283-300, `KvTableImpl.put` 340-346, `update` 375-389 |
 
 ### `widget_install`
 
@@ -67,7 +67,7 @@ Each model covers these files and functions. The line ranges are at the sync com
 | `deepwidgets/mcp/src/creation.ts` | `runGates` 363-382, `WidgetInstaller` 425-575 (`serial` 433-437, `seedFile` 448-450, `lastSeed` 453-460, `waitLive` 471-478, `install` 481-483, `reload` 486-492, `remove` 494-504, `installNow` 506-574) |
 | `deepwidgets/widgets/src/index.ts` | `WidgetsService` 302-396 (313), safe mode in `apply` 504-505, `call` 729-760, `setProgram` 795-804, `seed` 863-871, `add` 874-913, `list` 933-936 |
 | `deepwidgets/widgets/src/isolation.ts` | the quarantine contract 1-12, `held` 199-209 |
-| `packages/boot/plugin-manager/src/index.ts` | `installBundle` 836-965, `removeBundle` 1000-1032 |
+| `packages/boot/plugin-manager/src/index.ts` | `installBundle` 873-1012, `waitForInstall` 1020-1029, `removeBundle` 1047-1079 |
 
 ## Rules and findings `widget_state_models.rules`
 
@@ -123,6 +123,33 @@ Each model covers these files and functions. The line ranges are at the sync com
 
 Each model also has `TypeOK` and `NoDeadlock`. These rules check the model itself, and they hold.
 
+### Rule names `widget_state_models.names`
+
+The plan `docs/plans/widget-fv.md` and the comments in the models use other names for some rules. This table gives the TLA+ rule for each of these names. Use the TLA+ name in configs and in `check.mjs`.
+
+| Name in the plan or in a model comment | TLA+ rule |
+|---|---|
+| `crash_lifecycle` rule "a stale record never blames a later crash" | `RecordOnlyBlamesItsHost` |
+| `program.new_seed` | `NewSeedSetsProgram` |
+| `program.same_seed` | `SameSeedKeepsProgram` |
+| `quarantine.holds` | `QuarantineHolds` |
+| `slug.taken_only_builtin` | `SlugTakenOnlyForBuiltIn` |
+| `replace.keeps_old` | `FailedReplaceKeepsOld` |
+| `gates.never_host` | `GatesGuardHost` |
+| `state.kept` | `StateKept` |
+| `builtin.untouched` | `BuiltInUntouched` |
+| `slug.one_bundle` | `OneBundlePerSlug` |
+| `rules.at_most_once` | `AtMostOnce` |
+| `rules.no_late_write` | `NoLateWrite` |
+| `rules.one_at_a_time` | `OneAtATime`, `FIFO`, and `QueryNoQueue` |
+| `rules.replay_recorded` | `ReplaySameResult` and `ReplayFlag` |
+| `rules.replay_conflict` | `ConflictOnOtherArgs` |
+| `rules.busy_never_runs` | `BusyNeverRuns` |
+| `rules.dispose_drain` | `NoAdmitAfterStop` and `DrainBeforeClose` |
+| `rules.rev_counts_writes` | `RevCountsWrites` |
+
+The plan uses the TLA+ names `NoLateWrite`, `OneAtATime`, and `AtMostOnce` directly.
+
 ## Files `widget_state_models.files`
 
 Each model folder has these files:
@@ -141,29 +168,39 @@ The file `check.mjs` lists the runs of each model. It also compares the reports 
 
 TLC checks the rules that break and the rules that hold in different runs. After the first break, `/statechart` stops each run at 100,000 states. Thus each model has more than one run.
 
+The first `/statechart` run needs the network. It installs TLC and Java itself. Read the "Run" section of `/statechart` for its command line. This skill does not copy that command line, because it changes between releases and machines.
+
 To run one model, do these steps:
 
-1. List the runs of the model:
+1. Set `STATECHART_RUN` to the `/statechart` command line of one run. Write the placeholders `{spec}`, `{config}`, `{view}`, and `{out}` where the command line takes the spec, the config, the view, and the out folder.
+
+2. Make a new out folder name outside the repository, for example `$TMPDIR/widget-state-models/<date>/crash_lifecycle`. Do not reuse an out folder.
+
+3. Run each run of the model and compare the reports with the baseline:
 
    ```bash
-   node .agents/skills/widget-state-models/check.mjs crash_lifecycle
+   node .agents/skills/widget-state-models/check.mjs run crash_lifecycle <out folder>
    ```
 
-2. Make a new out folder outside the repository, for example `$TMPDIR/widget-state-models/<date>/crash_lifecycle`. Do not reuse an out folder.
+Use `action_contract` or `widget_install` in place of `crash_lifecycle` for the other models. Exit code 0 means that each run gives the baseline. Exit code 1 means that a rule result changed. The output names the run and the rule. Exit code 2 means that a report is missing, the out folder exists, or the usage is wrong.
 
-3. For each listed run, run `/statechart` on the spec of the model, with the listed config and the model's `view.mjs`. Put the result in `<out folder>/<run name>`.
+To see the runs of a model, run `node .agents/skills/widget-state-models/check.mjs crash_lifecycle`. Each config path is relative to the model folder, for example `crash_lifecycle/cfg/mut/keep_prov.cfg`. To run one config by hand, give `/statechart` the spec, the config, and the `view.mjs` of the model folder. Put the result in `<out folder>/<run name>`. Then run `check.mjs` with the model and the out folder, without `run`, to compare.
 
-4. Compare the reports with the baseline:
+On an idle Mac, the main runs take about 2 minutes for `crash_lifecycle`, 4 minutes for `action_contract`, and 7 minutes for `widget_install`. The runs `idem-hold` and `two-slugs` take the most time. When other jobs load the machine, the runs can take three times as long.
 
-   ```bash
-   node .agents/skills/widget-state-models/check.mjs crash_lifecycle <out folder>
-   ```
+### Mutant runs `widget_state_models.mutants`
 
-Use `action_contract` or `widget_install` in place of `crash_lifecycle` for the other models. Exit code 0 means that each run gives the baseline. Exit code 1 means that a rule result changed. The output names the run and the rule. Exit code 2 means that a report is missing.
+A mutant run uses a broken variant of the model, and its rule must break. Thus the mutant runs show that the rules can fail. Each model has a constant `Mutant`. The value `none` is the code. Each other value is one code mistake, and its config in `cfg/mut/` names the one rule that must break.
 
-On an idle Mac, the runs take about 2 minutes for `crash_lifecycle`, 4 minutes for `action_contract`, and 7 minutes for `widget_install`. The runs `idem-hold` and `two-slugs` take the most time. When other jobs load the machine, the runs can take three times as long.
+To use the mutant runs too, add `--mutants` to a `check.mjs` command. The mutant runs take about 2 minutes for each model.
 
-Each model also has mutant runs. A mutant run uses a broken variant of the model, and its rule must break. Thus the mutant runs show that the rules can fail. To add the mutant runs, add `--mutants` to both commands. Only `action_contract` and `widget_install` have mutant runs.
+| Model | Mutant | Rule that must break |
+|---|---|---|
+| `crash_lifecycle` | `no_blame_skip`, `safe_off_by_one`, `give_up_late`, `no_dispose`, `no_quarantine`, `no_pid_check`, `keep_prov` | `BlamedCrashNeverCounts`, `SafeModeAfterTwo`, `GiveUpAtFour`, `NoRestartAfterGiveUp`, `QuarantinedNeverRuns`, `RecordOnlyBlamesItsHost`, `ProvisionalGoneAfterBeat` |
+| `action_contract` | `any_turn`, `dup_no_flag`, `no_cancel`, `no_drain`, `no_hash_check`, `no_stop_check`, `query_queued`, `stale_rev`, `replay_live_rev` | `FIFO`, `ReplayFlag`, `BusyNeverRuns`, `DrainBeforeClose`, `ConflictOnOtherArgs`, `NoAdmitAfterStop`, `QueryNoQueue`, `RevCountsWrites`, `ReplaySameResult` |
+| `widget_install` | `skipGate`, `stateReset`, `builtinRow` | `GatesGuardHost`, `StateKept`, `BuiltInUntouched` and `OneBundlePerSlug` |
+
+In `action_contract`, each mutant also has a control run `-none` with the same bounds. The control run must hold.
 
 ## Read a result `widget_state_models.read`
 
@@ -215,7 +252,7 @@ When your change to covered code is intended, change the model in the same pull 
 
 6. If the change is correct, change the baseline in `check.mjs` and the rule tables in this file.
 
-For example, assume that you remove the pid match from `blamedRow` and `blamedByRecords` in `apps/desktop/src/deepwidgets-supervisor.ts`. Then change the model step `HostFails` in `crash_lifecycle.tla`. The value `own` loses the test `crash.pid = pid`, and the value `prow` loses the test `prov.pid = pid`. The `holds` run of `crash_lifecycle` then shows that `RecordOnlyBlamesItsHost` breaks.
+For example, assume that you remove the pid match from `blamedRow` and `blamedByRecords` in `apps/desktop/src/deepwidgets-supervisor.ts`. Then change the model step `HostFails` in `crash_lifecycle.tla`. The value `own` loses the test `crash.pid = pid`, and the value `prow` loses the test `prov.pid = pid`. The `holds` run of `crash_lifecycle` then shows that `RecordOnlyBlamesItsHost` breaks. The mutant `no_pid_check` is the same change to the model.
 
 ## Scope `widget_state_models.scope`
 

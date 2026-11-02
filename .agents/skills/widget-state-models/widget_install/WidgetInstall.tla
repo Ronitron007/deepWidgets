@@ -1,7 +1,7 @@
 ---------------------------- MODULE WidgetInstall ----------------------------
 (***************************************************************************)
 (* The agent tools widget_install, widget_reload, and widget_remove of     *)
-(* deepWidgets at commit 38df710e.                                         *)
+(* deepWidgets at commit aa7cd518.                                         *)
 (*                                                                         *)
 (* Code: deepwidgets/mcp/src/creation.ts (C), deepwidgets/widgets/src/     *)
 (* index.ts (W), deepwidgets/widgets/src/isolation.ts (I),                 *)
@@ -220,7 +220,7 @@ WriteNext ==
   /\ UNCHANGED <<inst, enabled, folder, prev, reg, offMap, sampleOn, prog, state, everUsed,
                  seedRec, lastInst, quar, blamed, runBlamed, safe, crashes, calls>>
 
-(* C:528-532 removeBundle(name) of the old bundle. PM removeBundle (PM:1000-1030) first deselects *)
+(* C:528-532 removeBundle(name) of the old bundle. PM removeBundle (PM:1047-1079) first deselects *)
 (* the bundle and reloads (its rows stop), then runs `pnpm remove`. A failure of pnpm remove       *)
 (* leaves the bundle installed but deselected; a lock timeout or `not-removable` changes nothing.  *)
 RemoveOld ==
@@ -269,7 +269,7 @@ RenameNext ==
   /\ UNCHANGED <<inst, enabled, prev, reg, offMap, sampleOn, prog, state, everUsed,
                  seedRec, lastInst, quar, blamed, runBlamed, safe, crashes, calls>>
 
-(* PM installBundle(folder) (PM:836-985). With hmr, a package that is already in package.json is *)
+(* PM installBundle(folder) (PM:873-1029). With hmr, a package that is already in package.json is *)
 (* refused (`already-installed`). pnpm can fail and change nothing. When the package goes in, the *)
 (* row loads at once, and the result can still be `failed` or `restart-required` (a failed enable *)
 (* stage keeps the package).                                                                      *)

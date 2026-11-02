@@ -1,9 +1,9 @@
 --------------------------- MODULE crash_lifecycle ---------------------------
 (***************************************************************************)
-(* crash_lifecycle: the outermost state machine of deepWidgets at 38df710e. *)
+(* crash_lifecycle: the outermost state machine of deepWidgets at aa7cd518. *)
 (* Host process + crash.json/provisional.json + quarantine.json + the       *)
 (* watchdog thread + the Electron-main supervisor (HostCrashPolicy).        *)
-(* Code refs (path:line at 38df710e):                                       *)
+(* Code refs (path:line at aa7cd518):                                       *)
 (*   SUP  = apps/desktop/src/deepwidgets-supervisor.ts                      *)
 (*   POL  = apps/desktop/src/deepwidgets-crash-policy.ts                    *)
 (*   ISO  = deepwidgets/widgets/src/isolation.ts                            *)
@@ -24,7 +24,8 @@ CONSTANTS
   MaxHash,    \* bound on package-hash versions per agent widget
   T,          \* watchdog threshold, in poll steps (WD:25 WATCHDOG_THRESHOLD_MS)
   Q,          \* provisional point, in poll steps (WDW:166 thresholdMs / 4)
-  WIN         \* crash window, in ticks (POL:12 CRASH_WINDOW_MS)
+  WIN,        \* crash window, in ticks (POL:12 CRASH_WINDOW_MS)
+  Mutant      \* "none", or one broken variant of the code (see `Mutants` below)
 
 Widgets == Agents \cup {Sample}
 None == "none"   \* no widget row: record row null, empty slot, host code
@@ -108,7 +109,7 @@ IsolationStart ==
   /\ host.phase = "spawned"
   /\ LET c == crash
          applyC == c # NoRec /\ ~c.applied                                \* ISO:185-186
-         q1 == IF applyC /\ c.row # None THEN [quar EXCEPT ![c.row] = QEntry(c, "crash")] ELSE quar
+         q1 == IF applyC /\ c.row # None /\ Mutant # "no_quarantine" THEN [quar EXCEPT ![c.row] = QEntry(c, "crash")] ELSE quar
          c1 == IF applyC THEN [c EXCEPT !.applied = TRUE] ELSE c          \* ISO:183
          p == prov
          applyP == p # NoRec /\ ~p.applied /\ p.pid # host.pid           \* ISO:192-193
@@ -130,7 +131,7 @@ IsolationStart ==
   /\ host' = [host EXCEPT !.phase = "booting"]
   /\ UNCHANGED <<supVars, nextPid, run, slot, beat, stall, provAt, registered, hash>>
 
-\* The Host sends 'ready'; Electron main calls supervisor.ready() (SUP:142, main.ts:575).
+\* The Host sends 'ready'; Electron main calls supervisor.ready() (SUP:142, main.ts:630).
 HostReady ==
   /\ host.phase = "booting" /\ run = None
   /\ host' = [host EXCEPT !.phase = "ready"]
@@ -179,7 +180,7 @@ OwnProv == prov # NoRec /\ prov.pid = host.pid /\ ~prov.applied
 PollBeat ==
   /\ Started /\ beat
   /\ beat' = FALSE /\ stall' = 0 /\ provAt' = FALSE
-  /\ prov' = IF provAt /\ OwnProv THEN NoRec ELSE prov
+  /\ prov' = IF provAt /\ OwnProv /\ Mutant # "keep_prov" THEN NoRec ELSE prov
   /\ UNCHANGED <<supVars, host, nextPid, run, slot, registered, loaded, crash, quar, hash, ghostQ>>
 
 \* WDW:165-180: no beat while code runs. At Q steps, a provisional record that
@@ -241,8 +242,8 @@ OtherExit ==
   /\ Die("kill")
   /\ UNCHANGED <<supVars, nextPid, registered, loaded, quar, hash, ghostQ>>
 
-\* Boot fails: main() rejects and sends IPC 'fatal' first (apps/desktop-host/src/index.ts:150-160);
-\* that failure carries no hostPid (HP:229, SUP:47-50).
+\* Boot fails: main() rejects and sends IPC 'fatal' first (apps/desktop-host/src/index.ts:154-166);
+\* that failure carries no hostPid (HP:254, SUP:47-50).
 BootFail ==
   /\ host.phase \in {"spawned", "booting"} /\ run = None
   /\ crash' = Mark(crash, "bootfail") /\ prov' = Mark(prov, "bootfail")
@@ -256,13 +257,13 @@ HostFails ==
   /\ host.phase = "dead"
   /\ LET pid == IF host.death = "bootfail" THEN 0 ELSE host.pid            \* SUP:47-50
          aborted == host.death = "abort"                                  \* SUP:71-79
-         own == pid # 0 /\ crash # NoRec /\ crash.pid = pid               \* SUP:93
+         own == pid # 0 /\ crash # NoRec /\ (crash.pid = pid \/ Mutant = "no_pid_check")   \* SUP:93
          crow == IF own /\ crash.row # None /\ ~crash.applied THEN crash.row ELSE None   \* SUP:58-63
-         prow == IF ~own /\ pid # 0 /\ prov # NoRec /\ prov.pid = pid /\ ~prov.applied /\ prov.row # None
+         prow == IF ~own /\ pid # 0 /\ prov # NoRec /\ (prov.pid = pid \/ Mutant = "no_pid_check") /\ ~prov.applied /\ prov.row # None
                  THEN prov.row ELSE None                                  \* SUP:95
          discard == prow # None /\ ~aborted                               \* SUP:96
          row == IF own THEN crow ELSE IF discard THEN None ELSE prow
-         times == IF row = None THEN policy \cup {0} ELSE policy          \* POL:40-41
+         times == IF row = None \/ Mutant = "no_blame_skip" THEN policy \cup {0} ELSE policy   \* POL:40-41
          n == Cardinality(times)
          u1 == IF row = None THEN unbl \cup {0} ELSE unbl
          dec == [blamed |-> row # None,
@@ -272,16 +273,16 @@ HostFails ==
                  death |-> host.death,
                  added |-> times # policy]
      IN IF ~armed
-          THEN \* SUP:153: not armed -> DSH fatal dialog (main.ts:576); nothing is discarded
+          THEN \* SUP:153: not armed -> DSH fatal dialog (main.ts:631); nothing is discarded
                /\ sup' = "fatal" /\ host' = NoHost
                /\ UNCHANGED <<armed, safeMode, timer, policy, launches, unbl, lastCount, last, prov>>
           ELSE /\ prov' = IF discard THEN NoRec ELSE prov                 \* SUP:36-44,159
                /\ policy' = times /\ unbl' = u1 /\ lastCount' = Cardinality(u1) /\ last' = dec
                /\ host' = NoHost
-               /\ IF n >= 4                                               \* POL:43 GIVE_UP_AFTER
-                    THEN sup' = "gaveUp" /\ timer' = -1 /\ UNCHANGED safeMode   \* SUP:161-164,187-192
+               /\ IF n >= (IF Mutant = "give_up_late" THEN 5 ELSE 4)     \* POL:43 GIVE_UP_AFTER
+                    THEN sup' = "gaveUp" /\ timer' = (IF Mutant = "no_dispose" THEN 1 ELSE -1) /\ UNCHANGED safeMode   \* SUP:161-164,187-192
                     ELSE /\ sup' = sup
-                         /\ safeMode' = (n >= 2)                          \* POL:48 SAFE_MODE_AFTER
+                         /\ safeMode' = (IF Mutant = "safe_off_by_one" THEN n > 2 ELSE n >= 2)   \* POL:48 SAFE_MODE_AFTER
                          /\ timer' = IF row = None THEN Backoff[Min(n, 3)] ELSE Backoff[1]  \* POL:47
                /\ UNCHANGED <<armed, launches>>
   /\ UNCHANGED <<nextPid, mainVars, crash, quar, hash, ghostQ>>
@@ -296,7 +297,7 @@ LongQuiet ==
                  crash, prov, quar, hash, ghostQ>>
 
 \* SUP:170-182 the timer fires after its delay (the crashes age by it): start a
-\* new Host with the safe-mode env (main.ts:499).
+\* new Host with the safe-mode env (main.ts:549).
 Restart ==
   /\ sup = "run" /\ host = NoHost /\ timer > 0 /\ nextPid <= MaxHosts
   /\ NewHost(nextPid, safeMode)
@@ -340,46 +341,58 @@ Next ==
 Spec == Init /\ [][Next]_vars
 
 (***************************************************************************)
+(* Mutants. Each value of Mutant breaks the code like one code mistake, and *)
+(* its config in cfg/mut/ must break one rule:                              *)
+(*   no_blame_skip    a blamed crash counts       -> BlamedCrashNeverCounts *)
+(*   safe_off_by_one  safe mode after 3, not 2    -> SafeModeAfterTwo       *)
+(*   give_up_late     give up after 5, not 4      -> GiveUpAtFour           *)
+(*   no_dispose       restart timer after give-up -> NoRestartAfterGiveUp   *)
+(*   no_quarantine    the crash record is ignored -> QuarantinedNeverRuns   *)
+(*   no_pid_check     no pid match in the blame   -> RecordOnlyBlamesItsHost*)
+(*   keep_prov        the beat keeps provisional  -> ProvisionalGoneAfterBeat *)
+(***************************************************************************)
+
+(***************************************************************************)
 (* Rules.                                                                   *)
 (***************************************************************************)
-\* rule 1 (SPEC:36; SUP:4,156; POL:3-4,35-36): a blamed crash never counts.
+\* BlamedCrashNeverCounts (SPEC:36; SUP:4,156; POL:3-4,35-36): a blamed crash never counts.
 BlamedCrashNeverCounts == last.blamed => ~last.added
 
-\* rule 2a (SPEC:40; POL:13-14): 2 unblamed crashes in the window start safe mode,
-\* and the next Host starts in that mode (main.ts:499, IDX:504).
+\* SafeModeAfterTwo (SPEC:40; POL:13-14): 2 unblamed crashes in the window start safe mode,
+\* and the next Host starts in that mode (main.ts:549, IDX:504).
 SafeModeAfterTwo ==
   /\ (sup = "run" /\ last # NoDecision) => (safeMode <=> lastCount >= 2)
   /\ (Alive /\ sup = "run") => (host.safe <=> safeMode)
-\* rule 2b (SPEC:40; POL:15-16): 4 unblamed crashes in the window give up.
+\* GiveUpAtFour (SPEC:40; POL:15-16): 4 unblamed crashes in the window give up.
 GiveUpAtFour == (lastCount >= 4) <=> (sup = "gaveUp")
-\* rule 2c (SUP:186-192): the supervisor never restarts the Host after the give-up.
+\* NoRestartAfterGiveUp (SUP:186-192): the supervisor never restarts the Host after the give-up.
 NoRestartAfterGiveUp == sup = "gaveUp" => (host = NoHost /\ timer = -1)
 
-\* rule 3a (SPEC:36-38; ISO:8-9): a quarantined agent widget never runs until its hash changes.
+\* QuarantinedNeverRuns (SPEC:36-38; ISO:8-9): a quarantined agent widget never runs until its hash changes.
 QuarantinedNeverRuns ==
   \A w \in Agents : (run = w \/ loaded[w] = "live") => ~(ghostQ[w] # -1 /\ ghostQ[w] = hash[w])
-\* rule 3b (SPEC:38; ISO:198): after a hash change, it can run again (it is not held).
+\* HashChangeLifts (SPEC:38; ISO:198): after a hash change, it can run again (it is not held).
 HashChangeLifts ==
   \A w \in Agents : (Started /\ loaded[w] = "held") => ghostQ[w] = hash[w]
 
-\* rule 4 (brief; SPEC:40 "each agent widget is off"; IDX:40-45): the built-in sample
+\* SampleNeverQuarantined and SampleLiveInSafeMode (brief; SPEC:40 "each agent widget is off"; IDX:40-45): the built-in sample
 \* is never quarantined, and it is live in safe mode.
 SampleNeverQuarantined == quar[Sample] = NoQ
 SampleLiveInSafeMode == (Started /\ host.safe) => loaded[Sample] = "live"
 
-\* rule 5 (SUP:52-55,65-66; ISO:8): a record blames only the crash of the Host that wrote it.
+\* RecordOnlyBlamesItsHost (SUP:52-55,65-66; ISO:8): a record blames only the crash of the Host that wrote it.
 RecordOnlyBlamesItsHost == last.blamed => (last.pid # 0 /\ last.srcPid = last.pid)
 
-\* rule 6 (SUP:81-86; ISO:187-191): a provisional record blames only after an abort.
+\* ProvisionalOnlyOnAbort (SUP:81-86; ISO:187-191): a provisional record blames only after an abort.
 ProvisionalOnlyOnAbort ==
   /\ last.src = "prov" => last.death = "abort"
   /\ \A w \in Widgets : quar[w].src = "prov" => quar[w].death = "abort"
 
-\* rule 7 (SPEC:16-20,28): a widget whose code did not run when its Host died is never quarantined.
+\* InnocentNeverQuarantined (SPEC:16-20,28): a widget whose code did not run when its Host died is never quarantined.
 InnocentNeverQuarantined ==
   \A w \in Widgets : quar[w] # NoQ => quar[w].running = w
 
-\* extra (SPEC:28; WDW:5-6,150-157): the provisional record is gone once the heartbeat came back.
+\* ProvisionalGoneAfterBeat (SPEC:28; WDW:5-6,150-157): the provisional record is gone once the heartbeat came back.
 ProvisionalGoneAfterBeat == (Started /\ ~provAt) => ~OwnProv
 
 TypeOK ==
