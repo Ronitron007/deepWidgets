@@ -152,7 +152,9 @@ async function installBundle(inspectPort, folder) {
         if (this.length !== 1) throw new Error("Loader instances " + this.length);
         const manager = this[0].ctx?.get?.("pluginManager");
         if (manager === undefined) throw new Error("no pluginManager on the Loader ctx");
-        return await manager.installBundle(spec);
+        // The inspector call can inherit the hmr transaction store of host work in flight; leave it, as hmr.watchConfig does.
+        const hmr = this[0].ctx?.get?.("hmr");
+        return await (hmr === undefined ? manager.installBundle(spec) : hmr.executing.exit(() => manager.installBundle(spec)));
       }`,
     })
     return reply.result.value
