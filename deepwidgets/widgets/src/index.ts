@@ -5,9 +5,12 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomUUID } from 'node:crypto'
+import { realpathSync } from 'node:fs'
+import { join, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Fiber, Plugin } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
@@ -25,6 +28,72 @@ const ACTION = /^[A-Za-z][A-Za-z0-9_]{0,62}$/
 const DEFAULT_TIMEOUT_MS = 5_000
 const CHANGE_LOG_SIZE = 1_000
 const DEFAULT_REQUEST_TTL_MS = 10 * 60_000
+
+/**
+ * The Host environment key of safe mode (`widget_phase2.isolation.supervisor`). Electron main sets it
+ * to `1` for a Host start after 2 crashes in 60 s.
+ */
+export const SAFE_MODE_ENV = 'DEEPWIDGETS_SAFE_MODE'
+
+/**
+ * The widget bundles that ship in this repository, by their package folder in the repository folder `deepwidgets/`.
+ * In safe mode, only a row whose module file is in one of these folders can register a widget. Each other widget
+ * is off for that Host start. The check uses the real path of the module that the Loader loaded, not the module
+ * name: an installed bundle can take the package name of a built-in bundle.
+ */
+export const BUILT_IN_WIDGET_FOLDERS: readonly string[] = ['widget-sample']
+
+/** This file is `deepwidgets/widgets/lib/index.js` (or `src/index.ts`), so `../..` is the repository folder `deepwidgets/`. */
+const BUILT_IN_ROOTS = BUILT_IN_WIDGET_FOLDERS.map((folder) => join(realpathSync(fileURLToPath(new URL('../..', import.meta.url))), folder) + sep)
+
+/** The part of the Loader service that {@link isBuiltInRow} reads. */
+interface LoaderView {
+  readonly internal?: {
+    readonly loadCache: {
+      keys(): Iterable<string>
+      get(url: string): { readonly module?: { getNamespace(): unknown } } | undefined
+    }
+  }
+  unwrapExports(exports: unknown): unknown
+}
+
+/** @returns whether `url` is a file in a folder of {@link BUILT_IN_WIDGET_FOLDERS}, after links resolve. */
+function isBuiltInFile(url: string): boolean {
+  if (!url.startsWith('file:')) return false
+  let path: string
+  try {
+    path = realpathSync(fileURLToPath(url))
+  } catch {
+    return false
+  }
+  return BUILT_IN_ROOTS.some((root) => path.startsWith(root))
+}
+
+/**
+ * Find the modules of the Loader cache whose plugin is the plugin of `fiber`, as the hmr plugin finds loaded
+ * modules (`EntryNamespaces.getModuleUrls`).
+ * @returns true when `fiber` is a Loader row and each module that gives its plugin is a built-in file.
+ */
+function isBuiltInRow(ctx: Context, fiber: Fiber): boolean {
+  const callback = fiber.runtime?.callback
+  const loader = ctx.get('loader') as LoaderView | undefined
+  const cache = loader?.internal?.loadCache
+  if ((fiber as { entry?: unknown }).entry === undefined || callback === undefined || loader === undefined || cache === undefined) return false
+  let found = false
+  for (const url of cache.keys()) {
+    let plugin: unknown
+    try {
+      plugin = loader.unwrapExports(cache.get(url)?.module?.getNamespace())
+    } catch {
+      // Node also caches modules that are not evaluated yet. Their namespace is not available.
+      continue
+    }
+    if (plugin === undefined || plugin === null || ctx.registry.resolve(plugin as Plugin) !== callback) continue
+    if (!isBuiltInFile(url)) return false
+    found = true
+  }
+  return found
+}
 const PING_MS = 15_000
 const encoder = new TextEncoder()
 
@@ -39,6 +108,7 @@ export const WIDGET_ERROR_STATUS = {
   'idempotency-conflict': 409,
   'conflict': 409,
   'bad-request': 400,
+  'safe-mode': 503,
 } as const
 
 /** One error code of the action contract. */
@@ -111,6 +181,8 @@ export interface WidgetSummary {
   title: string
   rev: number
   programRev: number
+  /** Present only when the widget is off. A widget that is off has no routes and no window. */
+  off?: { reason: 'safe-mode', message: string }
 }
 
 /** The answer of `call()`. */
@@ -176,7 +248,11 @@ interface Registration {
 
 /** The internal side of the service, made by `apply`. */
 interface Runtime {
-  add(registration: Registration): () => Promise<void>
+  /**
+   * @param bundle - the module name of the Loader row that registers, when the caller has one.
+   * @param builtIn - whether the code of that row is a built-in bundle. Safe mode calls it.
+   */
+  add(registration: Registration, bundle: string | undefined, builtIn: () => boolean): () => Promise<void>
   list(): WidgetSummary[]
   describe(slug: string): WidgetDescription
   get(slug: string): { rev: number, data: unknown }
@@ -230,12 +306,17 @@ export class WidgetsService extends Service {
    * @param def - the widget definition.
    * @returns the disposer that ends the registration.
    * @throws {WidgetError} `conflict` when the slug has a live registration.
+   * @throws {WidgetError} `safe-mode` in safe mode, when the module of the row is not in {@link BUILT_IN_WIDGET_FOLDERS}.
    * @throws {TypeError} when the definition is malformed.
    */
   register<S, const T extends readonly unknown[]>(def: WidgetDef<S, T>): () => Promise<void> {
     const registration = buildRegistration(def)
     const runtime = this.runtime
-    return this.ctx.effect(() => runtime.add(registration), `widgets: ${registration.slug}`)
+    // The Loader adds `entry` to the fiber of each row. A caller without a row is not built in.
+    const fiber = this.ctx.fiber
+    const bundle = (fiber as { entry?: { options: { name?: unknown } } }).entry?.options.name
+    const builtIn = (): boolean => isBuiltInRow(this.ctx, fiber)
+    return this.ctx.effect(() => runtime.add(registration, typeof bundle === 'string' ? bundle : undefined, builtIn), `widgets: ${registration.slug}`)
   }
 
   /** @returns `{ slug, title, rev, programRev }` for each live widget. */
@@ -404,6 +485,9 @@ export const Config: Schema<Config> = Schema.object({
 export function apply(ctx: Context, config: Config): void {
   const requestTtlMs = config.requestTtlMs
   const widgets = new Map<string, Entry>()
+  const safeMode = process.env[SAFE_MODE_ENV] === '1'
+  /** The widgets that safe mode refused in this Host start, by slug. */
+  const off = new Map<string, { title: string, message: string }>()
   const events = new Set<OpenStream>()
   const slot = new AsyncLocalStorage<Slot>()
   const inflight = new Map<string, { hash: string, promise: Promise<CallOutcome> }>()
@@ -766,8 +850,14 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
-  function add(registration: Registration): () => Promise<void> {
+  function add(registration: Registration, bundle: string | undefined, builtIn: () => boolean): () => Promise<void> {
     const { slug } = registration
+    if (safeMode && !builtIn()) {
+      const message = `safe mode: the widget ${slug} of ${bundle ?? 'an unknown bundle'} is off for this Host start; only built-in widgets run`
+      off.set(slug, { title: registration.title, message })
+      ctx.logger.warn(`widgets: ${message}`)
+      throw new WidgetError('safe-mode', message)
+    }
     if (widgets.has(slug)) throw new WidgetError('conflict', `the slug ${slug} already has a live registration`)
     for (const action of registration.actions.values()) {
       longestTimeoutMs = Math.max(longestTimeoutMs, action.timeoutMs ?? registration.timeoutMs ?? DEFAULT_TIMEOUT_MS)
@@ -808,8 +898,22 @@ export function apply(ctx: Context, config: Config): void {
       programRev: domain?.table('program').get(entry.slug)?.rev ?? 0,
     }
   }
-  const list = (): WidgetSummary[] => [...widgets.values()].map(summary)
+  function offSummary(slug: string, item: { title: string, message: string }): WidgetSummary {
+    return {
+      slug,
+      title: item.title,
+      rev: stateOf(slug)?.rev ?? 0,
+      programRev: domain?.table('program').get(slug)?.rev ?? 0,
+      off: { reason: 'safe-mode', message: item.message },
+    }
+  }
+  const list = (): WidgetSummary[] => [
+    ...[...widgets.values()].map(summary),
+    ...[...off].filter(([slug]) => !widgets.has(slug)).map(([slug, item]) => offSummary(slug, item)),
+  ]
   function describe(slug: string): WidgetDescription {
+    const refused = off.get(slug)
+    if (refused !== undefined && !widgets.has(slug)) return { ...offSummary(slug, refused), actions: [] }
     const entry = liveEntry(slug)
     return {
       ...summary(entry),

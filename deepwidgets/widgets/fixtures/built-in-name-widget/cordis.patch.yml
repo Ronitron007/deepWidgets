@@ -1,0 +1,3 @@
+- insert:
+    - id: deepwidgets-widget-built-in-name-test
+      name: '@deepwidgets/widget-sample'
