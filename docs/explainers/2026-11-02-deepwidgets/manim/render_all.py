@@ -87,7 +87,8 @@ def render_one(out_name, module, cls, frames) -> dict:
     report = R / "reports" / f"{out_name}.json"
     if report.exists():
         report.unlink()
-    cmd = [str(VENV_MANIM), "render", "-qm", "--media_dir", str(media), str(HERE / module), cls]
+    # cached partial clips can survive a timing change and make a scene run long
+    cmd = [str(VENV_MANIM), "render", "-qm", "--disable_caching", "--media_dir", str(media), str(HERE / module), cls]
     t0 = time.time()
     with log.open("w") as fh:
         rc = subprocess.run(cmd, cwd=str(HERE), stdout=fh, stderr=subprocess.STDOUT,
