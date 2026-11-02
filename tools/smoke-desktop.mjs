@@ -685,7 +685,10 @@ async function setHostPlugin(moduleName, enabled, deadline) {
         if (manager === undefined || typeof manager.setPluginEnabled !== "function") throw new Error("no pluginManager on Loader ctx");
         const rows = (await manager.listPlugins()).filter((row) => row.moduleName === moduleName);
         if (rows.length !== 1) throw new Error("plugin rows for " + moduleName + ": " + rows.length);
-        return await manager.setPluginEnabled(rows[0].entryId, enabled);
+        // The inspector call can inherit the hmr transaction store of host work in flight; leave it, as hmr.watchConfig does.
+        const hmr = loader.ctx?.get?.("hmr");
+        const change = () => manager.setPluginEnabled(rows[0].entryId, enabled);
+        return await (hmr === undefined ? change() : hmr.executing.exit(change));
       }`,
     })
     if (call?.exceptionDetails) {
@@ -1024,7 +1027,9 @@ async function installBundle(folder, deadline) {
         if (this.length !== 1) throw new Error("Loader instances " + this.length);
         const manager = this[0].ctx?.get?.("pluginManager") ?? this[0].ctx?.pluginManager;
         if (manager === undefined || typeof manager.installBundle !== "function") throw new Error("no pluginManager on Loader ctx");
-        return await manager.installBundle(spec);
+        // The inspector call can inherit the hmr transaction store of host work in flight; leave it, as hmr.watchConfig does.
+        const hmr = this[0].ctx?.get?.("hmr");
+        return await (hmr === undefined ? manager.installBundle(spec) : hmr.executing.exit(() => manager.installBundle(spec)));
       }`,
     })
     if (call?.exceptionDetails) throw new Error(String(call.exceptionDetails.exception?.description ?? call.exceptionDetails.text ?? 'install failed'))
@@ -1796,7 +1801,9 @@ async function checkInstall(deadline) {
         if (manager === undefined || typeof manager.installBundle !== "function") {
           throw new Error("no pluginManager on Loader ctx");
         }
-        const install = await manager.installBundle(spec);
+        // The inspector call can inherit the hmr transaction store of host work in flight; leave it, as hmr.watchConfig does.
+        const hmr = loader.ctx?.get?.("hmr");
+        const install = await (hmr === undefined ? manager.installBundle(spec) : hmr.executing.exit(() => manager.installBundle(spec)));
         const marker = loader.ctx?.get?.("widgetRowsInstallMarker");
         return { install, marker: marker === undefined ? null : marker };
       }`,
