@@ -20,9 +20,13 @@ URL=https://github.com/deepseek-ai/deepseek-harness
 mkdir -p "$OUT"
 [ -d "$REPO/.git" ] || git clone --quiet "$URL" "$REPO"
 git -C "$REPO" fetch --quiet --tags origin
-git -C "$REPO" remote get-url fork >/dev/null 2>&1 || git -C "$REPO" remote add fork "$FORK"
+# Point the fork remote at this repository on every run, so a moved or other checkout never reads a stale path.
+git -C "$REPO" remote set-url fork "$FORK" 2>/dev/null || git -C "$REPO" remote add fork "$FORK"
 git -C "$REPO" fetch --quiet fork "+$FORK_REF:refs/fork/head"
-HEAD=$(git -C "$REPO" rev-parse "origin/$HEAD" 2>/dev/null || git -C "$REPO" rev-parse "$HEAD")
+# upstream-head: a branch of origin, a tag, or an SHA.
+HEAD_SHA=$(git -C "$REPO" rev-parse -q --verify "refs/remotes/origin/$HEAD^{commit}" || git -C "$REPO" rev-parse -q --verify "$HEAD^{commit}") \
+  || { echo "dsh-upstream-check: unknown upstream head $HEAD" >&2; exit 1; }
+HEAD=$HEAD_SHA
 # 1. Kept rows to package folders, read from the fork tree at FORK_REF.
 TREE=$(mktemp -d); trap 'rm -rf "$TREE"' EXIT
 git -C "$REPO" archive refs/fork/head packages/bundle deepwidgets | tar -x -C "$TREE"
