@@ -40,7 +40,7 @@ Code without a comment can still be off. A plugin row is off when a patch layer 
 
 | Path | Content |
 |---|---|
-| `docs/specs/` | `fork-trim.md` (`fork_trim`), `floating-widget.md` (`floating_widget`), `ts-move.md` (`ts_move`), `widget-rows.md` (`widget_rows`), `widget-mvp.md` (`widget_mvp`), `widget-phase2.md` (`widget_phase2`), `handoff.md` (`handoff`, proposed), `handoff-evidence.md` (`handoff_evidence`) |
+| `docs/specs/` | `fork-trim.md` (`fork_trim`), `floating-widget.md` (`floating_widget`), `ts-move.md` (`ts_move`), `widget-rows.md` (`widget_rows`), `widget-mvp.md` (`widget_mvp`), `widget-phase2.md` (`widget_phase2`), `handoff.md` (`handoff`, proposed), `handoff-evidence.md` (`handoff_evidence`), `widget-fv.md` (`widget_fv`) |
 | `docs/explore/widget-system/` | The widget decisions (`where-we-stand.md`, `standing.decided`), the checked facts, and the open points |
 | `docs/plans/` | The plans of the specs. Each plan unit is one PR. |
 | `docs/canvas/` | JSON Canvas boards that show how a system works, such as `floating-widget-processes.canvas`. |
@@ -56,11 +56,12 @@ The root `AGENTS.md` and 31 nested `CLAUDE.md` and `AGENTS.md` files come from D
 
 ## Skills `head.skills`
 
-The repository has 22 skills: 21 from DSH and the `cordis` skill from deepWidgets. A skill can load from its description alone. Thus check this table before you follow a skill.
+The repository has 23 skills: 21 from DSH, and the `cordis` and `widget-state-models` skills from deepWidgets. A skill can load from its description alone. Thus check this table before you follow a skill.
 
 | Use | Skills |
 |---|---|
 | Always, for Cordis work | `cordis`, `dsh-error-handling` |
+| When you change a file that the widget state models cover, or fix a finding of `widget_fv` | `widget-state-models` |
 | Only when you review Cordis plugin code | `cordis-styling-nitpicking` |
 | Only when you write comments or JSDoc in DSH code | `dsh-prose-standard` |
 | Only when you change DSH client UI packages | `dsh-client-ui-ux`, `dsh-responsive-ui` |
