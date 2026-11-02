@@ -6,19 +6,6 @@
 declare module 'deepwidgets:widget' {
   import type { z } from 'zod'
 
-  /**
-   * The web `AbortSignal` of a call. The widget code has no `dom` lib, so this file declares the
-   * part that a handler uses.
-   */
-  export interface AbortSignal {
-    readonly aborted: boolean
-    readonly reason: unknown
-    /** Throw the abort reason when the signal is aborted. */
-    throwIfAborted(): void
-    addEventListener(type: 'abort', listener: () => void, options?: { once?: boolean }): void
-    removeEventListener(type: 'abort', listener: () => void): void
-  }
-
   /** What a handler gets as `w`. */
   export interface WidgetScope<S> {
     /** The current state. */

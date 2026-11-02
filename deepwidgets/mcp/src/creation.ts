@@ -192,9 +192,9 @@ async function writeConfigs(staging: string): Promise<{ tsconfig: string, oxlint
       noEmit: true,
       skipLibCheck: true,
       types: [],
-      // No `dom` lib: it declares `globalThis.setTimeout` and the other host timers. The widget type
-      // file declares the few web types that the widget API uses.
-      lib: ['es2024'],
+      // The `dom` lib types fetch, URL, console, and the other web globals. It also types
+      // `globalThis.setTimeout`; the rule `no-restricted-properties` refuses that.
+      lib: ['es2024', 'dom'],
       paths: { zod: [t.zod] },
     },
     files: [t.widgetTypes],
@@ -202,6 +202,12 @@ async function writeConfigs(staging: string): Promise<{ tsconfig: string, oxlint
   }, null, 2))
   const oxlintrc = join(staging, 'oxlintrc.json')
   const timer = (name: string, use: string): { name: string, message: string } => ({ name, message: `a raw ${name} is not owned by the widget, so it runs on after the widget stops. Use ${use}.` })
+  const timers = [
+    timer('setTimeout', 'ctx.timeout(callback, ms)'),
+    timer('setInterval', 'ctx.interval(callback, ms)'),
+    timer('setImmediate', 'ctx.timeout(callback, 0)'),
+    timer('queueMicrotask', 'ctx.timeout(callback, 0)'),
+  ]
   await writeFile(oxlintrc, JSON.stringify({
     plugins: ['typescript'],
     categories: { correctness: 'off' },
@@ -209,12 +215,9 @@ async function writeConfigs(staging: string): Promise<{ tsconfig: string, oxlint
     rules: {
       'typescript/no-floating-promises': 'error',
       'typescript/no-misused-promises': 'error',
-      'no-restricted-globals': ['error',
-        timer('setTimeout', 'ctx.timeout(callback, ms)'),
-        timer('setInterval', 'ctx.interval(callback, ms)'),
-        timer('setImmediate', 'ctx.timeout(callback, 0)'),
-        timer('queueMicrotask', 'ctx.timeout(callback, 0)'),
-      ],
+      'no-restricted-globals': ['error', ...timers],
+      // A property of any object: `globalThis.setTimeout`, `window.setTimeout`, `self.setTimeout`, an alias, and destructuring.
+      'no-restricted-properties': ['error', ...timers.map(({ name, message }) => ({ property: name, message }))],
     },
   }, null, 2))
   return { tsconfig, oxlintrc }

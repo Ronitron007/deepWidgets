@@ -9,8 +9,9 @@
  * - a second install of the slug replaces the bundle, and the state stays;
  * - widget_reload picks up an edited file;
  * - a reinstall that passes the gates and fails in the host is rolled back: the old bundle and the state stay;
- * - a bundle with a raw setTimeout, a globalThis.setTimeout, or an endless loop (also one with a
- *   break of a nested switch, in a .mts file) is refused by the lint gate;
+ * - a bundle with a raw setTimeout, a globalThis., window., or self. timer, or an endless loop (also
+ *   one with a break of a nested switch, in a .mts file) is refused by the lint gate;
+ * - a bundle that calls fetch and console.log passes the gates;
  * - a bundle whose apply throws is refused by the test run gate;
  * - widget_remove removes the widget, and a new install gets the old state back and sets its new seed program;
  * - a host restart loads the agent widget again.
@@ -208,12 +209,21 @@ async function hostPart() {
     const timerError = timer.body?.error
     check('a bundle with a raw setTimeout is refused by the lint gate', timer.isError && timerError?.code === 'gate-failed' && timerError?.gate === 'lint' && timerError?.diagnostics?.some((line) => line.includes('setTimeout')) && typeof timerError?.nextStep === 'string',
       JSON.stringify(timerError))
-    const diagnosticPaths = (timerError?.diagnostics ?? []).filter((line) => /^\S+:\d+:\d+: /.test(line))
-    check('the gate diagnostics name the files relative to the source folder', diagnosticPaths.length > 0 && diagnosticPaths.every((line) => line.startsWith('src/')), JSON.stringify(timerError?.diagnostics))
+    // A type error: tsgolint prints it with the real path of the staging folder.
+    const typed = await call('widget_install', { dir: writeWidget('create-type', files, (text) => addToApply("const wrong: number = 'text'\n  ctx.logger.info(wrong)")(text).replaceAll(`'${SLUG}'`, "'create-type'")) })
+    const typeLines = (typed.body?.error?.diagnostics ?? []).filter((line) => /^\S+:\d+:\d+: /.test(line))
+    check('the gate diagnostics name the files relative to the source folder', typed.body?.error?.gate === 'lint' && typeLines.some((line) => line.includes('TS2322')) && typeLines.every((line) => line.startsWith('src/')), JSON.stringify(typed.body?.error?.diagnostics))
 
-    const globalTimer = await call('widget_install', { dir: writeWidget('create-global-timer', files, (text) => addToApply("globalThis.setTimeout(() => { ctx.logger.info('tick') }, 10)")(text).replaceAll(`'${SLUG}'`, "'create-global-timer'")) })
+    const globalTimer = await call('widget_install', { dir: writeWidget('create-global-timer', files, (text) => addToApply("globalThis.setTimeout(() => { ctx.logger.info('tick') }, 10)\n  window.setInterval(() => { ctx.logger.info('tick') }, 10)\n  self.setTimeout(() => { ctx.logger.info('tick') }, 10)")(text).replaceAll(`'${SLUG}'`, "'create-global-timer'")) })
     const globalError = globalTimer.body?.error
-    check('a bundle with globalThis.setTimeout is refused by the lint gate', globalTimer.isError && globalError?.gate === 'lint' && globalError?.diagnostics?.some((line) => line.includes('globalThis')), JSON.stringify(globalError))
+    const banned = (globalError?.diagnostics ?? []).filter((line) => line.includes('no-restricted-properties'))
+    check('a bundle with globalThis.setTimeout, window.setInterval, and self.setTimeout is refused by the lint gate', globalTimer.isError && globalError?.gate === 'lint' && banned.length === 3, JSON.stringify(globalError))
+
+    // The web globals stay typed: fetch (a closed loopback port, so no network) and console.
+    const webDir = writeWidget('create-web', files, (text) => addAction("{ name: 'load', kind: 'query', handler: async () => { const answer = await fetch(new URL('http://127.0.0.1:9/')).catch(() => undefined); return answer?.status ?? 0 } }")(addToApply("console.log('create-web', new TextEncoder().encode('a').length)")(text)).replaceAll(`'${SLUG}'`, "'create-web'"))
+    const web = await call('widget_install', { dir: webDir })
+    check('a bundle that calls fetch and console.log passes the gates', !web.isError && web.body?.application === 'applied', JSON.stringify(web.body?.error ?? web.body?.gates))
+    if (!web.isError) await call('widget_remove', { slug: 'create-web' })
 
     const looper = await call('widget_install', { dir: writeWidget('create-loop', files, (text) => addToApply('let spins = 0\n  while (true) { spins += 1 }')(text).replaceAll(`'${SLUG}'`, "'create-loop'")) })
     const loopError = looper.body?.error

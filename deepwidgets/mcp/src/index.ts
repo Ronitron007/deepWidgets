@@ -94,11 +94,12 @@ Steps:
 5. widget_remove removes the bundle. The state stays.
 
 Rules that the gates check:
-- No raw setTimeout, setInterval, setImmediate, or queueMicrotask. Use ctx.timeout and ctx.interval: they stop with the widget.
+- No raw setTimeout, setInterval, setImmediate, or queueMicrotask, also not as globalThis.setTimeout, window.setTimeout, or self.setTimeout. Use ctx.timeout and ctx.interval: they stop with the widget.
 - Await each promise, or end it with .catch(). An unhandled rejection ends the host.
 - No loop without an exit, such as while (true) with no break. A loop that blocks stops every widget.
 - apply must not throw. Each action is called once with {} (an action whose args schema refuses {} is not called), then timers run for 1.5 s. The heap limit is 256 MB.
 - Only zod and the types of deepwidgets:widget can be imported. Node built-in modules are not in the types.
+- The web globals are typed and work: fetch, Request, Response, Headers, URL, AbortController, TextEncoder, TextDecoder, and console. The code runs in the Node host, so window, document, and self do not exist at run time.
 
 The types of the widget API (import type { WidgetContext } from 'deepwidgets:widget'):
 
