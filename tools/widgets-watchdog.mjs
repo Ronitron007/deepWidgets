@@ -44,6 +44,12 @@ const isRow = (row, id) => typeof row === 'string' && (row === id || row.endsWit
 /** The cases to run. All cases when WIDGETS_WATCHDOG_CASES is not set. */
 const CASES = process.env.WIDGETS_WATCHDOG_CASES?.split(',').map((name) => name.trim()).filter((name) => name !== '')
 const runs = (name) => CASES === undefined || CASES.length === 0 || CASES.includes(name)
+const CASE_NAMES = ['parse', 'suspend', 'stall', 'spin', 'oom']
+const unknownCases = (CASES ?? []).filter((name) => !CASE_NAMES.includes(name))
+if (unknownCases.length > 0) {
+  console.log(`widgets-watchdog: fail: unknown case in WIDGETS_WATCHDOG_CASES: ${unknownCases.join(', ')} (known: ${CASE_NAMES.join(', ')})`)
+  process.exit(1)
+}
 /** The heap limit of the oom host, in MB. */
 const OOM_HEAP_MB = process.env.WIDGETS_WATCHDOG_OOM_HEAP_MB ?? '768'
 
@@ -345,7 +351,11 @@ async function main() {
       blamed = crashBlames ? 'crash.json' : provisionalBlames ? 'provisional.json' : undefined
       const detail = JSON.stringify({
         exit: exit === null ? 'alive after 30 s' : exit.signal ?? exit.code,
-        path: exit === null ? null : exit.signal === 'SIGKILL' && crash !== undefined ? 'stall-kill' : 'out-of-memory',
+        // The path from the observed end: the stall kill gives SIGKILL and a crash record, the out-of-memory abort
+        // gives SIGABRT and a provisional record. Any other end is `unknown`.
+        path: exit?.signal === 'SIGKILL' && crash !== undefined ? 'stall-kill'
+          : exit?.signal === 'SIGABRT' && provisional !== undefined ? 'out-of-memory'
+            : 'unknown',
         heapMb: OOM_HEAP_MB,
         crash: crash === undefined ? null : { row: crash.row, event: crash.event },
         provisional: provisional === undefined ? null : { row: provisional.row, event: provisional.event },
