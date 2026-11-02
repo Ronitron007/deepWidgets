@@ -8,11 +8,11 @@ Each term is defined in the narration at its first use. The scene name in bracke
 | widget | A small floating window that shows one view, for example a counter or a list, and the code behind it. [`cold_open`] |
 | agent | An outside AI program that talks to deepWidgets over MCP, for example Claude Code. [`cold_open`] |
 | operator | Rohan, the person who makes each project decision. [`trim_method`] |
-| DSH | DeepSeek Harness. An open-source desktop app (MIT license). deepWidgets is a fork of DSH commit `22ddee3`. [`dsh_fork`] |
+| DSH | DeepSeek Harness. An open-source app from DeepSeek that runs AI agents (MIT license), with a command-line app, a web app, and a desktop app. deepWidgets is a fork of DSH commit `22ddee3`. [`dsh_fork`] |
 | fork | A copy of another project that then changes on its own. Here, one squashed commit of DSH. [`dsh_fork`] |
-| workspace package | One package folder in the repository. The repository has 387. [`dsh_fork`] |
+| workspace package | One package folder in the repository. The repository has 394: 387 from DSH and 7 `deepwidgets/*` packages. [`dsh_fork`] |
 | Cordis | The plugin runtime that DSH uses. It loads plugins, gives them services, and stops them in order. [`cordis_context`] |
-| plugin | A module with an `apply(ctx)` function. Cordis runs `apply` when the plugin loads. [`cordis_context`] |
+| plugin | A module with an `apply(ctx, config)` function. Cordis runs `apply` when the plugin loads. [`cordis_context`] |
 | context (`ctx`) | The object that a plugin gets in `apply`. Through it, the plugin reads services and registers things it owns. [`cordis_context`] |
 | fiber | The live record of one loaded plugin. When the fiber ends, everything that the plugin registered ends with it. [`cordis_context`] |
 | service | A named object on the context, for example `ctx.widgets`. One plugin provides it, and other plugins use it. [`cordis_context`] |
@@ -59,7 +59,7 @@ Each term is defined in the narration at its first use. The scene name in bracke
 | TTL | Time to live. A `requests` record older than 10 minutes is void. [`idempotency`] |
 | change feed | The list of the last 1,000 changes, read with a cursor. [`change_feed`] |
 | cursor | A text `epoch:seq` that marks a point in the change feed. [`change_feed`] |
-| epoch | A random id of one host process. A cursor of another epoch gives `reset`. [`change_feed`] |
+| epoch | A random id of one start of the runtime. A cursor of another epoch gives `reset`. [`change_feed`] |
 | route | A URL path that the host answers. [`routes`] |
 | SSE (server-sent events) | A one-way HTTP stream of text frames from server to page. [`routes`] |
 | frame | One message on an SSE stream, for example `{ type: 'data', rev: 1 }`. [`routes`] |
@@ -73,7 +73,7 @@ Each term is defined in the narration at its first use. The scene name in bracke
 | `useTriggerAction` | The public OpenUI hook that the shell uses to run its queries again. [`shell_refresh`] |
 | `EventSource` | The browser object that reads an SSE stream. [`shell_reconnect`] |
 | backoff | A wait before a retry that grows after each failure. [`shell_reconnect`] |
-| `Response.error()` | A network-error answer. Electron main gives it for an `/api` request while the host is down. [`shell_reconnect`] |
+| `Response.error()` | A network-error answer. Electron main gives it for each forwarded request while the host is down. [`shell_reconnect`] |
 | panel window | Here: a window with no frame, always on top, on all Spaces, shown without focus. [`windows_manager`] |
 | Spaces | The macOS virtual desktops. [`windows_manager`] |
 | MCP | Model Context Protocol. A standard protocol that lets an AI agent call tools of a server. [`outline`] |
@@ -102,7 +102,7 @@ Each term is defined in the narration at its first use. The scene name in bracke
 | crash-only host | The design rule that a host with an uncaught error exits at once and starts again, and does not try to continue. [`isolation_why`] |
 | uncaught exception | An error that no code catches. [`isolation_why`] |
 | unhandled rejection | A failed promise that no code handles. [`isolation_why`] |
-| fail-loud | The DSH handler that reports a fatal error and stops the process. [`isolation_why`] |
+| fail-loud | The DSH handler that reports a fatal error and stops the process. [`claimer`] |
 | AsyncLocalStorage | A Node feature that keeps a value across timers, promises, and callbacks that one piece of code starts. [`blame_store`] |
 | blame | The name of the widget row that caused a crash. [`blame_store`] |
 | claimer | The runtime function that finds the blame, writes the crash record, and exits. [`claimer`] |
@@ -113,10 +113,10 @@ Each term is defined in the narration at its first use. The scene name in bracke
 | safe mode | A host start in which only built-in widgets run. [`safe_mode`] |
 | give-up | The point, 4 unblamed crashes in 60 seconds, at which Electron main stops and shows the fatal dialog. [`safe_mode`] |
 | built-in widget | A widget whose module file is in a listed repository folder. Today only `widget-sample`. [`safe_mode`] |
-| watchdog | A worker thread that kills a host that a loop holds. It is in PR #65, not merged. [`watchdog_open`] |
-| heartbeat | A counter that the main thread adds to on a timer. The watchdog reads it. [`watchdog_open`] |
-| worker thread | A second JavaScript thread in the same process. [`watchdog_open`] |
-| provisional record (`provisional.json`) | A crash record that the watchdog writes early in a stall, so an out-of-memory abort is blamed too. [`watchdog_open`] |
+| watchdog | A worker thread that kills a host that a loop holds. It came in PR #65, merged on 2026-11-02 (`7503af6c`). [`watchdog`] |
+| heartbeat | A counter that the main thread adds to on a timer. The watchdog reads it. [`watchdog`] |
+| worker thread | A second JavaScript thread in the same process. [`watchdog`] |
+| provisional record (`provisional.json`) | A crash record that the watchdog writes early in a stall, so an out-of-memory abort is blamed too. Electron main uses it only for an abort exit. [`watchdog`] |
 | smoke check | `tools/smoke-desktop.mjs`. It boots the real desktop app and checks it. [`checks_and_mutants`] |
 | mutant | A wrong change to the code that a check must catch. [`checks_and_mutants`] |
 | spike | A short experiment that proves a part before the real build. [`creation_overview`] |

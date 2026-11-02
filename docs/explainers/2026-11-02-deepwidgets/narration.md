@@ -4,7 +4,7 @@ This video explains deepWidgets, from the top down. deepWidgets puts small float
 
 Two kinds of users can change a widget. You can click a button in the window. An agent can also change it. An agent is an outside AI program, for example Claude Code. An agent can even write a new widget and install it while the app runs.
 
-The video covers what works today, what does not, and the numbers that show both. It ends with one real example that goes through every part.
+The video covers what works today, what does not, and the numbers that show both. It ends with one real run on a host with no windows. The run goes through the MCP server, the runtime, creation, blame, and quarantine.
 
 ## outline
 
@@ -14,13 +14,13 @@ In the middle is the host. It runs the Cordis plugin runtime. Inside the host, t
 
 Two doors lead into context dot widgets. The first door is the page in each widget window, which we call the shell. The second door is the MCP server, on a fixed port, for agents. MCP is a standard protocol that lets an agent call tools. A user click and an agent call go through the same action code.
 
-At the bottom are two more boxes. Creation puts new widget code through three gates before it reaches the host. Isolation keeps one bad widget from taking down the others. It has four parts: blame, quarantine, the supervisor, and the watchdog. We now walk this diagram box by box.
+At the bottom are two more boxes. Creation puts new widget code through three gates before it reaches the host. Isolation cannot stop a bad widget from crashing the host. It restarts the host and keeps that widget off, so the other widgets come back. It has four parts: blame, quarantine, the supervisor, and the watchdog. We now walk this diagram box by box.
 
 ## dsh_fork
 
-deepWidgets did not start from zero. It is a fork of DeepSeek Harness, which we call DSH. DSH is an open-source desktop app from DeepSeek, with an MIT license. A fork is a copy of a project that then changes on its own.
+deepWidgets did not start from zero. It is a fork of DeepSeek Harness, which we call DSH. DSH is an open-source app from DeepSeek that runs AI agents, with an MIT license. It has a command-line app, a web app, and a desktop app. A fork is a copy of a project that then changes on its own.
 
-The fork is one squashed commit of the DSH commit two two d d e e three. A squashed commit holds a whole history as one change. The repository holds three hundred eighty-seven workspace packages. Most of them are DSH code that deepWidgets does not need.
+The fork is one squashed commit of the DSH commit two two d d e e three. A squashed commit holds a whole history as one change. The repository holds three hundred ninety-four workspace packages. Three hundred eighty-seven of them come from DSH. Most of them are DSH code that deepWidgets does not need.
 
 Why start from DSH? DSH already has the three parts that a widget app needs. It has a plugin host process, a plugin client in the browser page, and an Electron desktop app. Thus the project takes those parts and turns off the rest.
 
@@ -28,7 +28,7 @@ Why start from DSH? DSH already has the three parts that a widget app needs. It 
 
 DSH builds everything from Cordis plugins. Cordis is a plugin runtime. A plugin is a module with a function that has the name apply. Cordis calls apply when the plugin loads.
 
-Apply gets one argument, the context. Programmers write it as c t x. Through the context, a plugin reads services and registers the things that it owns. A service is a named object on the context, for example context dot widgets. One plugin gives a service, and other plugins use it.
+Apply gets the context first. Programmers write it as c t x. Apply gets the config of its row second. Through the context, a plugin reads services and registers the things that it owns. A service is a named object on the context, for example context dot widgets. One plugin gives a service, and other plugins use it.
 
 A plugin names the services that it needs in a list with the name inject. Cordis does not start the plugin until each of those services exists. Each loaded plugin has a fiber. The fiber is the live record of that plugin.
 
@@ -62,7 +62,7 @@ The desktop app runs three kinds of processes. Electron main is the first. It ma
 
 The host is the second. It is a Node child process. It runs the host Cordis context, the loader, the web server, and all widget code. Electron main starts it with the flag expose internals, because the loader and hmr read private Node internals.
 
-A renderer is the third. It is a Chromium process that shows one web page. The main window and each widget window load from the custom scheme d s h app colon slash slash. Electron main answers each request on that scheme. For a path under slash a p i, it forwards the request to the host and adds the host cookie. The host checks that cookie on each route of the connection service.
+A renderer is the third. It is a Chromium process that shows one web page. The main window and each widget window load from the custom scheme d s h app colon slash slash. Electron main answers each request on that scheme, and it serves the built page files from disk. Each other path, such as an a p i path, goes to the host with the host cookie. The host checks that cookie on each route of the connection service.
 
 ## probe_and_trace
 
@@ -76,17 +76,17 @@ Now the center of the diagram: the widget runtime. It is the package deepwidgets
 
 The service has nine methods. Register adds a widget. List and describe tell what is live. Get reads the state.
 
-Call runs one action. Update writes the state from a timer. Set program stores new screen text. Changes and cursor give the change feed. The methods report each failure as a widget error with a code. A malformed definition is the one exception: it throws a type error.
+Call runs one action. Update writes the state from a timer. Set program stores new screen text. Changes and cursor give the change feed. The methods report most failures as a widget error with a code. A malformed definition or an update function that is not synchronous throws a type error.
 
 ## widget_definition
 
-A widget definition has five parts. The slug is the id of the widget, for example groceries. It uses lower-case letters, digits, and hyphens, up to sixty-three characters. The title is the name for people.
+A widget definition has five required parts and one optional part. The slug is the id of the widget, for example groceries. It uses lower-case letters, digits, and hyphens, up to sixty-three characters. The title is the name for people.
 
 The program is the text that tells the window what to show. It is data, not code. The text in the widget code is the seed program. The initial state is the first JSON data of the widget.
 
-The last part is the list of actions. An action is a named operation with a handler function. Each action has one of two kinds.
+The last required part is the list of actions. An action is a named operation with a handler function. Each action has one of two kinds.
 
-A query only reads the state. A mutation can write it. An action can also have its own timeout and an argument schema in zod. Zod is a TypeScript library that checks data shapes.
+A query only reads the state. A mutation can write it. An action can also have its own timeout and an argument schema in zod. Zod is a TypeScript library that checks data shapes. The optional part of the definition is a widget timeout. It applies to each action with no timeout of its own.
 
 A handler gets the arguments and an object w. W dot state is the current state. W dot update takes a function that makes the new state. W dot signal tells the handler when its time is over. The runtime checks the whole definition at register. A bad slug, a bad action name, or a repeated action throws a type error.
 
@@ -116,9 +116,9 @@ A query does not wait in the queue, because it does not write. A job that waits 
 
 The second rule is the timeout. Each action has a time limit. The action can set it. Else the widget value applies. Else the limit is five seconds.
 
-At the limit, the call answers with the code timeout. The runtime also sets w dot signal, so the handler can stop. It then refuses each later write of that call. This includes a write through context dot widgets dot update from inside the call. Why? A call that the caller saw fail must not change the data later.
+At the limit, the call answers with the code timeout. The runtime also sets w dot signal, so the handler can stop. It then refuses each later write of that call. This includes a write through context dot widgets dot update from inside the call. Why? We infer that a call that failed for the caller must not change the data later.
 
-One limit is important here. The timeout is a JavaScript timer. A handler that never gives back control, for example an endless loop, also stops that timer. The timeout cannot end such a loop. Only the watchdog can, and the watchdog is not merged yet.
+One limit is important here. The timeout is a JavaScript timer. A handler that never gives back control, for example an endless loop, also stops that timer. The timeout cannot end such a loop. Only the watchdog can end it. A later part of this video shows the watchdog.
 
 ## args_and_errors
 
@@ -146,7 +146,7 @@ One gap stays. The state write and the request record are two writes. A crash be
 
 An agent cannot see your clicks. So the runtime keeps a change feed. Each change has a sequence number, the time, the slug, the kind, and who made it. The field by holds that name, for example user, an agent id, host, or timer.
 
-The feed keeps the last one thousand changes in memory. A cursor marks a point in it. A cursor is text with two parts: an epoch and a sequence number. The epoch is a random id of the host process. A cursor from an older process, or one that is too old, gives reset. The agent then reads the list again.
+The feed keeps the last one thousand changes in memory. A cursor marks a point in it. A cursor is text with two parts: an epoch and a sequence number. The epoch is a random id of one start of the runtime. A cursor from an older start, or one that is too old, gives reset. The agent then reads the list again.
 
 ## routes
 
@@ -186,9 +186,9 @@ Then the OpenUI renderer draws the program. Each query and each mutation goes th
 
 ## shell_refresh
 
-How does a window learn that the data changed? It reads its stream. On a data frame, it runs all of its queries again. It does this with the public OpenUI hook use trigger action. Text that you typed in an input stays.
+How does a window learn that the data changed? It reads its stream. On a data frame, it runs all of its queries again. It does this with the public OpenUI hook use trigger action. The spike showed that typed text in an input stays. Nobody checked this in the current shell.
 
-On a program frame, it loads the program again. On removed, it shows the text: this widget is gone. On each new hello, it compares the revisions with the last ones that it saw. If it missed a change while the stream was down, it catches up.
+On a program frame, it loads the program again. On removed, it shows the removed message. On each new hello, it compares the revisions with the last ones that it saw. If it missed a change while the stream was down, it catches up.
 
 The refresh depends on an action plan shape that OpenUI does not export. That is why the shell pins the version.
 
@@ -220,15 +220,15 @@ Now the second door: the MCP server for agents. MCP is the Model Context Protoco
 
 The package deepwidgets slash mcp mounts one route, slash mcp, on the host web server. It uses the official MCP software kit in stateless mode. Stateless means that the server keeps no session between requests.
 
-The server has nine tools. Four tools interact: widget list, widget describe, widget call, and widget changes. Five tools create: widget template, widget guide, widget install, widget reload, and widget remove. The tool count does not grow with the widget count. Each tool calls context dot widgets in the host. Thus an agent call gets the same queue, timeout, and checks as a click.
+The server has nine tools. Four tools interact: widget list, widget describe, widget call, and widget changes. Five tools create: widget template, widget guide, widget install, widget reload, and widget remove. The tool count does not grow with the widget count. Each interact tool calls context dot widgets in the host. Thus an agent call gets the same queue, timeout, and checks as a click.
 
 ## mcp_port
 
 An agent must find the server. So the host binds a fixed port. The default is forty-seven thousand six hundred fifteen. The setting deepwidgets M C P port changes it. A value of zero lets the system pick a port. A value that is not a port stops the host with an error.
 
-If another process holds the port, the app fails at start, with the error address in use. This is on purpose. A host on a surprise port would leave agents with no way to find it.
+If another process holds the port, the app fails at start, with the error address in use. The check of pull request sixty showed this. This is on purpose. The operator decided this rule, and the documents do not give a reason.
 
-The host then writes the port file, mcp dot json, in the DSH home folder. It holds the port, a nonce, the process id, and the start time. A nonce is a random secret that the host makes new at each start. The file has mode six hundred, so only your user can read it.
+The host then writes the port file, mcp dot json, in the deepwidgets folder of the DSH home folder. It holds the port, a nonce, the process id, and the start time. A nonce is a random secret that the host makes new at each start. The file has mode six hundred, so only your user can read it.
 
 The host writes the file only after the route is live. It does not take a file whose host is still alive. Electron main removes the file of a host that dies.
 
@@ -254,13 +254,13 @@ The interact tools follow one path. Widget list gives each live widget and a cur
 
 Each tool error has three parts: a code, a message, and a next step. The next step tells the agent what to do. For example, after timeout, it says: read the state before you retry with the same request id. There are twenty codes, each with its own next step.
 
-Agents do not get pushed news. Claude Code version two point one point three one one drops notifications that a server pushes. So an agent learns about your clicks only when it calls widget changes.
+Agents do not get pushed news. In a project check, Claude Code version two point one point three one one dropped pushed notices from a server. The one exception was a notice that the tool list changed. So an agent learns about your clicks only when it calls widget changes.
 
 ## creation_overview
 
 Now the creation box. An agent creates a widget in four moves. It calls widget template and gets a starter file in TypeScript. It calls widget guide and gets the rules and the program language. It writes the files into a folder. Then it calls widget install with that folder.
 
-Install runs three gates in order: compile, lint, and test run. A gate is a check that new code must pass before it reaches the host. The first gate that fails stops the install. The answer then names the gate and lists each problem with its file, line, and column.
+Install runs three gates in order: compile, lint, and test run. A gate is a check that new code must pass before it reaches the host. The first gate that fails stops the install. The answer then names the gate and lists each problem. It gives the file, line, and column when the gate knows them.
 
 Code that passes goes into a folder that the profile owns. The plugin manager installs that folder, and hmr applies it at once. Why three gates? A spike measured an agent that made forty edits. Without gates, fourteen edits crashed the host. With gates, zero edits crashed it.
 
@@ -276,13 +276,13 @@ The rules refuse four raw timers: set timeout, set interval, set immediate, and 
 
 The rules also refuse a floating promise, which is a promise that nobody awaits or catches. Why? A rejection with no handler ends the host.
 
-A last rule refuses a loop with no exit, for example while true with no break. Why? Such a loop blocks every widget. deepWidgets checks this rule with its own code on the TypeScript syntax tree. The oxlint plugin form crashes under Electron.
+A last rule refuses a loop with no exit, for example while true with no break. Why? Such a loop blocks every widget. deepWidgets checks this rule with its own code on the TypeScript syntax tree. Pull request sixty-three reports that the oxlint plugin form crashes under Electron.
 
 ## gate_test_run
 
 The test run gate starts a new process with a heap limit of two hundred fifty-six megabytes. The heap is the memory for objects. The process loads the bundle into a bare Cordis context, with the real timer service and a stand-in widgets service.
 
-It runs apply, which must finish in one second. It calls each action once with empty arguments, with one second for each call. Then it lets the timers run for one and a half seconds. The bundle must register exactly one widget. An uncaught error or an unhandled rejection fails the gate.
+It runs apply, which must finish in one second. It calls each action once with empty arguments, with one second for each call. An action that throws there gives only a warning. Then it lets the timers run for one and a half seconds. The bundle must register exactly one widget. An uncaught error or an unhandled rejection fails the gate.
 
 The process prints a heartbeat every tenth of a second. If it is silent for seven hundred fifty milliseconds, the parent kills it. That is how the gate catches a loop that the lint missed.
 
@@ -294,7 +294,7 @@ A second install of the same slug replaces the bundle. The installer writes the 
 
 The state stays, because it lives in storage, not in the bundle. Widget remove takes the bundle away, and the state still stays. A later install of that slug gets its data back.
 
-What about the program? A stored program wins over the seed. So when the seed in the code changes, the installer writes the new seed with set program. It keeps a hash of the last seed to know. An install cannot take the slug of a built-in widget.
+What about the program? A stored program wins over the seed. So when the seed in the code changes, the installer writes the new seed with set program. It keeps a hash of the last seed to know. An install cannot take the slug of a built-in widget. It gets the code slug taken.
 
 ## isolation_why
 
@@ -304,15 +304,15 @@ So deepWidgets uses a crash-only host. On an uncaught exception or an unhandled 
 
 Why not catch the error and go on? Cordis does not contain errors in timers or listeners. They reach the process handlers. An earlier design caught them there and went on. That handler could also swallow an error in host code that a widget called.
 
-Each crash stops every widget for about two seconds. In the merged supervisor check, a new host answered one thousand five hundred sixty milliseconds after a kill.
+By the project notes, each crash stops every widget for about two seconds. In the merged supervisor check, a new host answered one thousand five hundred sixty milliseconds after a kill.
 
 ## blame_store
 
 How does the host know which widget failed? It uses AsyncLocalStorage. This Node feature keeps one value across all the timers, promises, and callbacks that one piece of code starts. The value here is the id of the widget row.
 
-The runtime wraps the plugin body of each widget row in that store. A widget row is a row whose id starts with deepwidgets widget. It also runs each action handler in the store of its row. Thus a timer that a widget makes still carries the widget name when it fires.
+The runtime wraps the plugin body of each widget row in that store. A widget row is a row whose id starts with deepwidgets widget. It also runs each action handler in the store of its row. Thus a timer that a widget makes still carries the row id of the widget when it fires.
 
-The blame key is the loader row, not the plugin name. Why? A bundle can export any name. A name key would let one bundle get another widget blocked.
+The blame key is the loader row, not the plugin name. Why? A bundle can export any name. A name key would let one bundle get another widget blocked. The spec now also gives each agent bundle its own row id, deepwidgets agent and the slug. That change is in pull request sixty-seven, which is not merged.
 
 The wrap uses a private part of Cordis, the fiber runner. Cordis has no public hook around a plugin body. The spike found one misblame. A host timer that host code first makes inside a widget call carries that widget store.
 
@@ -322,7 +322,7 @@ The claimer is the function that runs at the crash. DSH has a fail-loud handler 
 
 The claimer reads the store first. If the store is empty, it looks for a widget package folder in the error stack. Else it blames no widget. It writes crash dot json with one synchronous write and a rename. The record holds the row, the slugs, the error, the time, and the method. It also holds the package folder, a hash of its files, and the process id.
 
-Then the host exits at once. It skips the DSH cleanup, which takes about two point nine seconds on the desktop host. The blame check ran nine kinds of faults. Eight blamed the widget, and the host error blamed none. The time from the fault to the exit was eighteen to one hundred milliseconds.
+Then the host exits at once. It skips the DSH cleanup. The spike measured that cleanup at about two point nine seconds on the desktop host. The blame check ran nine kinds of faults. Eight blamed the widget, and the host error blamed none. In three runs, the time from fault to exit was about twenty to one hundred milliseconds.
 
 ## quarantine
 
@@ -346,27 +346,29 @@ After two unblamed crashes in sixty seconds, the next host starts in safe mode. 
 
 Built in means that the module file of the row is in a listed repository folder. Today the list holds one folder: widget sample. The check uses the real file path, not the package name, because a bundle can take any name.
 
-After four unblamed crashes in sixty seconds, the supervisor gives up. It shows the DSH fatal dialog. On macOS, that dialog blocks Electron main.
+After four unblamed crashes in sixty seconds, the supervisor gives up. It shows the DSH fatal dialog. On macOS, pull request sixty-one saw that this dialog blocks Electron main.
 
-## watchdog_open
+## watchdog
 
-One box is not merged yet: the watchdog. It is in pull request sixty-five, which is open. Here is why it matters. A widget can loop forever without an error. Then nothing throws, so the claimer never runs. The whole host freezes, and today nothing kills it.
+The last box of isolation is the watchdog. It came in pull request sixty-five, which merged on the second of November. Here is why it matters. A widget can loop forever without an error. Then nothing throws, so the claimer never runs. Without the watchdog, the whole host freezes, and nothing kills it.
 
-The watchdog is a worker thread, a second JavaScript thread in the host. The main thread adds one to a heartbeat counter every one hundred milliseconds. Before widget code runs, the runtime writes the widget into a shared slot. The worker checks the heartbeat every fifty milliseconds.
+The watchdog is a worker thread, a second JavaScript thread in the host. The main thread adds one to a heartbeat counter every one hundred milliseconds. Before widget code runs, the runtime writes the widget into a shared slot. The worker checks the heartbeat every fifty milliseconds. If the worker itself did not run for one second, the whole process was asleep or stopped. Then the stall clock starts again.
 
-At a stall of half a second, the worker writes a provisional record that blames the widget in the slot. Why so early? An out-of-memory abort runs no JavaScript at all. The early record is then the only blame. At a stall of two seconds, the worker writes the crash record and kills the host.
+At a stall of half a second, the worker writes a provisional record that blames the widget in the slot. Why so early? An out-of-memory abort runs no JavaScript at all. The early record is then the only blame. When the heartbeat comes back, the worker removes that record. At a stall of two seconds, the worker writes the crash record and kills the host.
 
-The pull request reports these results. A host parse of one hundred fifty megabytes took seven hundred fifty-seven milliseconds, and the host lived. A loop in an action killed the host two thousand forty-one milliseconds after the call. The desktop host has no native stack module, so there it blames by the slot only. Thus a loop in a raw timer or after an await is not blamed in the app.
+Electron main uses the provisional record only when the host ended like an abort. After any other exit, it removes that record. Why? A widget can have a long allowed step, and the host can end for another reason during that step. That end is not the fault of the widget.
+
+The watchdog check of this video ran on the merged code. A parse of one hundred fifty megabytes in host code took eight hundred sixty-eight milliseconds, and the host lived. A loop in an action killed the host two thousand fifty milliseconds after the call. The command-line host loads a native module that reads the stack of the stuck thread. The desktop host has no Electron build of it, so there it blames by the slot only. Thus a loop in a raw timer or after an await is not blamed in the app.
 
 ## example_intro
 
-Now the worked example. It goes through every box with real data. This run used the real code at commit eight b nine c eight six seven two. It ran a command-line host with no windows, so it shows no pixels. The run took about seventeen seconds.
+Now the worked example. It goes through the host boxes with real data. This run used the real code at commit eight b nine c eight six seven two. A second run on commit one zero eight d six six three f gave the same results. It ran a command-line host with the web profile and no windows, so it shows no pixels. The run took less than twenty seconds, and the narration rounds the times.
 
 The widget is a grocery list with the slug groceries. Its code is illustrative. It stands for what an agent would write. It has a query list and a mutation add. Add takes a text of one to eighty characters.
 
 ## example_handshake
 
-The host booted in one thousand fifty-two milliseconds. It wrote the port file with the port, the nonce, the process id, and the start time. The agent posted its name, Claude Code, and a random challenge.
+The host booted in less than two seconds. It wrote the port file with the port, the nonce, the process id, and the start time. The agent posted its name, Claude Code, and a random challenge.
 
 The answer gave a token, the agent id claude code c one e six b seven, and a proof. The agent made its own HMAC with the nonce from the file. The two matched. The token file then held a hash of the token, not the token.
 
@@ -376,21 +378,21 @@ The fence also answered as designed. A request with no token got four hundred on
 
 The agent called widget list. It saw one widget, sample, and the cursor f six nine six seven three seven nine colon one.
 
-First, the agent sent a version with a raw set timeout in apply. The lint gate refused it in three hundred forty-nine milliseconds. The diagnostic named source slash index dot ts, line fourteen, column three. It said: use context dot timeout.
+First, the agent sent a version with a raw set timeout in apply. The lint gate refused it in less than one second. The diagnostic named source slash index dot ts, line fourteen, column three. It said: use context dot timeout.
 
-Then the agent sent the fixed version. All three gates passed. Compile took thirty-four milliseconds, lint took two hundred sixty-three, and the test run took one thousand five hundred seventy-nine. The whole install took three point two seconds, and the answer said applied. The test run also gave a warning. It did not call add, because add refuses empty arguments.
+Then the agent sent the fixed version. All three gates passed. Compile and lint took less than half a second together, and the test run took about one point six seconds. The whole install took between three and four seconds, and the answer said applied. The test run also gave a warning. It did not call add, because add refuses empty arguments.
 
 ## example_calls
 
 Widget describe showed both actions. List is a query with no arguments. Add is a mutation. Its argument schema needs a text with a minimum length of one and a maximum of eighty. Each timeout is five seconds.
 
-The agent called add with the text milk and the request id r one. The answer was the list with milk, at revision one, in thirty-five milliseconds. The agent sent the same call again. The answer was the same, at revision one, with replayed true. Nothing ran twice.
+The agent called add with the text milk and the request id r one. The answer was the list with milk, at revision one, in less than one tenth of a second. The agent sent the same call again. The answer was the same, at revision one, with replayed true. Nothing ran twice.
 
 Then it sent r one with the text bread. The answer was idempotency conflict. A call with an empty text got invalid arguments, with the message: too small. Each error had its next step.
 
 ## example_user_door
 
-Next, the user door. The run posted add with the text eggs to the call route, with the host cookie. This is the request that a click in the shell sends. The answer came in twelve milliseconds: milk and eggs, at revision two.
+Next, the user door. The run posted add with the text eggs to the call route, with the host cookie. This is the request that a click in the shell sends. The answer came in a few tens of milliseconds: milk and eggs, at revision two.
 
 The program route gave the program text at revision one. Without the cookie, the same route gave four hundred one. The real OpenUI parser read this program with the real component set. It found four statements, one query, one mutation, and zero errors. A program with the typo buton gave the error: unknown component.
 
@@ -406,37 +408,37 @@ Now a bug that the gates cannot see. The agent installed a third version. It add
 
 The test run lasts one and a half seconds, so the timer never fired there. All three gates passed, and the install answered applied.
 
-Three thousand and four milliseconds later, the host exited with code one. The host printed: uncaught exception blamed on the groceries row, by store, the host exits now.
+About three seconds later, the host exited with code one. The host printed: uncaught exception blamed on the groceries row, by store, the host exits now.
 
 The crash record named the row include colon deepwidgets widget groceries, and the slug groceries. The error was a syntax error: unexpected end of JSON input. The method was store. The record also held the package folder and a hash that starts with three zero three b zero eight.
 
 ## example_quarantine
 
-This command-line run has no Electron main, so the script started the host again by hand. In the app, the supervisor does this. The new host booted in eight hundred sixty-two milliseconds. The old token got four hundred one, so the agent did a new handshake.
+This command-line run has no Electron main, so the script started the host again by hand. In the app, the supervisor does this. The new host booted in less than two seconds. The old token got four hundred one, so the agent did a new handshake.
 
 The new host marked the crash record as applied. The quarantine file held the groceries row with the reason: quarantined after a crash. Widget list showed groceries with that reason in the failed field.
 
 Its revision was still two. A call gave widget failed, with the next step: do not retry, change its files. The program route gave five hundred three. The stream hello gave program revision minus one.
 
-Sample stayed live. Its call answered in six milliseconds, with count zero.
+Sample stayed live. Its call answered in a few milliseconds, with count zero.
 
 ## example_lift
 
-The agent then installed the fixed version again. The three gates passed, and the install applied in three point six seconds. The new files had a new hash, so the host lifted the quarantine. The quarantine file was empty after that.
+The agent then installed the fixed version again. The three gates passed, and the install applied in about four seconds. The new files had a new hash, so the host lifted the quarantine. The quarantine file was empty after that.
 
 Widget list showed groceries with no failure. Its state was milk and eggs, at revision two. The crash, the quarantine, and the reinstall lost no data.
 
 ## checks_and_mutants
 
-How does the team know that each box works? Each box came in one unit: one branch, one pull request, and one check that can fail. A fresh agent reviewed each unit. The implementer never reviewed its own unit.
+How does the team know that each box works? Each widget-system box came in one unit: one branch, one pull request, and one check that can fail. A fresh agent reviewed each unit. The implementer never reviewed its own unit.
 
 Each check names a mutant. A mutant is a wrong change that the check must catch. For the queue, the mutant removes the queue. The check then saw plus one, not plus ten. For the fence, the mutant removes the origin rule. Three checks then failed.
 
-On this commit, the host checks passed again for this video. The runtime check printed thirty-four pass lines. The MCP check printed twenty-three, the creation check twenty-six, and the blame check twenty-four. The supervisor unit tests passed eight of eight. The app smoke checks were not run again for this video.
+On the merged commit, the host checks ran again for this video. The runtime check printed thirty-four pass lines. The MCP check printed twenty-three, the creation check twenty-six, and the watchdog check twenty-one. The blame check failed once with the known flake, and it printed twenty-four on a rerun. The supervisor unit tests passed eleven of eleven. The app smoke checks were not run again for this video.
 
 ## limits_measured
 
-Here are the measured limits in one table. In this run, an agent call took thirty-five milliseconds, and a click took twelve. An install with the gates took about three and a half seconds.
+Here are the measured limits in one table. In this run, an agent call and a click each took less than one tenth of a second. An install with the gates took about three to four seconds.
 
 These numbers come from the spikes and the pull requests. A host restart showed a live window again two thousand seventy-three milliseconds after a kill.
 
@@ -444,16 +446,16 @@ Each widget window uses about twenty megabytes, because each one has its own ren
 
 ## open_items
 
-Here are the open items. Some choices still wait for the operator. One is a renderer for each window or a shared one. Another is Tailwind, a style tool, in the shell. Others are the main-desktop-only setting, rules for each agent, and five create tools or one. The build uses the recommended choice for each.
+Here are the open items. Some choices still wait for the operator. One is a renderer for each window or a shared one. Another is Tailwind, a style tool, in the shell. Others are the main-desktop-only setting, rules for each agent, and five create tools or one. The build uses a provisional choice for each.
 
-Some parts are not built. These are the watchdog merge, the window manager, saved positions, the tray icon, and the main window as a widget. The host does not check a program before it stores it. On the twenty-seventh of October, a packaged build failed. Nobody checked it again since, so only the development app runs.
+Some parts are not built. These are the window manager, saved positions, the tray icon, and the main window as a widget. The host does not check a program before it stores it. On the twenty-seventh of October, a packaged build failed. Nobody fixed the package build since. Thus we know only that the development app runs.
 
-Some facts are not checked. These are real drags and clicks in a widget window and a real sleep of the computer. Power loss with SQLite is also not checked.
+The plan has two new units. The first gives each agent bundle its own row id, deepwidgets agent and the slug. Its pull request sixty-seven is open, not merged. The second unit changes only the checks, so that a known flake stops. A flake is a check that fails once and then passes on a rerun. The blame check failed this way once in the runs for this video.
 
-Nobody measured which shape of the create tools a model calls best. The blame check also had one flake in the watchdog pull request. A flake is a check that fails once and then passes on a rerun. That flake needs its own investigation.
+Some facts are not checked. These are real drags and clicks in a widget window and a real sleep of the computer. Power loss with SQLite is also not checked. Nobody measured which shape of the create tools a model calls best.
 
 ## closing
 
-Back to the full diagram. The trim keeps forty of two hundred rows. The runtime gives one contract through two doors, the shell and MCP. Creation puts code through three gates. Isolation blames, quarantines, and restarts. The watchdog waits for its merge.
+Back to the full diagram. The trim keeps forty of two hundred rows. The runtime gives one contract through two doors, the shell and MCP. Creation puts code through three gates. Isolation blames, quarantines, and restarts. The watchdog ends a host that a loop holds.
 
-A click and an agent call change the same data, through the same rules. When a widget fails, the others go on, and its data stays.
+A click and an agent call change the same data, through the same rules. When a widget crashes the host, the host restarts without that widget. The other widgets come back, and the data stays.
