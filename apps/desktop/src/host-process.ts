@@ -237,7 +237,10 @@ export class DesktopHostProcess {
     })
     child.once('error', (error) => { this.fail(error) })
     this.exitPromise = new Promise<void>((resolve) => {
-      child.once('close', (code) => {
+      // deepwidgets-trim: widget_phase2.isolation.watchdog. The exit failure also carries the code and the signal, so the
+      // supervisor can tell an out-of-memory abort from another exit.
+      // child.once('close', (code) => {
+      child.once('close', (code, signal) => {
         // deepwidgets-trim: added line; a crashed or failed Host leaves no MCP port file behind (widget_phase2.mcp_port).
         removeDeadMcpPortFile(child.pid, this.environment)
         const suffix = this.stderr.trim() === '' ? '' : `: ${this.stderr.trim()}`
@@ -246,7 +249,7 @@ export class DesktopHostProcess {
         // if (code !== 0 && code !== null) this.fail(new Error(`dsh desktop host exited with ${String(code)}${suffix}`))
         // else this.fail(new Error(`dsh desktop host stopped${suffix}`))
         const exited = code !== 0 && code !== null ? new Error(`dsh desktop host exited with ${String(code)}${suffix}`) : new Error(`dsh desktop host stopped${suffix}`)
-        this.fail(Object.assign(exited, { hostPid: child.pid }))
+        this.fail(Object.assign(exited, { hostPid: child.pid, hostCode: code, hostSignal: signal }))
         resolve()
       })
     })
