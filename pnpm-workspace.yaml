@@ -57,6 +57,9 @@ allowBuilds:
   msgpackr-extract: false
   # deepWidgets: the OpenUI lang-core postinstall only sends install telemetry.
   '@openuidev/lang-core': false
+  # deepWidgets: widget_phase2.isolation.watchdog. The install script only builds from source when no prebuilt
+  # binary loads. The package ships Node prebuilds; an Electron build is a separate step.
+  '@sentry/node-native-stacktrace': false
 
 minimumReleaseAgeExclude:
   # Native Codex and Claude tests qualify this exact release with its local patches.

@@ -65,6 +65,14 @@ Then copy the staged build into a folder that the profile owns, and install it w
 
 Each failure gives `code`, `message`, the gate, the diagnostics, and `nextStep`.
 
+### Row names `widget_phase2.creation.rows`
+
+- An agent bundle gets the row id `deepwidgets-agent-<slug>`. A built-in widget keeps the row id `deepwidgets-widget-<name>`. Thus an agent bundle cannot use the row id of a built-in widget.
+
+- `widget_install` refuses a slug when a live widget that is not an agent bundle has that slug. The code is `slug-taken`.
+
+- An agent bundle that has the old row id `deepwidgets-widget-<slug>` is removed when an install of the same slug occurs. Its state stays. A quarantine on the old row id does not apply to the new row id. The new install is a code change, so the lift on a changed hash applies.
+
 ## Fixed port `widget_phase2.mcp_port`
 
 - The host web server binds a fixed port from the settings. If the port is taken, the app fails loudly at start (`widget.mcp_v1`).
