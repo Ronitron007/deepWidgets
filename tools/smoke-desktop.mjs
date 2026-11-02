@@ -32,6 +32,10 @@
  * timer throws 1 s after it loads. The host must restart, the blame-timer window must show failed with the reason,
  * and the sample page must stay live, with no safe mode and no second crash. Then the check changes a file of the
  * installed fixture and kills the host: blame-timer must come back (`widget.isolation_blame`).
+ * With DSH_SMOKE_HOST_RESTART=watchdog, the check installs the fixtures deepwidgets/widgets/fixtures/watchdog-host and
+ * watchdog-widget. A 150 MB JSON.parse in host code must not end the host. Then the watchdog widget loops in an
+ * action: the host must die within 2.5 s and come back, the watchdog window must show failed with the reason, and the
+ * sample page must stay live, with no safe mode and no second crash (`widget.isolation_watchdog`).
  * The trace test also needs the start-up steps of Electron main and a message for each client row.
  * Then it reads the rows of the trace window page dsh-app://app/trace.
  * Uses only Node built-in modules. Prints one result line.
@@ -421,6 +425,7 @@ try {
         if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === '1') failed = await checkHostRestart(page, deadline)
         if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === 'give-up') failed = await checkHostGiveUp(deadline)
         if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === 'blame') failed = await checkHostBlame(deadline)
+        if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === 'watchdog') failed = await checkHostWatchdog(deadline)
         if (failed === undefined && (process.env.DSH_SMOKE_CREATE ?? '') !== '') failed = await checkCreate(deadline)
       }
     }
@@ -1183,6 +1188,70 @@ async function checkHostBlame(deadline) {
  * A minimal MCP client over plain fetch: the token handshake of mcp_readme.handshake, then JSON-RPC
  * requests to the stateless /mcp route. Gives `call(method, params)` with the JSON-RPC result.
  */
+/** POST JSON from a renderer page to the host. Gives the status and the body. */
+async function postFrom(page, path, body, until) {
+  return JSON.parse(String(await evaluate(page.webSocketDebuggerUrl,
+    `fetch(${JSON.stringify(path)}, { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify(body))} })
+      .then(async (response) => JSON.stringify({ status: response.status, body: await response.json().catch(() => null) }))`, until, true)))
+}
+
+async function checkHostWatchdog(deadline) {
+  const row = 'deepwidgets-widget-watchdog'
+  const sample = await findWidgetPage('sample', deadline)
+  if (sample === undefined) return 'watchdog: no sample widget page'
+  const first = await pollWidget(sample, deadline, (value) => value.count !== null && value.dw?.stream === 'open')
+  if (!first.ok) return `watchdog: no count in the sample page: ${JSON.stringify(first.value)}`
+  const until = Math.min(deadline, Date.now() + 150_000)
+  for (const name of ['watchdog-host', 'watchdog-widget']) {
+    const fixture = join(temp, name)
+    cpSync(join(root, 'deepwidgets/widgets/fixtures', name), fixture, { recursive: true })
+    const install = await installBundle(fixture, until)
+    note(`watchdog install ${name}=${JSON.stringify({ application: install?.application })}`)
+    if (install?.application !== 'applied') return `watchdog: the install of ${name} did not apply: ${JSON.stringify(install)}`
+  }
+  const widget = await findWidgetPage('watchdog', until)
+  if (widget === undefined) return 'watchdog: no watchdog widget page'
+  const ready = await pollWidget(widget, until, (value) => value.state === null && value.text.includes('Watchdog') && value.dw?.stream === 'open')
+  if (!ready.ok) return `watchdog: the watchdog page is not live: ${JSON.stringify(ready.value)}`
+
+  // parse: a long synchronous step of healthy host code. The host must live.
+  const parseFrom = Date.now()
+  const pid = hostPid
+  const prepared = await postFrom(sample, '/api/watchdoghost/prepare', { mb: 150 }, until)
+  const parsed = await postFrom(sample, '/api/watchdoghost/parse', {}, until)
+  await delay(3_000)
+  note(`watchdog parse=${JSON.stringify({ prepared, parsed })}`)
+  if (parsed.status !== 200 || prepared.body?.mb < 150) return `watchdog: the parse did not run: ${JSON.stringify({ prepared, parsed })}`
+  let failed = noCrashSince(parseFrom, 'the 150 MB parse')
+  if (failed !== undefined) return `watchdog: ${failed}`
+  if (!await waitForHost(Math.min(until, Date.now() + 5_000)) || hostPid !== pid) return 'watchdog: the host changed during the parse'
+
+  // spin: a loop in an action. The host must die within 2.5 s and come back.
+  const sent = Date.now()
+  void evaluate(widget.webSocketDebuggerUrl,
+    `void fetch('/api/widgets/watchdog/call', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'spin' }) }).catch(() => {}); 'sent'`, until).catch(() => undefined)
+  const crash = await waitForSupervisor(sent, (event) => event.event === 'host-failed', until)
+  note(`watchdog host-failed=${JSON.stringify(crash)} after=${crash === undefined ? 'none' : String(crash.at - sent)} ms`)
+  if (crash === undefined) return 'watchdog: the loop did not end the host'
+  if (crash.at - sent > 2_500) return `watchdog: the host died ${String(crash.at - sent)} ms after the call, more than 2500 ms`
+  if (!(crash.blamed === row || String(crash.blamed).endsWith(`:${row}`)) || crash.crashes !== 0) return `watchdog: the supervisor did not see a blamed crash: ${JSON.stringify(crash)}`
+  if (!await waitForNewHost(pid, until)) return 'watchdog: no new host'
+  const restarted = await waitForSupervisor(crash.at, (event) => event.event === 'ready', until)
+  note(`watchdog ready=${JSON.stringify(restarted)}`)
+  if (restarted?.safeMode !== false) return `watchdog: the restart is in safe mode: ${JSON.stringify(restarted)}`
+  const shown = await pollWidget(widget, until, (value) => value.state === 'state-error' && value.text.includes('stall'))
+  note(`watchdog failed page=${JSON.stringify(shown.value)}`)
+  if (!shown.ok) return `watchdog: the watchdog page does not show failed: ${JSON.stringify(shown.value)}`
+  const live = await pollWidget(sample, until, (value) => value.count !== null && value.dw?.stream === 'open' && value.dw.streamOpens > first.value.dw.streamOpens)
+  note(`watchdog sample=${JSON.stringify(live.value)}`)
+  if (!live.ok) return `watchdog: the sample page is not live after the restart: ${JSON.stringify(live.value)}`
+  await delay(5_000)
+  failed = noCrashSince(crash.at + 1, 'after the restart')
+  if (failed !== undefined) return `watchdog: ${failed}`
+  if (await countPages('dsh-app://app/widget/?slug=sample') !== 1) return 'watchdog: the sample window closed'
+  return undefined
+}
+
 async function mcpClient(deadline) {
   const portFile = join(home, 'deepwidgets', 'mcp.json')
   while (Date.now() < deadline) {

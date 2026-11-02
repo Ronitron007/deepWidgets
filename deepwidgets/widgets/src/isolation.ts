@@ -8,48 +8,29 @@
  * with a synchronous write and exits the host at once. The next host reads the record and does not run the blamed
  * row until the hash of its package files changes.
  *
+ * The watchdog (`widget_phase2.isolation.watchdog`, `watchdog.ts`) writes the same record when the main thread stalls,
+ * and a provisional record at a quarter of its threshold. The next host applies both through the same quarantine.
+ *
  * The key is the Loader row, not the exported plugin `name`: a bundle can export any name, so a name key would let
  * one bundle get another widget quarantined.
  * @module @deepwidgets/widgets/isolation
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { createHash } from 'node:crypto'
-import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, join, relative, sep } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { Context, Fiber } from '@deepseek-ai/cordis'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { packageHash, readJson, writeJsonSync, type CrashRecord } from './records.ts'
+import { inSlot, startWatchdog } from './watchdog.ts'
+
+export { packageHash, type BlameMethod, type CrashRecord } from './records.ts'
 
 /** The Loader row ids that the runtime treats as widget code. */
 const WIDGET_ROW = /^deepwidgets-widget-/
 /** The key under which the DSH fail-loud release finds the fatal hooks (`apps/cli/src/profile-boot.ts`). */
 const FATAL_HOOKS = Symbol.for('deepwidgets.fatal.hooks')
-/** At most this many files of one package go into its hash. */
-const HASH_FILE_LIMIT = 2_000
-
-/** How the claimer found the widget. */
-export type BlameMethod = 'store' | 'stack'
-
-/** The crash record `$DSH_HOME/deepwidgets/crash.json`. The host that starts next applies it. */
-export interface CrashRecord {
-  /** The Loader row id of the blamed widget, or null for an unblamed crash. */
-  row: string | null
-  /** The slugs that the blamed row registered. */
-  slugs: string[]
-  error: { name: string, message: string, stack: string }
-  /** Epoch milliseconds of the crash. */
-  at: number
-  event: 'uncaughtException' | 'unhandledRejection'
-  method: BlameMethod | null
-  /** The package folder of the blamed row, and the hash of its files at the crash. */
-  root: string | null
-  hash: string | null
-  pid: number
-  /** True after a host start moved the blame into the quarantine. */
-  applied: boolean
-}
-
 /** One quarantined widget row in `$DSH_HOME/deepwidgets/quarantine.json`. */
 export interface Quarantine {
   row: string
@@ -93,67 +74,19 @@ export function widgetRow(fiber: Fiber): string | undefined {
   return undefined
 }
 
-/** Run `fn` inside the store of `row`. With no row, run it as is. */
+/**
+ * Run `fn` inside the store of `row`, with `row` in the running-widget slot of the watchdog.
+ * With no row, run it as is.
+ */
 export function runAs<T>(row: string | undefined, fn: () => T): T {
-  return row === undefined ? fn() : blameStore.run(row, fn)
+  return row === undefined ? fn() : blameStore.run(row, () => inSlot(row, fn))
 }
 
 const stateDir = (): string => join(resolveDshHome(), 'deepwidgets')
 const crashFile = (): string => join(stateDir(), 'crash.json')
 const quarantineFile = (): string => join(stateDir(), 'quarantine.json')
-
-function readJson(file: string): unknown {
-  try {
-    return JSON.parse(readFileSync(file, 'utf8')) as unknown
-  } catch {
-    return undefined
-  }
-}
-
-/** Write with a rename, so a reader never sees half a file. Synchronous: it runs on the exit path. */
-function writeJsonSync(file: string, value: unknown): void {
-  mkdirSync(dirname(file), { recursive: true })
-  const temp = `${file}.${String(process.pid)}.tmp`
-  writeFileSync(temp, JSON.stringify(value, null, 2))
-  renameSync(temp, file)
-}
-
-/** The files of a package folder, sorted, without `node_modules` and dot folders. */
-function packageFiles(root: string): string[] {
-  const files: string[] = []
-  const walk = (dir: string): void => {
-    let names
-    try {
-      names = readdirSync(dir, { withFileTypes: true })
-    } catch {
-      return
-    }
-    for (const item of names) {
-      if (files.length >= HASH_FILE_LIMIT) return
-      if (item.name === 'node_modules' || item.name.startsWith('.')) continue
-      const path = join(dir, item.name)
-      if (item.isDirectory()) walk(path)
-      else if (item.isFile()) files.push(path)
-    }
-  }
-  walk(root)
-  return files.sort()
-}
-
-/** The sha256 of the relative paths and contents of the package files. */
-export function packageHash(root: string): string {
-  const hash = createHash('sha256')
-  for (const file of packageFiles(root)) {
-    hash.update(relative(root, file)).update('\0')
-    try {
-      hash.update(readFileSync(file))
-    } catch {
-      hash.update('unreadable')
-    }
-    hash.update('\0')
-  }
-  return hash.digest('hex')
-}
+/** The provisional record of the watchdog (`widget_phase2.isolation.watchdog`). */
+const provisionalFile = (): string => join(stateDir(), 'provisional.json')
 
 /** The nearest folder at or above `file` with a `package.json`. */
 function packageRoot(file: string): string | undefined {
@@ -239,15 +172,25 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
   const stored = readJson(quarantineFile())
   // An entry without a row id is from an older format; it is dropped.
   if (Array.isArray(stored)) for (const item of stored as Quarantine[]) if (typeof item.row === 'string') quarantine.set(item.row, item)
-  const record = readJson(crashFile()) as CrashRecord | undefined
-  if (record !== undefined && !record.applied) {
+  /** Move the blame of one record into the quarantine, and mark the record applied in `file`. */
+  function apply(file: string, record: CrashRecord): void {
     if (typeof record.row === 'string') {
       const reason = `quarantined after a crash (${record.event}, blamed by ${String(record.method)}): ${record.error.message}`.slice(0, 500)
       quarantine.set(record.row, { row: record.row, slugs: record.slugs, reason, at: record.at, root: record.root, hash: record.hash })
       writeJsonSync(quarantineFile(), [...quarantine.values()])
       ctx.logger.warn(`widgets: the row ${record.row} crashed the last host; it does not run until its files change`)
     }
-    writeJsonSync(crashFile(), { ...record, applied: true })
+    writeJsonSync(file, { ...record, applied: true })
+  }
+  const record = readJson(crashFile()) as CrashRecord | undefined
+  if (record !== undefined && !record.applied) apply(crashFile(), record)
+  // widget_phase2.isolation.watchdog: a provisional record that is left means that its host ended in the stall, for
+  // example by an out-of-memory abort. A crash record of the same host wins: it saw the end. A record of this process
+  // is from a runtime instance that is still alive, so it is not a crash.
+  const provisional = readJson(provisionalFile()) as CrashRecord | undefined
+  if (provisional !== undefined && !provisional.applied && provisional.pid !== process.pid) {
+    if (record?.pid === provisional.pid) writeJsonSync(provisionalFile(), { ...provisional, applied: true })
+    else apply(provisionalFile(), provisional)
   }
 
   /** The quarantine item of `row`, when it holds the row. A changed hash lifts it. */
@@ -282,7 +225,7 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
         ctx.logger.warn(`widgets: the row ${row} is quarantined: ${item.reason}`)
         return host.hold(item.slugs, row, item.reason)
       }
-      return blameStore.run(row, () => execute.call(this))
+      return runAs(row, () => execute.call(this))
     }
   }
   ctx.effect(() => () => {
@@ -338,12 +281,16 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
     return () => { hooks.delete(claim) }
   }, 'widgets: the crash claimer')
 
+  // ---- the watchdog (widget_phase2.isolation.watchdog) ----
+  const watchdog = startWatchdog(ctx, blameStore, { crashFile: crashFile(), provisionalFile: provisionalFile() })
+
   return {
     track(row, root, slug) {
       const item = known.get(row) ?? { root, slugs: new Set<string>() }
       item.root ??= root
       item.slugs.add(slug)
       known.set(row, item)
+      watchdog.track(row, item.root, [...item.slugs])
     },
     quarantined: () => [...quarantine.values()],
   }

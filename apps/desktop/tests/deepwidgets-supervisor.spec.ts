@@ -71,3 +71,53 @@ describe('DesktopHostSupervisor blame (widget_phase2.isolation.blame)', () => {
     expect(supervisor.hostEnvironment()).toEqual({ DEEPWIDGETS_SAFE_MODE: '1' })
   })
 })
+
+describe('DesktopHostSupervisor provisional record (widget_phase2.isolation.watchdog)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  /** A supervisor whose crash record and provisional record the test sets. */
+  function provisionalFixture() {
+    let crash: unknown
+    let provisional: unknown
+    const supervisor = new DesktopHostSupervisor(() => Promise.resolve(), () => crash, () => provisional)
+    return {
+      supervisor,
+      set: (nextCrash: unknown, nextProvisional: unknown): void => { crash = nextCrash; provisional = nextProvisional },
+      fail: async (pid: number): Promise<boolean> => {
+        const restarting = supervisor.failed(exitOf(pid), false)
+        await vi.runOnlyPendingTimersAsync()
+        return restarting
+      },
+    }
+  }
+
+  it('counts an abort that only the provisional record blames as blamed', async () => {
+    const { supervisor, set, fail } = provisionalFixture()
+    supervisor.ready()
+    for (let pid = 400; pid < 405; pid += 1) {
+      // An out-of-memory abort leaves an older crash record and a provisional record of the dead Host.
+      set({ row: null, pid: 1, at: 0, applied: true }, { row: 'deepwidgets-widget-watchdog', pid, at: Date.now(), applied: false })
+      expect(await fail(pid)).toBe(true)
+      supervisor.ready()
+    }
+    expect(supervisor.hostEnvironment()).toEqual({})
+  })
+
+  it('lets a crash record of the dead Host win over its provisional record', async () => {
+    const { supervisor, set, fail } = provisionalFixture()
+    supervisor.ready()
+    set({ row: null, pid: 500, at: Date.now(), applied: false }, { row: 'deepwidgets-widget-watchdog', pid: 500, at: Date.now(), applied: false })
+    expect(await fail(500)).toBe(true)
+    set({ row: null, pid: 501, at: Date.now(), applied: false }, { row: 'deepwidgets-widget-watchdog', pid: 500, at: Date.now(), applied: true })
+    expect(await fail(501)).toBe(true)
+    // Two unblamed crashes: safe mode.
+    expect(supervisor.hostEnvironment()).toEqual({ DEEPWIDGETS_SAFE_MODE: '1' })
+  })
+})

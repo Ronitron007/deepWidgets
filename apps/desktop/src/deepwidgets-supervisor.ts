@@ -17,15 +17,18 @@ function log(event: string, detail: Record<string, unknown> = {}): void {
   console.log(`deepwidgets-supervisor ${JSON.stringify({ at: Date.now(), event, ...detail })}`)
 }
 
-/** Read `$DSH_HOME/deepwidgets/crash.json`, or undefined when it is missing or not JSON. */
-function readCrashRecord(): unknown {
+/** Read `$DSH_HOME/deepwidgets/<name>`, or undefined when it is missing or not JSON. */
+function readStateFile(name: string): unknown {
   try {
-    return JSON.parse(readFileSync(join(resolveDshHome(), 'deepwidgets', 'crash.json'), 'utf8'))
+    return JSON.parse(readFileSync(join(resolveDshHome(), 'deepwidgets', name), 'utf8'))
   } catch {
     // No record, or not readable: the crash counts as unblamed, which is the safe side.
     return undefined
   }
 }
+const readCrashRecord = (): unknown => readStateFile('crash.json')
+/** The provisional record of the watchdog (`widget_phase2.isolation.watchdog`). */
+const readProvisionalRecord = (): unknown => readStateFile('provisional.json')
 
 /** The pid of the dead Host child, which `DesktopHostProcess` puts on the failure of an exit. */
 function hostPidOf(failure: unknown): number | undefined {
@@ -44,6 +47,16 @@ function blamedRow(record: unknown, deadPid: number | undefined): string | null 
   const { row, pid, applied } = record as { row?: unknown; pid?: unknown; applied?: unknown }
   if (typeof row !== 'string' || pid !== deadPid || applied === true) return null
   return row
+}
+
+/**
+ * The widget row that the dead Host blamed. A crash record of the dead Host wins, also when it blames no widget.
+ * Else a provisional record of the dead Host blames it: the Host ended in a stall that the watchdog saw, for example
+ * by an out-of-memory abort (`widget_phase2.isolation.watchdog`).
+ */
+function blamedByRecords(crash: unknown, provisional: unknown, deadPid: number | undefined): string | null {
+  if (deadPid !== undefined && (crash as { pid?: unknown } | null)?.pid === deadPid) return blamedRow(crash, deadPid)
+  return blamedRow(provisional, deadPid)
 }
 
 function messageOf(failure: unknown): string {
@@ -66,8 +79,13 @@ export class DesktopHostSupervisor {
    * @param restart - Start a new Host and bring the main window back. A rejection is a failed start;
    * the controller publishes its `error` state, and {@link failed} counts it.
    * @param crashRecord - reads the crash record; tests give their own.
+   * @param provisionalRecord - reads the provisional record of the watchdog; tests give their own.
    */
-  constructor(private readonly restart: () => Promise<void>, private readonly crashRecord: () => unknown = readCrashRecord) {}
+  constructor(
+    private readonly restart: () => Promise<void>,
+    private readonly crashRecord: () => unknown = readCrashRecord,
+    private readonly provisionalRecord: () => unknown = readProvisionalRecord,
+  ) {}
 
   /**
    * True from an owned failure until the restart has loaded the main window again.
@@ -96,7 +114,7 @@ export class DesktopHostSupervisor {
     // One failure gives one `error` state. A second one while a restart waits is the same outage.
     if (this.timer !== undefined) return true
     // A blamed crash is the quarantine's job: the next Host does not run that widget (`widget_phase2.isolation.blame`).
-    const decision = this.policy.crash(blamedRow(this.crashRecord(), hostPidOf(failure)))
+    const decision = this.policy.crash(blamedByRecords(this.crashRecord(), this.provisionalRecord(), hostPidOf(failure)))
     if (decision.kind === 'give-up') {
       log('give-up', { crashes: decision.crashes, message: messageOf(failure) })
       this.dispose()
