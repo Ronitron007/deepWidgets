@@ -96,7 +96,8 @@ export function apply(ctx: Context): void {
       detail: pluginDetail(entry, fiber),
       snapshot: snapshot === true,
     })
-    seen.add(fiber)
+    // Cordis rc.11: `entry.fiber` is a wrapper over the fiber. Key the set by the fiber itself.
+    seen.add(fiber.ctx.fiber)
   }
 
   function addService(name: string, state: string, snapshot: boolean | undefined): void {
@@ -107,7 +108,7 @@ export function apply(ctx: Context): void {
     for (const entry of ctx.loader.entries()) {
       if (entry.options.name === 'cordis:include') continue
       if (!entry.fiber) continue
-      if (seen.has(entry.fiber)) continue
+      if (seen.has(entry.fiber.ctx.fiber)) continue
       addPlugin(entry, entry.fiber, false)
     }
   }
