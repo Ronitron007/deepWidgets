@@ -1,0 +1,20 @@
+# Folders that deepWidgets imports or edits but that no kept row names. One path prefix per line.
+packages/bundle/base
+packages/boot/hmr
+packages/boot/app-boot
+packages/util/home-paths
+packages/util/official-bundles
+vendor/cordis
+vendor/include
+vendor/loader
+vendor/hmr
+vendor/timer
+vendor/schemastery
+vendor/cosmokit
+vendor/group
+vendor/logger-console
+apps/desktop
+apps/desktop-host
+apps/cli
+tsdown.config.ts
+pnpm-workspace.yaml
