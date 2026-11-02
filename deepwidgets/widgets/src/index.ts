@@ -5,9 +5,12 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomUUID } from 'node:crypto'
+import { realpathSync } from 'node:fs'
+import { join, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Fiber, Plugin } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
@@ -33,10 +36,64 @@ const DEFAULT_REQUEST_TTL_MS = 10 * 60_000
 export const SAFE_MODE_ENV = 'DEEPWIDGETS_SAFE_MODE'
 
 /**
- * The widget bundles that ship in this repository, by the module name of their Loader row.
- * In safe mode, only these bundles can register a widget. Each other widget is off for that Host start.
+ * The widget bundles that ship in this repository, by their package folder in the repository folder `deepwidgets/`.
+ * In safe mode, only a row whose module file is in one of these folders can register a widget. Each other widget
+ * is off for that Host start. The check uses the real path of the module that the Loader loaded, not the module
+ * name: an installed bundle can take the package name of a built-in bundle.
  */
-export const BUILT_IN_WIDGET_BUNDLES: ReadonlySet<string> = new Set(['@deepwidgets/widget-sample'])
+export const BUILT_IN_WIDGET_FOLDERS: readonly string[] = ['widget-sample']
+
+/** This file is `deepwidgets/widgets/lib/index.js` (or `src/index.ts`), so `../..` is the repository folder `deepwidgets/`. */
+const BUILT_IN_ROOTS = BUILT_IN_WIDGET_FOLDERS.map((folder) => join(realpathSync(fileURLToPath(new URL('../..', import.meta.url))), folder) + sep)
+
+/** The part of the Loader service that {@link isBuiltInRow} reads. */
+interface LoaderView {
+  readonly internal?: {
+    readonly loadCache: {
+      keys(): Iterable<string>
+      get(url: string): { readonly module?: { getNamespace(): unknown } } | undefined
+    }
+  }
+  unwrapExports(exports: unknown): unknown
+}
+
+/** @returns whether `url` is a file in a folder of {@link BUILT_IN_WIDGET_FOLDERS}, after links resolve. */
+function isBuiltInFile(url: string): boolean {
+  if (!url.startsWith('file:')) return false
+  let path: string
+  try {
+    path = realpathSync(fileURLToPath(url))
+  } catch {
+    return false
+  }
+  return BUILT_IN_ROOTS.some((root) => path.startsWith(root))
+}
+
+/**
+ * Find the modules of the Loader cache whose plugin is the plugin of `fiber`, as the hmr plugin finds loaded
+ * modules (`EntryNamespaces.getModuleUrls`).
+ * @returns true when `fiber` is a Loader row and each module that gives its plugin is a built-in file.
+ */
+function isBuiltInRow(ctx: Context, fiber: Fiber): boolean {
+  const callback = fiber.runtime?.callback
+  const loader = ctx.get('loader') as LoaderView | undefined
+  const cache = loader?.internal?.loadCache
+  if ((fiber as { entry?: unknown }).entry === undefined || callback === undefined || loader === undefined || cache === undefined) return false
+  let found = false
+  for (const url of cache.keys()) {
+    let plugin: unknown
+    try {
+      plugin = loader.unwrapExports(cache.get(url)?.module?.getNamespace())
+    } catch {
+      // Node also caches modules that are not evaluated yet. Their namespace is not available.
+      continue
+    }
+    if (plugin === undefined || plugin === null || ctx.registry.resolve(plugin as Plugin) !== callback) continue
+    if (!isBuiltInFile(url)) return false
+    found = true
+  }
+  return found
+}
 const PING_MS = 15_000
 const encoder = new TextEncoder()
 
@@ -191,8 +248,11 @@ interface Registration {
 
 /** The internal side of the service, made by `apply`. */
 interface Runtime {
-  /** @param bundle - the module name of the Loader row that registers, when the caller has one. */
-  add(registration: Registration, bundle: string | undefined): () => Promise<void>
+  /**
+   * @param bundle - the module name of the Loader row that registers, when the caller has one.
+   * @param builtIn - whether the code of that row is a built-in bundle. Safe mode calls it.
+   */
+  add(registration: Registration, bundle: string | undefined, builtIn: () => boolean): () => Promise<void>
   list(): WidgetSummary[]
   describe(slug: string): WidgetDescription
   get(slug: string): { rev: number, data: unknown }
@@ -246,15 +306,17 @@ export class WidgetsService extends Service {
    * @param def - the widget definition.
    * @returns the disposer that ends the registration.
    * @throws {WidgetError} `conflict` when the slug has a live registration.
-   * @throws {WidgetError} `safe-mode` in safe mode, when the bundle is not in {@link BUILT_IN_WIDGET_BUNDLES}.
+   * @throws {WidgetError} `safe-mode` in safe mode, when the module of the row is not in {@link BUILT_IN_WIDGET_FOLDERS}.
    * @throws {TypeError} when the definition is malformed.
    */
   register<S, const T extends readonly unknown[]>(def: WidgetDef<S, T>): () => Promise<void> {
     const registration = buildRegistration(def)
     const runtime = this.runtime
     // The Loader adds `entry` to the fiber of each row. A caller without a row is not built in.
-    const bundle = (this.ctx.fiber as { entry?: { options: { name?: unknown } } }).entry?.options.name
-    return this.ctx.effect(() => runtime.add(registration, typeof bundle === 'string' ? bundle : undefined), `widgets: ${registration.slug}`)
+    const fiber = this.ctx.fiber
+    const bundle = (fiber as { entry?: { options: { name?: unknown } } }).entry?.options.name
+    const builtIn = (): boolean => isBuiltInRow(this.ctx, fiber)
+    return this.ctx.effect(() => runtime.add(registration, typeof bundle === 'string' ? bundle : undefined, builtIn), `widgets: ${registration.slug}`)
   }
 
   /** @returns `{ slug, title, rev, programRev }` for each live widget. */
@@ -788,9 +850,9 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
-  function add(registration: Registration, bundle: string | undefined): () => Promise<void> {
+  function add(registration: Registration, bundle: string | undefined, builtIn: () => boolean): () => Promise<void> {
     const { slug } = registration
-    if (safeMode && (bundle === undefined || !BUILT_IN_WIDGET_BUNDLES.has(bundle))) {
+    if (safeMode && !builtIn()) {
       const message = `safe mode: the widget ${slug} of ${bundle ?? 'an unknown bundle'} is off for this Host start; only built-in widgets run`
       off.set(slug, { title: registration.title, message })
       ctx.logger.warn(`widgets: ${message}`)
