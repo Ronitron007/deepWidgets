@@ -19,7 +19,9 @@
  * Then it kills the host again and quits the app while the restart waits; the app must exit with no kill.
  * With DSH_SMOKE_HOST_RESTART=give-up, the check installs a widget bundle that is not built in, then kills the host 4 times.
  * The second restart must be in safe mode: sample stays live, the installed widget is off with reason safe-mode,
- * and a plugin-manager enable does not turn it on. The fourth crash must open the fatal dialog, with no restart.
+ * and a plugin-manager enable does not turn it on. Then it installs a bundle with the package name of the sample;
+ * after the third restart (safe mode), that bundle's widget must be off with reason safe-mode.
+ * The fourth crash must open the fatal dialog, with no restart.
  * With DSH_SMOKE_HOST_RESTART=boot, the check kills the host as soon as it is first ready, while the main window boots.
  * The host must restart, and the main window must show the probe pid of the new host.
  * Each run sets DEEPWIDGETS_LOGS_DIR, so the crash reports of the app stay in the temp folder of the run.
@@ -147,6 +149,8 @@ const appLogs = join(temp, 'app-logs')
 /** The slug and the Loader module name of the safe mode test widget (deepwidgets/widgets/fixtures/safe-mode-widget). */
 const TEST_WIDGET = 'safe-mode-test'
 const TEST_WIDGET_MODULE = 'deepwidgets-widget-safe-mode-test'
+/** The slug of the widget of deepwidgets/widgets/fixtures/built-in-name-widget, a bundle named @deepwidgets/widget-sample. */
+const NAME_WIDGET = 'built-in-name-test'
 await mkdir(home)
 await mkdir(userData)
 openSync(logPath, 'a')
@@ -963,6 +967,18 @@ async function checkHostGiveUp(deadline) {
     if (crash === 2) {
       const reason = await checkSafeMode(widget, url, until)
       if (reason !== undefined) return `give-up: safe mode: ${reason}`
+      // The plugin manager applies a bundle that replaces a workspace package at the next Host start (package-moved).
+      const named = await installBundle(join(root, 'deepwidgets', 'widgets', 'fixtures', 'built-in-name-widget'), deadline)
+      note(`give-up built-in name install=${JSON.stringify(named)}`)
+      if (named?.application !== 'restart-required') return `give-up: the built-in name bundle did not install: ${JSON.stringify(named)}`
+    }
+    if (crash === 3) {
+      // Safe mode decides built-in by the module file of the row, not by its name.
+      const main = await waitForRenderer(until)
+      if (main === undefined) return 'give-up: crash 3: no main window'
+      const named = await pollList(main, Math.min(until, Date.now() + 30_000), (list) => list.some((item) => item.slug === NAME_WIDGET && item.off?.reason === 'safe-mode'))
+      note(`give-up built-in name list=${JSON.stringify(named.value)}`)
+      if (!named.ok) return `give-up: safe mode let a bundle with a built-in name register: ${JSON.stringify(named.value)}`
     }
   }
   const last = await killHost('give-up 4')
