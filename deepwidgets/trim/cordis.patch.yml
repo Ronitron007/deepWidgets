@@ -156,6 +156,10 @@
 - id: ui-commands
   disabled: true
 
+# deepwidgets-trim: DSH workspace screen. Upstream row added after 22ddee3 (upstream_sync.plan).
+- id: ui-context-menu
+  disabled: true
+
 # deepwidgets-trim: DSH workspace screen
 - id: ui-conversation
   disabled: true
@@ -164,8 +168,13 @@
 - id: ui-cordis
   disabled: true
 
-# deepwidgets-trim: DSH workspace screen
-- id: ui-deepseek-model-label-1017
+# deepwidgets-trim: upstream removed the row ui-deepseek-model-label-1017 after 22ddee3 (upstream_sync.plan). Old lines:
+# # deepwidgets-trim: DSH workspace screen
+# - id: ui-deepseek-model-label-1017
+#   disabled: true
+
+# deepwidgets-trim: DSH workspace screen. Upstream row added after 22ddee3 (upstream_sync.plan).
+- id: ui-file-actions
   disabled: true
 
 # deepwidgets-trim: DSH workspace screen
