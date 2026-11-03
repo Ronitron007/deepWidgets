@@ -25,8 +25,8 @@ Each model has its own sync commit. At its sync commit, a model describes the co
 
 | Model | Sync commit | Note |
 |---|---|---|
-| `crash_lifecycle` | `SYNCSHA` | The unit `widget.install_records` changed `held` and added `lift` in `isolation.ts`. The other covered lines only moved. |
-| `widget_install` | `SYNCSHA` | The fix of `widget_fv.install`. One part is not in sync: the `BuiltIn` branch of `Load` still describes `aa7cd518`. Since `widget.agent_rows`, an agent bundle of the slug `sample` gets the row `deepwidgets-agent-sample`. It starts when the user turned the built-in `sample` off, and then the built-in can not start. A replay at `SYNCSHA` showed this (`replay-builtin.mjs`). Thus `BuiltInUntouched` and `OneBundlePerSlug` can break in the code. The model does not show it yet. |
+| `crash_lifecycle` | `bec38c1e` | The unit `widget.install_records` changed `held` and added `lift` in `isolation.ts`. The other covered lines only moved. |
+| `widget_install` | `bec38c1e` | The fix of `widget_fv.install`. One part is not in sync: the `BuiltIn` branch of `Load` still describes `aa7cd518`. Since `widget.agent_rows`, an agent bundle of the slug `sample` gets the row `deepwidgets-agent-sample`. It starts when the user turned the built-in `sample` off, and then the built-in can not start. A replay at `bec38c1e` showed this (`replay-builtin.mjs`). Thus `BuiltInUntouched` and `OneBundlePerSlug` can break in the code. The model does not show it yet. |
 | `action_contract` | `aa7cd518` | Not in sync. [Ronitron007/deepWidgets#75](https://github.com/Ronitron007/deepWidgets/pull/75) fixed `widget_fv.action` and changed the covered lines. Its model of the fixed code is not in this skill. |
 
 The first check ran at `38df710e`.
