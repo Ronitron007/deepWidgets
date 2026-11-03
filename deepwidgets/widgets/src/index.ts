@@ -200,6 +200,11 @@ export interface CallOutcome {
   result: unknown
   rev: number
   replayed?: true
+  /**
+   * widget_fv.action: the call wrote, and its host stopped before its answer was stored.
+   * The retry does not run again, and `result` is null because the answer is not known.
+   */
+  resultLost?: true
 }
 
 /** Options of `call()`. */
@@ -571,8 +576,9 @@ export function apply(ctx: Context, config: Config): void {
     stopping = true
     for (const open of [...events]) open.close()
     // A job waits in the queue for at most its timeout. It runs for at most its timeout, plus the
-    // time its started writes take to settle (widget_fv.action).
-    // The bound only guards against a defect: each admitted promise settles before it.
+    // time its started writes take to settle (widget_fv.action). A rename in progress on the disk
+    // can not be stopped, so a slow disk can keep the drain past the bound by one write. The domain
+    // close below still waits for that write on the domain write chain.
     const bound = 2 * longestTimeoutMs + 1_000
     let timer: ReturnType<typeof setTimeout> | undefined
     const drained = await Promise.race([
@@ -732,6 +738,9 @@ export function apply(ctx: Context, config: Config): void {
    * update() from a timer, a plugin, or a handler that calls `ctx.widgets.update`.
    * A write from a call that timed out is refused, whatever its slug. A write from a running
    * mutation of the same slug uses the slot of that mutation. Each other write waits in the queue.
+   * By design, a write from the async context of a call that already answered (for example, a
+   * timer that the handler started) is a new write, not a write of that call: it gets its own run
+   * and waits in the queue (widget_fv.action).
    */
   function update(slug: string, fn: (state: unknown) => unknown, by: string): Promise<unknown> {
     const entry = liveEntry(slug)
@@ -784,6 +793,9 @@ export function apply(ctx: Context, config: Config): void {
       (value) => (run.signal.aborted ? timeout : value),
       (error: unknown) => {
         if (run.signal.aborted) return timeout
+        // widget_fv.action: a WidgetError from the handler, such as the error of a nested
+        // ctx.widgets.call, is not an answer of this call. Its code and rev do not pass through.
+        if (error instanceof WidgetError) throw new WidgetError('handler-error', `${error.code}: ${error.message}`)
         throw error instanceof Error ? error : new Error(String(error))
       },
     )
@@ -816,7 +828,11 @@ export function apply(ctx: Context, config: Config): void {
       await settleWrites(run)
       run.settled = true
       if (!ended.ok) {
-        if (ended.error instanceof WidgetError) ended.error.wrote = run.wrote
+        if (ended.error instanceof WidgetError) {
+          ended.error.wrote = run.wrote
+          // A failed call that wrote gives the rev of its own slug, and its request record keeps it.
+          if (run.wrote) ended.error.rev ??= stateOf(entry.slug)?.rev ?? 0
+        }
         throw ended.error
       }
       return { result: ended.result ?? null, rev: stateOf(entry.slug)?.rev ?? 0 }
@@ -875,7 +891,7 @@ export function apply(ctx: Context, config: Config): void {
     const mark = markOf(key)
     if (mark !== undefined) {
       if (mark.hash !== hash) throw new WidgetError('idempotency-conflict', `the requestId ${requestId} was used for a different call`)
-      return { result: null, rev: mark.rev, replayed: true }
+      return { result: null, rev: mark.rev, replayed: true, resultLost: true }
     }
     try {
       const outcome = await runAction(entry, action, parsed, caller, request)
@@ -944,7 +960,7 @@ export function apply(ctx: Context, config: Config): void {
             const { action, args, requestId } = body as { action: string, args?: unknown, requestId?: unknown }
             if (requestId !== undefined && typeof requestId !== 'string') throw new WidgetError('bad-request', 'requestId must be a string')
             const out = await call(slug, action, args, { caller: 'user', ...(requestId === undefined ? {} : { requestId }) })
-            return json(200, { ok: true, result: out.result, rev: out.rev, ...(out.replayed ? { replayed: true } : {}) })
+            return json(200, { ok: true, result: out.result, rev: out.rev, ...(out.replayed ? { replayed: true } : {}), ...(out.resultLost ? { resultLost: true } : {}) })
           } catch (error) {
             return failure(error)
           }
@@ -973,8 +989,15 @@ export function apply(ctx: Context, config: Config): void {
     if (store.table('program').get(registration.slug) === undefined) {
       await store.table('program').put(registration.slug, { rev: 1, text: registration.program, updatedAt: Date.now() })
     }
-    if (store.table('state').get(registration.slug) === undefined) {
+    const state = store.table('state').get(registration.slug)
+    if (state === undefined) {
       await store.table('state').put(registration.slug, { rev: 0, data: registration.initialState ?? null })
+    } else if (state.requests !== undefined) {
+      // widget_fv.action: drop the expired write marks of an idle slug when it starts. The rev stays.
+      const requests = liveMarks(state.requests, Date.now())
+      if (Object.keys(requests).length !== Object.keys(state.requests).length) {
+        await store.table('state').put(registration.slug, Object.keys(requests).length === 0 ? { rev: state.rev, data: state.data } : { rev: state.rev, data: state.data, requests })
+      }
     }
   }
 

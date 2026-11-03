@@ -400,6 +400,8 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       inputSchema: lenient(callInput),
     }, tool(callInput, async ({ slug, action, args, requestId }) => {
       const outcome = await widgets.call(slug, action, args ?? {}, { caller: agentId, ...(requestId === undefined ? {} : { requestId }) })
+      // widget_fv.action: a replay whose answer was lost says so, with the rev of its write.
+      if (outcome.resultLost === true) return { ...outcome, nextStep: 'The call wrote before a host restart, and its answer was lost. Read the state with widget_describe. Do not send this requestId again for a new operation.' }
       return { ...outcome }
     }))
 

@@ -11,7 +11,10 @@
  * - `overlap`: call A writes to a slow disk past its timeout. Call B reads, waits, and writes.
  *   No update is lost (rule OneAtATime).
  * - `crash`: SIGKILL after the state write and before the outcome record. The retry gives
- *   `replayed: true`, and the state changed once (rule AtMostOnce).
+ *   `replayed: true` and `resultLost: true`, and the state changed once (rule AtMostOnce).
+ * - `nested`: a handler writes, then a nested ctx.widgets.call of another slug gives
+ *   `timeout-after-write`. The outer call gives `handler-error` with its own rev, and a retry
+ *   gives that answer again.
  * - `hang`: a handler writes, then hangs. The call gives `timeout-after-write` with the rev,
  *   the next mutation of the slug runs, the later write of the hung handler is refused, and
  *   a retry gives the recorded answer.
@@ -200,10 +203,22 @@ const WIDGET = `
         await w.update((s) => ({ ...s, n: s.n + 1 })); await pause(600)
         try { await w.update((s) => ({ ...s, n: s.n + 100 })); wc.hangLate = 'wrote' } catch (error) { wc.hangLate = error.code ?? String(error) }
         await new Promise(() => {}) } },
+      { name: 'nestedAfterWrite', kind: 'mutation', handler: async (_a, w) => {
+        await w.update((s) => ({ ...s, n: s.n + 1 }))
+        return wc.ctx.widgets.call('fv2', 'slowWrite', {}, { caller: 'nested' }) } },
       { name: 'get', kind: 'query', handler: (_a, w) => w.state },
     ],
   }
-  wc.fiber = wc.loader.ctx.plugin({ name: 'fv-check', inject: ['widgets'], apply(ctx) { wc.ctx = ctx; ctx.widgets.register(wc.def) } })
+  wc.def2 = {
+    slug: 'fv2', title: 'FV2', program: 'root = Card([])', initialState: { n: 0 }, timeoutMs: 5000,
+    actions: [
+      { name: 'bump', kind: 'mutation', handler: (_a, w) => w.update((s) => ({ ...s, n: s.n + 1 })) },
+      { name: 'get', kind: 'query', handler: (_a, w) => w.state },
+      { name: 'slowWrite', kind: 'mutation', timeoutMs: 200, handler: async (_a, w) => {
+        await w.update((s) => ({ ...s, n: s.n + 1 })); await pause(1000); return 'done' } },
+    ],
+  }
+  wc.fiber = wc.loader.ctx.plugin({ name: 'fv-check', inject: ['widgets'], apply(ctx) { wc.ctx = ctx; ctx.widgets.register(wc.def); ctx.widgets.register(wc.def2) } })
   await wc.fiber
   return wc.ctx.widgets.get('fv')
 `
@@ -218,6 +233,14 @@ const SLOW_DISK = `
   }
   return 'patched'
 `
+
+/** Wait until both slugs have their seed records, so no seed write waits on the slow disk. */
+async function seeded(host) {
+  for (const slug of ['fv', 'fv2']) {
+    const r = await host.post(`/api/widgets/${slug}/call`, { action: 'get' })
+    if (r.status !== 200) throw new Error(`the seed of ${slug} failed: ${JSON.stringify(r.body)}`)
+  }
+}
 
 const state = (host) => host.inspector.run(`const s = wc.ctx.widgets.get('fv'); return { rev: s.rev, n: s.data.n }`)
 
@@ -237,6 +260,7 @@ async function late() {
   const host = await startHost(join(work, 'late'))
   try {
     await host.inspector.run(WIDGET)
+    await seeded(host)
     await host.inspector.run(SLOW_DISK)
     await host.inspector.run('globalThis.__fvSlow = 1000')
     const a = await host.post('/api/widgets/fv/call', { action: 'quickWrite', requestId: 'r2' })
@@ -292,6 +316,7 @@ async function overlap() {
   const host = await startHost(join(work, 'overlap'))
   try {
     await host.inspector.run(WIDGET)
+    await seeded(host)
     await host.inspector.run(SLOW_DISK)
     await host.inspector.run('globalThis.__fvSlow = 1000')
     const a = host.post('/api/widgets/fv/call', { action: 'quickWrite' })
@@ -331,7 +356,7 @@ async function crash() {
     await host.inspector.run(WIDGET)
     const retry = await host.post('/api/widgets/fv/call', { action: 'writeThenWait', requestId: 'r1' })
     const after = await state(host)
-    check('crash: the retry after the SIGKILL gives replayed: true, and n is 1', retry.status === 200 && retry.body?.replayed === true && retry.body.rev === 1 && after.n === 1,
+    check('crash: the retry after the SIGKILL gives replayed: true, resultLost: true, and n is 1', retry.status === 200 && retry.body?.replayed === true && retry.body.resultLost === true && retry.body.result === null && retry.body.rev === 1 && after.n === 1,
       `retry ${String(retry.status)} ${JSON.stringify(retry.body)}; state ${JSON.stringify(after)}`)
     const other = await host.post('/api/widgets/fv/call', { action: 'quickWrite', requestId: 'r1' })
     check('crash: the same requestId on another action gives idempotency-conflict', other.status === 409 && other.body?.error?.code === 'idempotency-conflict', JSON.stringify(other.body))
@@ -363,7 +388,27 @@ async function hang() {
   }
 }
 
-const REPLAYS = { late, natural, overlap, crash, hang }
+/** widget_fv.action: the code and rev of a nested call do not pass through the outer call. */
+async function nested() {
+  const host = await startHost(join(work, 'nested'))
+  try {
+    await host.inspector.run(WIDGET)
+    for (let i = 0; i < 3; i += 1) await host.post('/api/widgets/fv2/call', { action: 'bump' })
+    const outer = await host.post('/api/widgets/fv/call', { action: 'nestedAfterWrite', requestId: 'n1' })
+    const s = await state(host)
+    const other = await host.inspector.run(`return wc.ctx.widgets.get('fv2').rev`)
+    check('nested: a nested timeout-after-write gives the outer call handler-error with the outer rev', outer.status === 500 && outer.body?.error?.code === 'handler-error' && outer.body.error.rev === 1 && s.rev === 1 && other === 4,
+      `${String(outer.status)} ${JSON.stringify(outer.body)}; fv ${JSON.stringify(s)}; fv2 rev ${String(other)}`)
+    const retry = await host.post('/api/widgets/fv/call', { action: 'nestedAfterWrite', requestId: 'n1' })
+    const after = await state(host)
+    check('nested: the retry gives the recorded answer and does not write', retry.status === 500 && retry.body?.error?.code === 'handler-error' && retry.body.error.rev === 1 && after.rev === 1,
+      `${String(retry.status)} ${JSON.stringify(retry.body)}; fv ${JSON.stringify(after)}`)
+  } finally {
+    await host.close()
+  }
+}
+
+const REPLAYS = { late, natural, overlap, crash, nested, hang }
 
 let exitCode = 1
 try {
