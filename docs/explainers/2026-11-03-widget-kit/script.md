@@ -2,26 +2,26 @@
 
 Source of truth: `origin/main` `e6af003f` and the spike record `docs/explore/widget-system/widget-kit-spike.md` (`kit_spike`, run at `1ca2967d`), plus the raw spike files in `~/.deepwidgets/kit-spike/`. The widget kit is a direction in progress, not a decided spec. Narration is in `narration.md` (STE, lint 0.00). Target length uses 140 spoken words per minute. Visuals give the written forms. Anything a model would produce is labeled illustrative. Each inferred number is labeled inferred on screen and in the voice.
 
-Scenes: 85. Narration words: 7199. Total target: 51.4 min.
+Scenes: 85. Narration words: 7462. Total target: 53.3 min.
 
 ## Parts `explainer_kit.parts`
 
 | Part | Scenes | Words | Target |
 |---|---|---|---|
-| `part_intro` | 5 | 591 | 4.2 min |
-| `part_today` | 6 | 589 | 4.2 min |
-| `part_library` | 6 | 546 | 3.9 min |
-| `part_vite` | 8 | 586 | 4.2 min |
-| `part_types` | 6 | 400 | 2.9 min |
-| `part_packaging` | 10 | 926 | 6.6 min |
+| `part_intro` | 5 | 594 | 4.2 min |
+| `part_today` | 6 | 617 | 4.4 min |
+| `part_library` | 6 | 570 | 4.1 min |
+| `part_vite` | 8 | 597 | 4.3 min |
+| `part_types` | 6 | 434 | 3.1 min |
+| `part_packaging` | 10 | 967 | 6.9 min |
 | `part_host` | 6 | 464 | 3.3 min |
-| `part_pin` | 7 | 517 | 3.7 min |
-| `part_describe` | 6 | 556 | 4.0 min |
+| `part_pin` | 7 | 535 | 3.8 min |
+| `part_describe` | 6 | 580 | 4.1 min |
 | `part_config` | 8 | 622 | 4.4 min |
-| `part_settings` | 4 | 363 | 2.6 min |
+| `part_settings` | 4 | 395 | 2.8 min |
 | `part_serving` | 4 | 204 | 1.5 min |
-| `part_checks` | 3 | 290 | 2.1 min |
-| `part_close` | 6 | 545 | 3.9 min |
+| `part_checks` | 3 | 304 | 2.2 min |
+| `part_close` | 6 | 579 | 4.1 min |
 
 ## `cold_open`
 
@@ -58,19 +58,19 @@ OUTLINE DIAGRAM (the anchor, reused at the start of each part). Top row, label `
 ## `outline_kit`
 
 - Part: `part_intro`
-- Target length: 56 s (131 words)
+- Target length: 57 s (134 words)
 
 **Narration**
 
 The bottom row is the kit path. It starts at the kit project. The kit project is a folder with the packages that widgets can use. An agent writes its own component library and a child component. The child holds the OpenUI renderer. OpenUI is the library that turns a program text into React components.
 
-Then a Vite build makes one page for each widget. The same kind of gates and a render check test that page. Electron main then serves the pinned page of each slug. A slug is the id of a widget. On the host side, a widget can also use extra packages.
+Then a Vite build makes one page for each widget. The same kind of gates and a render check test that page. Electron main then serves the page of each slug. A slug is the id of a widget. On the host side, a widget can also use extra packages.
 
-Two doors lead into the kit: MCP tools for agents and a settings pane for the user. We return to this diagram between the parts.
+In the spike design, two doors lead into the kit: MCP tools for agents and a settings pane for the user. We return to this diagram between the parts.
 
 **Visuals**
 
-Bottom row, label `kit path (direction)`: `kit project $DSH_HOME/deepwidgets/kit/ (package.json, pnpm-lock.yaml, node_modules, kit.json; core + extras)` > `agent library + child holding <Renderer.Root>` > `type gate > Vite build per widget > render check` > `pinned page per slug: dsh-app://app/widget/<slug>/`. Side box under the host: `host extras (bundle | external | native addon)`. Two doors into the kit box: left `MCP: kit_read, kit_describe, kit_add, kit_remove`, right `settings pane: /api/kit`. A tag on the line kit to pages: `pin or rebuild`. A tag on the agent arrow: `dynamic description`.
+Bottom row, label `kit path (direction)`: `kit project $DSH_HOME/deepwidgets/kit/ (package.json, pnpm-lock.yaml, node_modules, kit.json; core + extras)` > `agent library + child holding <Renderer.Root>` > `type gate > Vite build per widget > render check` > `page per slug: dsh-app://app/widget/<slug>/`. Side box under the host: `host extras (bundle | external | native addon)`. Two doors into the kit box, tag `spike design`: left `MCP: kit_read, kit_describe, kit_add, kit_remove`, right `settings pane: /api/kit`. A tag on the line kit to pages: `pin or rebuild`. A tag on the agent arrow: `dynamic description`.
 
 ## `direction_list`
 
@@ -122,17 +122,17 @@ Outline: the `shared shell` box glows. Code card `deepwidgets/shell/src/main.tsx
 ## `today_component_set`
 
 - Part: `part_today`
-- Target length: 47 s (109 words)
+- Target length: 47 s (110 words)
 
 **Narration**
 
 The shell compiles in one component set, shad c n widgets at one. A component set is a list of components with names, props, and descriptions. The set lives in the file library dot t s x. A program names its set. The shell refuses a program that names another set, with the error unsupported component set.
 
-Thus an agent today can use only these components. It cannot add a component of its own. The standing decision widget runtime pin says this on purpose: all widgets share one shell, pinned to one version. The kit direction would replace that decision. The decision table does not record a change yet.
+Thus an agent today can use only these components. It cannot add a component of its own. The standing decision widget runtime pin says this on purpose: all widgets share one shell, pinned to one version. The kit direction conflicts with that decision. The operator has not decided if the kit replaces it.
 
 **Visuals**
 
-Card `library.tsx`: `export const CATALOG_ID = 'shadcn-widgets@1'` and component names `Stat, Button, Input, Checkbox, Empty, BarChart, LineChart, Row, List, Card, ...`. Error tile: `Unsupported component set` with detail `The widget needs "x". This shell has shadcn-widgets@1.` Decision card from `where-we-stand.md`: `widget.runtime_pin | All widgets share one shell, pinned to one version.` A dashed arrow from it labeled `kit direction would replace (no change recorded yet)`.
+Card `library.tsx`: `export const CATALOG_ID = 'shadcn-widgets@1'` and component names `Stat, Button, Input, Checkbox, Empty, BarChart, LineChart, Row, List, Card, ...`. Error tile: `Unsupported component set` with detail `The widget needs "x". This shell has shadcn-widgets@1.` Decision card from `where-we-stand.md`: `widget.runtime_pin | All widgets share one shell, pinned to one version.` A dashed arrow from it labeled `kit direction conflicts (not decided)`.
 
 ## `today_creation`
 
@@ -167,17 +167,17 @@ Code card from `creation.ts` `writeConfigs`: `paths: { zod: [t.zod] }`. Guide ru
 ## `today_serving`
 
 - Part: `part_today`
-- Target length: 33 s (78 words)
+- Target length: 45 s (105 words)
 
 **Narration**
 
 How does a widget window get its page? Electron main answers each request on the custom scheme d s h app. For a path under slash widget, it serves files from the shell build folder on disk. Every slug gets the same index page. The slug travels in the query string.
 
-Each other path goes to the host with the host cookie. The page talks to the host only through these routes, and the host checks the cookie.
+A few other paths, such as the root index page, come from the D S H web folder on disk. Every other path, such as an A P I path, goes to the host with the host cookie. The page talks to the host only through these routes, and the host checks the cookie.
 
 **Visuals**
 
-Outline: `Electron main` box glows. Request `dsh-app://app/widget/?slug=meter` > `Electron main protocol.handle` > folder `@deepwidgets/shell/dist/widget/index.html` (same file for `shadcn`, `clock`, `meter`). Second request `dsh-app://app/api/widgets/meter/program` > `+ host cookie` > `host 127.0.0.1:<port>`.
+Outline: `Electron main` box glows. Request `dsh-app://app/widget/?slug=meter` > `Electron main protocol.handle` > folder `@deepwidgets/shell/dist/widget/index.html` (same file for `shadcn`, `clock`, `meter`). Second request `dsh-app://app/api/widgets/meter/program` > `+ host cookie` > `host 127.0.0.1:<port>`. Small third line: `/, /index.html, /assets/* > dsh-web-frontend/dist (disk)`.
 
 ## `today_agent_text`
 
@@ -227,17 +227,17 @@ Split view. Left, locked (padlock): `@deepwidgets/widget-kit core: channel.ts, R
 ## `library_contract`
 
 - Part: `part_library`
-- Target length: 43 s (100 words)
+- Target length: 53 s (124 words)
 
 **Narration**
 
 The two halves meet at a small contract. The contract is a TypeScript type with the name child props. It has two fields, root and children. Root is every prop of the renderer root except library and children. The core fills root with the program, the tool provider, and the error handlers.
 
-The tool provider is the object that sends each query and mutation to the call route. The child adds its own library and passes the rest through. Thus the agent cannot change how the page talks to the host. It can only choose which components draw the program.
+The tool provider is the object that sends each query and mutation to the call route. The child adds its own library and passes the rest through. But the contract is a type, not a guard. The child itself writes the renderer root, so agent code can change the tool provider. We infer that agent code can also call the host routes itself. The page policy allows requests to the same origin.
 
 **Visuals**
 
-Code card `core/src/contract.ts` (spike): `export type RootProps = Omit<ComponentProps<typeof Renderer.Root>, 'library' | 'children'>` and `export interface ChildProps { root: RootProps; children?: ReactNode }`. Arrow from core with `root = { response, toolProvider, queryLoader, onParseResult, onError, onAction }` into `Child`, which adds `library`.
+Code card `core/src/contract.ts` (spike): `export type RootProps = Omit<ComponentProps<typeof Renderer.Root>, 'library' | 'children'>` and `export interface ChildProps { root: RootProps; children?: ReactNode }`. Arrow from core with `root = { response, toolProvider, queryLoader, onParseResult, onError, onAction }` into `Child`, which adds `library`. Red note: `a type, not a guard: the child can replace toolProvider`.
 
 ## `library_agent_code`
 
@@ -330,11 +330,11 @@ Table `kit v1` (from `results-v1.tsv`): `shadcn  vite 2.811 s  796 KB`, `clock  
 ## `vite_cache`
 
 - Part: `part_vite`
-- Target length: 20 s (47 words)
+- Target length: 22 s (51 words)
 
 **Narration**
 
-Vite has no build cache that stays between builds. A warm build saves only about one point four seconds. Thus each install pays the full build time. For a small widget, that is about one second. For a large library, it is about three to four seconds.
+Vite has no build cache that stays between builds. A warm build saves only about one point four seconds. Thus each install pays the full build time. For a small widget, that is about one second. For a large library, it is about two point eight to three point eight seconds.
 
 **Visuals**
 
@@ -360,17 +360,17 @@ Code card, spike `core/src/styles.css`: `@source "./";`, `@source "./agent";`, `
 ## `render_check`
 
 - Part: `part_vite`
-- Target length: 30 s (69 words)
+- Target length: 32 s (74 words)
 
 **Narration**
 
 After the build, a render check loads the page in a hidden Electron window. It waits one and a half seconds. Then it reads the state, the errors, and the text of the page. It costs about one point six seconds for each widget.
 
-The render check has a limit. It finds only errors that throw. A wrong prop of an untyped extra draws the wrong thing and passes.
+The render check has a limit. It finds only errors that throw. The spike record says that a wrong prop of an untyped extra passes. We could not check this.
 
 **Visuals**
 
-Offscreen window icon. Steps: `loadURL /widget/<slug>/?slug=<slug>` > `wait 1500 ms` > `read window.__dw.state, __dw.errors, .dw-surface text`. Chip: `about 1.6 s per widget`. Limit card, red: `finds only errors that throw; a wrong prop of an untyped extra passes`.
+Offscreen window icon. Steps: `loadURL /widget/<slug>/?slug=<slug>` > `wait 1500 ms` > `read window.__dw.state, __dw.errors, .dw-surface text`. Chip: `about 1.6 s per widget`. Limit card, red: `finds only errors that throw`; amber line `untyped extra, wrong prop passes (spike record, not checked)`.
 
 ## `vite_failures`
 
@@ -390,15 +390,15 @@ Flow: `build fails` > `install stops` > `old page stays` (amber `pin policy, inf
 ## `vite_work`
 
 - Part: `part_vite`
-- Target length: 24 s (55 words)
+- Target length: 24 s (57 words)
 
 **Narration**
 
-This front reads the node modules of the kit and the agent folder. It writes a build folder for each slug. The gate must also refuse an import that is not in the core or the renderer extras. The work map gives the Vite build gate a size of large. That size is an estimate.
+This front reads the node modules of the kit and the agent folder. It writes a build folder for each slug. The spike work map also says that the gate refuses an import outside the core and the renderer extras. The work map gives the Vite build gate a size of large. That size is an estimate.
 
 **Visuals**
 
-Work card. Reads: `kit node_modules`, `src/agent`. Writes: `build folder per slug`. Rule: `refuse imports outside core + renderer extras`. Size chip: `Vite build gate: L (estimate)`.
+Work card. Reads: `kit node_modules`, `src/agent`. Writes: `build folder per slug`. Rule: `work map design: refuse imports outside core + renderer extras`. Size chip: `Vite build gate: L (estimate)`.
 
 ## `types_why`
 
@@ -429,32 +429,32 @@ Card `tsc -p .` with tsconfig flags `strict`, `noUncheckedIndexedAccess`, `exact
 ## `types_config`
 
 - Part: `part_types`
-- Target length: 41 s (95 words)
+- Target length: 51 s (118 words)
 
 **Narration**
 
 The spike tsconfig file has two path aliases. At agent points to the agent folder. At core points to the core source, where the contract lives. The compiler resolves every other import from the node modules of the kit. Thus the type gate sees the real types of each extra.
 
-Skip lib check is on, so the gate does not check the type files of the packages themselves. That keeps the gate fast. An extra with no type file gives the agent no type help at all. The render check is then the only guard.
+Skip lib check is on, so the gate does not check the type files of the packages themselves. That keeps the gate fast. The type gate refuses an extra with no type file, with the error T S seven zero one six. The agent must then declare the module itself. After that, the gate accepts any prop of that extra, so the render check is the only guard.
 
 **Visuals**
 
-Code card spike `core/tsconfig.json`: `"paths": { "@agent/*": ["./src/agent/*"], "@core/*": ["./src/*"] }`, `"skipLibCheck": true`, `"types": []`. Arrow: other imports > `node_modules -> kit`. Amber note: `extra with no .d.ts: no type help, render check only guard`.
+Code card spike `core/tsconfig.json`: `"paths": { "@agent/*": ["./src/agent/*"], "@core/*": ["./src/*"] }`, `"skipLibCheck": true`, `"types": []`. Arrow: other imports > `node_modules -> kit`. Amber note: `extra with no .d.ts: tsc refuses, TS7016 (ran)`; then `after declare module: no type help, render check only guard`.
 
 ## `types_tsgolint`
 
 - Part: `part_types`
-- Target length: 32 s (75 words)
+- Target length: 37 s (86 words)
 
 **Narration**
 
-The spike also ran ox lint with t s go lint. Today the lint gate already uses this pair. It took zero point one one to zero point five five seconds for each widget. We compute that it is about three to five times faster than t s c.
+The spike also ran ox lint with t s go lint. Today the lint gate already uses this pair. On shad c n and meter, it took zero point one one to zero point five five seconds. The spike did not run it on clock. We compute that it is about three to five times faster than t s c.
 
 It found the same error on meter in kit vee two B. Thus either tool can run the gate. Which tool to use is not decided.
 
 **Visuals**
 
-Card `oxlint --type-aware (tsgolint)`; `today's lint gate uses it (creation.ts)`. Table (measured): `shadcn 0.29 to 0.55 s`, `meter 0.11 to 0.12 s`. Chip: `about 3x to 5x faster than tsc (computed)`. Tick: `same v2b error found`. Tag: `tool not decided`.
+Card `oxlint --type-aware (tsgolint)`; `today's lint gate uses it (creation.ts)`. Table (measured): `shadcn 0.29 to 0.55 s`, `meter 0.11 to 0.12 s`, `clock not run`. Chip: `about 3x to 5x faster than tsc (computed)`. Tick: `same v2b error found`. Tag: `tool not decided`.
 
 ## `types_error_path`
 
@@ -540,17 +540,17 @@ Strategy card `S1: fresh install`. Numbers: `cold install 13.95 s, 74 MB net`, `
 ## `pnpm_strict_builds`
 
 - Part: `part_packaging`
-- Target length: 35 s (81 words)
+- Target length: 43 s (100 words)
 
 **Narration**
 
 The fresh install strategy also exited with an error. P n p m eleven blocks the build scripts of packages by default. A build script runs code at install time. The install refused the scripts of e s build and of the telemetry in OpenUI lang core.
 
-The p n p m error code says ignored builds. Two fixes work: the setting allow builds, or the setting strict dep builds with the value false. This applies to every strategy that installs.
+The p n p m error code says ignored builds. The setting strict dep builds, with the value false, fixed it. The spike record also names the setting allow builds. We could not check that second fix. The kit lockfile installs skipped the same scripts, but they gave only a warning and finished.
 
 **Visuals**
 
-Log card (real, `s1/cold1/install.log`): `[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: @openuidev/lang-core@1.0.1, esbuild@0.25.12, esbuild@0.28.2`. Fix chips: `allowBuilds`, `strict-dep-builds=false`.
+Log card (real, `s1/cold1/install.log`): `[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: @openuidev/lang-core@1.0.1, esbuild@0.25.12, esbuild@0.28.2`. Fix chips: `strict-dep-builds=false (spike, verified)`, `allowBuilds (spike record only, not checked)`. Second log line (real, `s2/w1/install.log`): `Ignored build scripts: ... Done in 3s` with tag `warning only`.
 
 ## `strategy_kit_lockfile`
 
@@ -585,15 +585,15 @@ Card: `--config.trust-lockfile=true`. Without it: `minimumReleaseAge 1440 min` >
 ## `kit_lockfile_failures`
 
 - Part: `part_packaging`
-- Target length: 21 s (49 words)
+- Target length: 30 s (71 words)
 
 **Narration**
 
-Each failure of the kit lockfile strategy is fast and clear. A store with a missing package fails in zero point eight seconds with the error no offline tarball. A package file that does not match the lockfile fails with the error outdated lockfile. Neither failure touches the network.
+Each failure of the kit lockfile strategy is fast and clear. A store with a missing package fails in zero point eight seconds with the error no offline tarball. A package file that does not match the lockfile fails with the error outdated lockfile. The missing package case ran offline, against a dead registry address. We infer that the drift case also used no network, because the lockfile check fails first.
 
 **Visuals**
 
-Two log cards (real): `s2/miss/install.log`: `[ERR_PNPM_NO_OFFLINE_TARBALL] A package is missing from the store but cannot download it in offline mode.` with `0.8 s`. `s2/drift/install.log`: `[ERR_PNPM_OUTDATED_LOCKFILE] Cannot install with "frozen-lockfile" because pnpm-lock.yaml is not up to date` and `1 dependencies were added: left-pad@1.3.0`.
+Two log cards (real): `s2/miss/install.log`: `[ERR_PNPM_NO_OFFLINE_TARBALL] A package is missing from the store but cannot download it in offline mode.` with `0.8 s`. `s2/drift/install.log`: `[ERR_PNPM_OUTDATED_LOCKFILE] Cannot install with "frozen-lockfile" because pnpm-lock.yaml is not up to date` and `1 dependencies were added: left-pad@1.3.0`. Tags: miss `offline, dead registry 127.0.0.1:9`, drift `no network (inferred)`.
 
 ## `strategy_shared_chunks`
 
@@ -729,17 +729,17 @@ Work card: `extend paths map beyond zod`, `update guide rule 'Only zod ... can b
 ## `pin_question`
 
 - Part: `part_pin`
-- Target length: 38 s (88 words)
+- Target length: 37 s (87 words)
 
 **Narration**
 
-On the diagram, we now look at the line from the kit to the pinned pages. A kit change can break a built widget. To pin a widget means to keep its page on the kit version that it built with. To rebuild means to build it again on the new kit.
+On the diagram, we now look at the line from the kit to the pages. A kit change can break a built widget. To pin a widget means to keep its page on the kit version that it built with. To rebuild means to build it again on the new kit.
 
 The operator direction says to decide from data. The spike built the three widgets on kit vee one, then again on two new kits. A rebuild of all three took eight point three to nine seconds.
 
 **Visuals**
 
-Outline: the line `kit > pinned pages` glows with tag `pin or rebuild`. Definitions: `pin = keep the page on the kit version it built with`, `rebuild = build again on the new kit`. Timeline `v1 > v2a`, `v1 > v2b`. Totals (measured): `rebuild all 3: v1 7.7 s, v2a 9.0 s, v2b 8.3 s`.
+Outline: the line `kit > pages` glows with tag `pin or rebuild`. Definitions: `pin = keep the page on the kit version it built with`, `rebuild = build again on the new kit`. Timeline `v1 > v2a`, `v1 > v2b`. Totals (measured): `first build v1 7.7 s; rebuild v2a 9.0 s, v2b 8.3 s`.
 
 ## `example_v2a`
 
@@ -800,11 +800,11 @@ S3 diagram: old page `meter (built on v1)` imports `/kit/v1/dw-mini-ui.js`. The 
 ## `pin_policy`
 
 - Part: `part_pin`
-- Target length: 50 s (116 words)
+- Target length: 58 s (135 words)
 
 **Narration**
 
-Here is the policy that the data supports. We infer it, and it is not a decision. Pin each widget to its kit version by default. A built page holds its own copy of each package, so a kit change does not affect it.
+Here is the policy that the data supports. We infer it, and it is not a decision. Pin each widget to its kit version by default. With fresh install or kit lockfile, a built page holds its own copy of each package. A kit change then does not affect it. With shared chunks, a page needs the runtime of its own kit version.
 
 Rebuild a widget only on request. The rebuild runs the type gate, the build, and a render check. If a gate fails, the old page and the old lockfile stay.
 
@@ -812,7 +812,7 @@ Rebuild by force only for a security fix in a patch or a minor version, with the
 
 **Visuals**
 
-Card titled `the policy that the data supports (inferred)`. Four lines: `pin to kit version by default`; `rebuild on request: type gate + build + render check; fail keeps old page and old lockfile`; `forced rebuild only for a security fix in a patch or minor version; fail keeps old page and flags the widget`; `never auto-rebuild across a major version or a changed library`. Corner tag: `not a decision`.
+Card titled `the policy that the data supports (inferred)`. Four lines: `pin to kit version by default (fresh install, kit lockfile; shared chunks needs its runtime folder)`; `rebuild on request: type gate + build + render check; fail keeps old page and old lockfile`; `forced rebuild only for a security fix in a patch or minor version; fail keeps old page and flags the widget`; `never auto-rebuild across a major version or a changed library`. Corner tag: `not a decision`.
 
 ## `pin_work`
 
@@ -845,52 +845,52 @@ Outline: the `MCP` door glows with tag `dynamic description`. Four text sources 
 ## `describe_test`
 
 - Part: `part_describe`
-- Target length: 37 s (86 words)
+- Target length: 40 s (94 words)
 
 **Narration**
 
-The spike tested this with Claude Code version two point one point three one seven. A small MCP server had one tool, one resource, and instructions, each with a version marker. A fake model A P I on the same machine recorded what the model would get. Thus no paid run took place.
+The spike tested this with Claude Code version two point one point three one seven. A small MCP server had two tools, one resource, and instructions, each with a version marker. A third tool came only after the change. A fake model A P I on the same machine recorded what the model would get. Thus no paid run took place.
 
 Between two turns, the server raised the kit version. It sent list changed for tools and for resources. List changed is an MCP signal that says a list of tools or resources changed.
 
 **Visuals**
 
-Setup diagram: `claude (interactive, PTY)` > `MCP server kitspike 127.0.0.1:48931 (createMcpHandler, legacy: 'stateless')` and `fake model API 127.0.0.1:48932 (records /v1/messages)`. Markers: `KIT_INSTR_V1`, `KIT_TOOL_V1`, `KIT_PROBE_V1`, `KIT_RES_V1`. Action `GET /ctl/bump` > `notify.toolsChanged(), resourcesChanged(), resourceUpdated()`. Caption: `Claude Code 2.1.317, no paid run`.
+Setup diagram: `claude (interactive, PTY)` > `MCP server kitspike 127.0.0.1:48931 (createMcpHandler, legacy: 'stateless')` and `fake model API 127.0.0.1:48932 (records /v1/messages)`. Tools: `kit_read`, `kit_probe`, then `kit_added_v2` after the bump. Markers: `KIT_INSTR_V1`, `KIT_TOOL_V1`, `KIT_PROBE_V1`, `KIT_RES_V1`. Action `GET /ctl/bump` > `notify.toolsChanged(), resourcesChanged(), resourceUpdated()`. Caption: `Claude Code 2.1.317, no paid run`.
 
 ## `describe_results`
 
 - Part: `part_describe`
-- Target length: 46 s (107 words)
+- Target length: 47 s (109 words)
 
 **Narration**
 
-Here are the results. Tool output and resources: yes. Claude Code read live data on each call, with kit version two after the change. List changed: yes. Claude Code read the tool and resource lists again within twelve to sixty-three milliseconds. A new tool showed on the next turn, as a deferred tool.
+Here are the results. Tool output and resources: yes. Claude Code read live data on each call, with kit version two after the change. List changed: yes. In all three runs, Claude Code read the tool and resource lists again within sixty-three milliseconds. A new tool showed on the next turn, as a deferred tool.
 
 A tool that the client already loaded, with a new description: no. The old text stayed for the whole session. The server instructions: no. Claude Code never read them again. The model also gets no push of a change. It learns of a change only from a new tool name or from a call.
 
 **Visuals**
 
-Table `kit_spike.mcp`: `tool output and resources | yes, live each call (kitVersion 2 after bump)`; `notifications/tools/list_changed | yes, tools/list again in 12 to 63 ms; new tool next turn (deferred)`; `description of a loaded tool | no: KIT_TOOL_V1 in messages 05 to 08`; `server instructions | no: KIT_INSTR_V1 in every request`. Timeline from `run-stateless2/server.log`: `12:53:13.040 bump` > `13.052 resources/templates/list` > `13.058 tools/list` > `13.061 resources/list`.
+Table `kit_spike.mcp`: `tool output and resources | yes, live each call (kitVersion 2 after bump)`; `notifications/tools/list_changed | yes, tools/list again in 14 to 63 ms (three runs); new tool next turn (deferred)`; `description of a loaded tool | no: KIT_TOOL_V1 in messages 05 to 08`; `server instructions | no: KIT_INSTR_V1 in every request`. Timeline from `run-stateless2/server.log`: `12:53:13.040 bump` > `13.052 resources/templates/list` > `13.058 tools/list` > `13.061 resources/list`.
 
 ## `describe_rule`
 
 - Part: `part_describe`
-- Target length: 37 s (86 words)
+- Target length: 39 s (92 words)
 
 **Narration**
 
 Thus the kit facts go in tool output and in a resource. They do not go in a tool description or in the instructions. The instructions can stay fixed and say: call kit read for the packages. List changed only refreshes the resource list and announces a new tool name.
 
-For the same reason, kit add and kit remove stay on the tool list at all times. The call checks the setting. A description that said off would lie after the user turns the setting on.
+For the same reason, the spike design keeps kit add and kit remove on the tool list at all times. In that design, the call checks the setting. A description that said off would lie after the user turns the setting on.
 
 **Visuals**
 
-Rule card: `kit facts > tool output (widget_guide, kit_read) + resource`, crossed out: `tool description`, `instructions`. Fixed instruction line: `call kit_read for packages`. Tool list with `kit_add`, `kit_remove` always present, and `setting checked in the call`.
+Rule card: `kit facts > tool output (widget_guide, kit_read) + resource`, crossed out: `tool description`, `instructions`. Fixed instruction line: `call kit_read for packages`. Tool list with `kit_add`, `kit_remove` always present, and `setting checked in the call`. Tag on the tool list: `spike design`.
 
 ## `describe_cost`
 
 - Part: `part_describe`
-- Target length: 65 s (152 words)
+- Target length: 69 s (160 words)
 
 **Narration**
 
@@ -898,11 +898,11 @@ How much text does a package list cost? The spike measured twenty real packages.
 
 A card holds the index line, the types entry, an import line, the top exports, and a short readme part. The raw type files came to about two point five five million characters, about seven hundred seventy thousand tokens. Lucide alone was two point one seven million characters. The token numbers are estimates, the characters divided by three point three.
 
-Thus the guide gives one line for each package. A tool gives a card on request. The types never go inline. The agent gets the path of the type file and reads it with its own tools.
+Thus the spike design gives one index line for each package in the guide. A tool gives a card on request. In that design, the types never go inline. The agent gets the path of the type file and reads it with its own tools.
 
 **Visuals**
 
-Table (`measure-out.md`, 20 packages): `index line: 1,667 chars, about 505 tokens`; `card: 19,447 chars, about 5,893 tokens`; `raw types entries: 2,554,817 chars, about 774,187 tokens`; `lucide-react types alone: 2,173,743 chars`. Footnote: `tokens = chars / 3.3 (estimate)`. Sample index line: `zod@4.4.3 (both): TypeScript-first schema declaration and validation library with static type inference`. Arrows: `index > guide`, `card > kit_describe on request`, `types > path only`.
+Table (`measure-out.md`, 20 packages): `index line: 1,667 chars, about 505 tokens`; `card: 19,447 chars, about 5,893 tokens`; `raw types entries: 2,554,817 chars, about 774,187 tokens`; `lucide-react types alone: 2,173,743 chars`. Footnote: `tokens = chars / 3.3 (estimate)`. Sample index line: `zod@4.4.3 (both): TypeScript-first schema declaration and validation library with static type inference`. Arrows, tag `spike design`: `index > guide`, `card > kit_describe on request`, `types > path only`.
 
 ## `describe_work`
 
@@ -1038,11 +1038,11 @@ Size chips: `MCP kit tools: M`, `kit service with pnpm: L`, both `estimate`. Ban
 ## `kit_routes`
 
 - Part: `part_settings`
-- Target length: 65 s (151 words)
+- Target length: 68 s (159 words)
 
 **Narration**
 
-On the diagram, we now move to the user door. The user door is a set of H T T P routes on the host. Get slash a p i slash kit returns the same body as kit read. Put slash a p i slash kit slash settings sets agents may add packages. Post slash a p i slash kit slash extras adds an extra.
+On the diagram, we now move to the user door. In the spike design, the user door is a set of H T T P routes on the host. No route exists yet. Get slash a p i slash kit returns the same body as kit read. Put slash a p i slash kit slash settings sets agents may add packages. Post slash a p i slash kit slash extras adds an extra.
 
 Delete slash a p i slash kit slash extras slash, then a name, removes one extra. Get slash a p i slash kit slash stream sends a signal on each kit change. The user door ignores kit locked.
 
@@ -1050,22 +1050,22 @@ These routes copy the shape of the widget routes of today. Those are program, ca
 
 **Visuals**
 
-Outline: the `settings pane` door glows. Route table: `GET /api/kit` (same body as kit_read), `PUT /api/kit/settings { agentsMayAddPackages }`, `POST /api/kit/extras { name, version?, side }` (ignores kit-locked), `DELETE /api/kit/extras/<name>`, `GET /api/kit/stream` (SSE). Today table beside it: `/api/widgets/<slug>/program`, `/call`, `/stream`, `/api/widgets/events`, all `guarded`, host cookie. Size chip: `routes: S (estimate)`.
+Outline: the `settings pane` door glows. Route table, tag `spike design, no route exists`: `GET /api/kit` (same body as kit_read), `PUT /api/kit/settings { agentsMayAddPackages }`, `POST /api/kit/extras { name, version?, side }` (ignores kit-locked), `DELETE /api/kit/extras/<name>`, `GET /api/kit/stream` (SSE). Today table beside it: `/api/widgets/<slug>/program`, `/call`, `/stream`, `/api/widgets/events`, all `guarded`, host cookie. Size chip: `routes: S (estimate)`.
 
 ## `settings_rules`
 
 - Part: `part_settings`
-- Target length: 37 s (86 words)
+- Target length: 44 s (102 words)
 
 **Narration**
 
-The user door ignores kit locked for a reason. The setting limits agents, not the person who owns the machine. The pane uses the same service as the tools, so both doors give the same errors.
+In the spike design, the user door ignores kit locked. We infer the reason: the setting limits agents, not the person who owns the machine. In the design, the pane and the tools use one service. We infer that both doors then give the same errors.
 
-On failure, the pane shows the error and the kit stays as it was. For example, install failed leaves the old folder in place. In use lists the slugs that still import the package. The pane listens to the kit stream, so a change from an agent shows at once.
+We also infer the pane behavior on failure. The pane shows the error, and the kit stays as it was. For example, install failed leaves the old folder in place. In use lists the slugs that still import the package. The pane listens to the kit stream, so a change from an agent shows at once.
 
 **Visuals**
 
-Two doors into one box `ctx.widgetKit`: `MCP (agent): kit-locked applies`, `HTTP (user): kit-locked ignored`. Reason tag: `the setting limits agents, not the machine owner`. Error toasts in the pane: `install-failed: kit unchanged`, `in-use: meter, clock`. Stream line: `GET /api/kit/stream` > pane refreshes.
+Two doors into one box `ctx.widgetKit`: `MCP (agent): kit-locked applies`, `HTTP (user): kit-locked ignored`. Reason tag: `the setting limits agents, not the machine owner (inferred)`. Error toasts in the pane (inferred, illustrative): `install-failed: kit unchanged`, `in-use: meter, clock`. Stream line: `GET /api/kit/stream` > pane refreshes.
 
 ## `kit_feed`
 
@@ -1083,15 +1083,17 @@ Code card `WidgetChange { seq, at, slug, kind: 'state' | 'program' | 'added' | '
 ## `settings_pane`
 
 - Part: `part_settings`
-- Target length: 25 s (58 words)
+- Target length: 28 s (66 words)
 
 **Narration**
 
-The settings pane is a page for the user. It shows the setting as a switch. It lists the core packages, which the user cannot remove. It lists the extras, each with its side and who added it. A form adds or removes an extra through the routes. The work map sizes the pane as medium, an estimate.
+In the spike design, the settings pane is a page for the user. No pane exists yet. It shows the setting as a switch.
+
+It lists the core packages, which the user cannot remove. It lists the extras, each with its side and who added it. A form adds or removes an extra through the routes. The work map sizes the pane as medium, an estimate.
 
 **Visuals**
 
-Mock pane: switch `Agents may add packages`; list `core` (locked rows: react, @openuidev/react-lang, zod, vite, ...); list `extras` (`date-fns 4.0.0 renderer, added by user`; `dw-mini-ui 1.0.0 renderer`); form `name, version, side [renderer | host | both]`, buttons `Add`, `Remove`. Size chip: `settings pane: M (estimate)`. Grey label: `mock, illustrative`.
+Mock pane: switch `Agents may add packages`; list `core` (locked rows: react, @openuidev/react-lang, zod, vite, ...); list `extras` (`date-fns 4.0.0 renderer, added by user`; `dw-mini-ui 1.0.0 renderer`); form `name, version, side [renderer | host | both]`, buttons `Add`, `Remove`. Size chip: `settings pane: M (estimate)`. Grey label: `mock, illustrative, spike design`.
 
 ## `serving_today`
 
@@ -1165,32 +1167,34 @@ Outline: all boxes get a check mark outline. Check list: `smoke: add extra > bui
 ## `checks_today`
 
 - Part: `part_checks`
-- Target length: 40 s (93 words)
+- Target length: 45 s (104 words)
 
 **Narration**
 
-Some checks exist today and must change. The MCP check, widgets m c p, tests the nine tools. It must also test the four kit tools. The creation check, widgets create, runs the three gates. It must also run the type gate, the Vite build, and the render check. The smoke check of one widget must load the page of that slug.
+Some checks exist today and must change. The MCP check, widgets m c p, checks that the server lists the nine tools. It calls only the four interact tools. It must also test the four kit tools.
+
+The creation check, widgets create, runs the three gates. It must also run the type gate, the Vite build, and the render check. The smoke check of one widget must load the page of that slug.
 
 Each new check must fail on a broken build. A check that cannot fail proves nothing. We infer the list of changes from the work map and the current tools folder.
 
 **Visuals**
 
-Table of today's tools and the change: `tools/widgets-mcp.mjs: nine tools > plus kit_read, kit_describe, kit_add, kit_remove`; `tools/widgets-create.mjs: compile, lint, test run > plus type gate, Vite build, render check`; `DSH_SMOKE_WIDGET=<slug> node tools/smoke-desktop.mjs > page of that slug`. Footer: `each check must fail on a broken build (inferred list)`.
+Table of today's tools and the change: `tools/widgets-mcp.mjs: lists nine tools, calls four > plus kit_read, kit_describe, kit_add, kit_remove`; `tools/widgets-create.mjs: compile, lint, test run > plus type gate, Vite build, render check`; `DSH_SMOKE_WIDGET=<slug> node tools/smoke-desktop.mjs > page of that slug`. Footer: `each check must fail on a broken build (inferred list)`.
 
 ## `tla_models`
 
 - Part: `part_checks`
-- Target length: 45 s (106 words)
+- Target length: 47 s (109 words)
 
 **Narration**
 
 TLA plus is a language for models of systems that change state. A model checker walks every order of steps and checks the rules. The repository has three widget models. One of them is widget install. It models install, reload, and remove, with crashes between steps.
 
-The kit adds a build step and a kit version to that model. It also adds a race, a kit remove during an install, which must give in use. A new small model covers kit add and kit remove against builds. We infer that the two other models need no change. The work map sizes this as medium, an estimate.
+The spike work map plans a build step and a kit version in that model. It also plans a race, a kit remove during an install, which must give in use. A new small model would cover kit add and kit remove against builds. We infer that the two other models need no change. The work map sizes this as medium, an estimate.
 
 **Visuals**
 
-Folder `.agents/skills/widget-state-models/`: `action_contract`, `crash_lifecycle`, `widget_install/WidgetInstall.tla` (654 lines). Additions to `WidgetInstall.tla`: `build step`, `kitVersion`, `kit_remove racing an install -> in-use`. New box: `small kit model: kit_add / kit_remove vs builds`. Amber: `ActionContract.tla, crash_lifecycle.tla: no change (inferred)`. Size chip: `TLA+: M (estimate)`.
+Folder `.agents/skills/widget-state-models/`: `action_contract`, `crash_lifecycle`, `widget_install/WidgetInstall.tla` (654 lines). Planned in the work map (inferred), additions to `WidgetInstall.tla`: `build step`, `kitVersion`, `kit_remove racing an install -> in-use`. New box: `small kit model: kit_add / kit_remove vs builds`. Amber: `ActionContract.tla, crash_lifecycle.tla: no change (inferred)`. Size chip: `TLA+: M (estimate)`.
 
 ## `prior_art`
 
@@ -1210,17 +1214,19 @@ Table `kit_spike.prior_art`: `Context7 | two tools: find a library, docs on requ
 ## `risks_build`
 
 - Part: `part_close`
-- Target length: 36 s (85 words)
+- Target length: 51 s (119 words)
 
 **Narration**
 
-Now the risks, stated plainly. The render check finds only errors that throw. A wrong prop of an untyped extra passes. The shared chunks strategy cannot drop unused code. Lucide adds nine hundred three kilobytes and recharts five hundred seventy-eight.
+Now the risks, stated plainly. The render check finds only errors that throw. The type gate refuses an untyped extra until the agent declares the module. After that, the spike record says that a wrong prop passes. We could not check that.
 
-The node modules folder of kit vee one is about two hundred twenty-eight megabytes. Lucide alone is about forty-five megabytes, and date f n s about thirty-eight. The spike record also says that about eighty-five megabytes is build tooling. We could not check that sentence.
+The shared chunks strategy cannot drop unused code. Lucide adds nine hundred three kilobytes and recharts five hundred seventy-eight.
+
+The node modules folder of kit vee one is about two hundred twenty-eight megabytes. Lucide alone is about forty-five megabytes, and date f n s about thirty-eight. The spike record also says that about eighty-five megabytes is build tooling. We measured the build tools at seventy-five to ninety megabytes. The range depends on which helper packages we count.
 
 **Visuals**
 
-Risk cards, red: `render check finds only throws`; `S3 cannot tree-shake: lucide 903 KB, recharts 578 KB`; `kit v1 node_modules 228 MB (du)`; `lucide-react 45 MB, date-fns 38 MB (du)`. Amber card: `spike record: "about 85 MB of the kit is build tooling" (not checked)`.
+Risk cards, red: `render check finds only throws`; amber `untyped extra: TS7016 until declare module, then wrong prop passes (spike record, not checked)`; `S3 cannot tree-shake: lucide 903 KB, recharts 578 KB`; `kit v1 node_modules 228 MB (du)`; `lucide-react 45 MB, date-fns 38 MB (du)`. Amber card: `spike record: "about 85 MB of the kit is build tooling"`; under it `our du sum: 75 to 90 MB, by tool list (ran)`.
 
 ## `risks_supply`
 

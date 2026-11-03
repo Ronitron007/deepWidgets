@@ -43,7 +43,7 @@ Each term is defined in the narration at its first use. The scene name in bracke
 | tool output | The answer of one tool call. Read live on each call. [`today_agent_text`] |
 | refresh bridge (`RefreshBridge`) | The core component that runs the queries again when the stream reports new data. [`library_split`] |
 | catalog id (`CATALOG_ID`) | The id that a library exports and that a program names. [`library_split`] |
-| contract (`ChildProps`) | The TypeScript type where core and child meet: `{ root: RootProps; children?: ReactNode }`. [`library_contract`] |
+| contract (`ChildProps`) | The TypeScript type where core and child meet: `{ root: RootProps; children?: ReactNode }`. It is a type, not a guard: the child can change the tool provider. [`library_contract`] |
 | tool provider | The object that sends each query and mutation of a program to the call route. [`library_contract`] |
 | work map | The table `kit_spike.work` of fronts and sizes S, M, L. All sizes are estimates. [`library_work`] |
 | Vite | A build tool for web pages. [`vite_gate`] |
@@ -65,7 +65,7 @@ Each term is defined in the narration at its first use. The scene name in bracke
 | registry | The online server of npm packages. [`pnpm_terms`] |
 | metadata cache | The pnpm cache of package metadata. 113 MB for the spike kit. [`kit_project`] |
 | fresh install (S1) | The packaging strategy where each widget gets its own install from the registry. [`strategy_fresh_install`] |
-| build script | A package script that runs code at install time. pnpm 11 blocks them by default (`ERR_PNPM_IGNORED_BUILDS`). [`pnpm_strict_builds`] |
+| build script | A package script that runs code at install time. pnpm 11 skips them by default. The fresh install then exited with `ERR_PNPM_IGNORED_BUILDS`. The kit lockfile installs gave only a warning. [`pnpm_strict_builds`] |
 | kit lockfile (S2) | The packaging strategy with one kit lockfile and a store filled by `pnpm fetch`. Widget installs run offline or link to the kit `node_modules`. [`strategy_kit_lockfile`] |
 | trust lockfile (`trust-lockfile`) | A pnpm setting that trusts the lockfile and skips the release age check. S2 needs it outside a workspace. [`pnpm_trust_lockfile`] |
 | minimum release age (`minimumReleaseAge`) | A pnpm 11 check that holds back a version younger than 1440 minutes. [`pnpm_trust_lockfile`] |
@@ -97,8 +97,8 @@ Each term is defined in the narration at its first use. The scene name in bracke
 | `kit-locked`, `in-core`, `in-use`, `not-found`, `install-failed` | The kit errors of the design. Also `bad-name` and `idempotency-conflict`. [`kit_errors`] |
 | kit version (`kitVersion`) | A number that goes up by one on each kit change. [`add_steps`] |
 | change feed | The list of recent changes that agents read with `widget_changes`. [`add_steps`] |
-| `/api/kit` routes | The HTTP routes of the user door: `GET /api/kit`, `PUT /api/kit/settings`, `POST /api/kit/extras`, `DELETE /api/kit/extras/<name>`, `GET /api/kit/stream`. [`kit_routes`] |
-| settings pane | The page where the user sees the setting, the core, and the extras. [`settings_pane`] |
+| `/api/kit` routes | The HTTP routes of the user door in the spike design (no route exists): `GET /api/kit`, `PUT /api/kit/settings`, `POST /api/kit/extras`, `DELETE /api/kit/extras/<name>`, `GET /api/kit/stream`. [`kit_routes`] |
+| settings pane | In the spike design, the page where the user sees the setting, the core, and the extras. No pane exists. [`settings_pane`] |
 | content security policy (CSP) | The page rule that lets scripts load only from the same origin. [`serving_csp`] |
 | fallback page | The page that shows when a slug has no build. [`serving_csp`] |
 | TLA+ | A language for models of systems that change state. [`tla_models`] |

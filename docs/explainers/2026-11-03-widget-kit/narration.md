@@ -16,9 +16,9 @@ Then three gates check the code: compile, lint, and test run. The host loads the
 
 The bottom row is the kit path. It starts at the kit project. The kit project is a folder with the packages that widgets can use. An agent writes its own component library and a child component. The child holds the OpenUI renderer. OpenUI is the library that turns a program text into React components.
 
-Then a Vite build makes one page for each widget. The same kind of gates and a render check test that page. Electron main then serves the pinned page of each slug. A slug is the id of a widget. On the host side, a widget can also use extra packages.
+Then a Vite build makes one page for each widget. The same kind of gates and a render check test that page. Electron main then serves the page of each slug. A slug is the id of a widget. On the host side, a widget can also use extra packages.
 
-Two doors lead into the kit: MCP tools for agents and a settings pane for the user. We return to this diagram between the parts.
+In the spike design, two doors lead into the kit: MCP tools for agents and a settings pane for the user. We return to this diagram between the parts.
 
 ## direction_list
 
@@ -44,7 +44,7 @@ A program is the text that tells the shell what to show. It is in OpenUI Lang. M
 
 The shell compiles in one component set, shad c n widgets at one. A component set is a list of components with names, props, and descriptions. The set lives in the file library dot t s x. A program names its set. The shell refuses a program that names another set, with the error unsupported component set.
 
-Thus an agent today can use only these components. It cannot add a component of its own. The standing decision widget runtime pin says this on purpose: all widgets share one shell, pinned to one version. The kit direction would replace that decision. The decision table does not record a change yet.
+Thus an agent today can use only these components. It cannot add a component of its own. The standing decision widget runtime pin says this on purpose: all widgets share one shell, pinned to one version. The kit direction conflicts with that decision. The operator has not decided if the kit replaces it.
 
 ## today_creation
 
@@ -62,7 +62,7 @@ Thus the guide has a rule. A widget can import only zod and the widget types. E 
 
 How does a widget window get its page? Electron main answers each request on the custom scheme d s h app. For a path under slash widget, it serves files from the shell build folder on disk. Every slug gets the same index page. The slug travels in the query string.
 
-Each other path goes to the host with the host cookie. The page talks to the host only through these routes, and the host checks the cookie.
+A few other paths, such as the root index page, come from the D S H web folder on disk. Every other path, such as an A P I path, goes to the host with the host cookie. The page talks to the host only through these routes, and the host checks the cookie.
 
 ## today_agent_text
 
@@ -86,7 +86,7 @@ The agent half is a child component. The child holds the renderer root and the l
 
 The two halves meet at a small contract. The contract is a TypeScript type with the name child props. It has two fields, root and children. Root is every prop of the renderer root except library and children. The core fills root with the program, the tool provider, and the error handlers.
 
-The tool provider is the object that sends each query and mutation to the call route. The child adds its own library and passes the rest through. Thus the agent cannot change how the page talks to the host. It can only choose which components draw the program.
+The tool provider is the object that sends each query and mutation to the call route. The child adds its own library and passes the rest through. But the contract is a type, not a guard. The child itself writes the renderer root, so agent code can change the tool provider. We infer that agent code can also call the host routes itself. The page policy allows requests to the same origin.
 
 ## library_agent_code
 
@@ -124,7 +124,7 @@ The build of shad c n with cold caches took four point three seconds. All three 
 
 ## vite_cache
 
-Vite has no build cache that stays between builds. A warm build saves only about one point four seconds. Thus each install pays the full build time. For a small widget, that is about one second. For a large library, it is about three to four seconds.
+Vite has no build cache that stays between builds. A warm build saves only about one point four seconds. Thus each install pays the full build time. For a small widget, that is about one second. For a large library, it is about two point eight to three point eight seconds.
 
 ## tailwind_source
 
@@ -138,7 +138,7 @@ The spike style sheet names the core, the agent folder, and d w mini u i. Thus e
 
 After the build, a render check loads the page in a hidden Electron window. It waits one and a half seconds. Then it reads the state, the errors, and the text of the page. It costs about one point six seconds for each widget.
 
-The render check has a limit. It finds only errors that throw. A wrong prop of an untyped extra draws the wrong thing and passes.
+The render check has a limit. It finds only errors that throw. The spike record says that a wrong prop of an untyped extra passes. We could not check this.
 
 ## vite_failures
 
@@ -148,7 +148,7 @@ Vite does not check types. In the spike, the meter on kit vee two B built with n
 
 ## vite_work
 
-This front reads the node modules of the kit and the agent folder. It writes a build folder for each slug. The gate must also refuse an import that is not in the core or the renderer extras. The work map gives the Vite build gate a size of large. That size is an estimate.
+This front reads the node modules of the kit and the agent folder. It writes a build folder for each slug. The spike work map also says that the gate refuses an import outside the core and the renderer extras. The work map gives the Vite build gate a size of large. That size is an estimate.
 
 ## types_why
 
@@ -163,10 +163,10 @@ The spike ran t s c, the TypeScript compiler, in check mode. The tsconfig file i
 
 The spike tsconfig file has two path aliases. At agent points to the agent folder. At core points to the core source, where the contract lives. The compiler resolves every other import from the node modules of the kit. Thus the type gate sees the real types of each extra.
 
-Skip lib check is on, so the gate does not check the type files of the packages themselves. That keeps the gate fast. An extra with no type file gives the agent no type help at all. The render check is then the only guard.
+Skip lib check is on, so the gate does not check the type files of the packages themselves. That keeps the gate fast. The type gate refuses an extra with no type file, with the error T S seven zero one six. The agent must then declare the module itself. After that, the gate accepts any prop of that extra, so the render check is the only guard.
 ## types_tsgolint
 
-The spike also ran ox lint with t s go lint. Today the lint gate already uses this pair. It took zero point one one to zero point five five seconds for each widget. We compute that it is about three to five times faster than t s c.
+The spike also ran ox lint with t s go lint. Today the lint gate already uses this pair. On shad c n and meter, it took zero point one one to zero point five five seconds. The spike did not run it on clock. We compute that it is about three to five times faster than t s c.
 
 It found the same error on meter in kit vee two B. Thus either tool can run the gate. Which tool to use is not decided.
 
@@ -210,7 +210,7 @@ Each build resolves the versions of the indirect packages again. Thus two widget
 
 The fresh install strategy also exited with an error. P n p m eleven blocks the build scripts of packages by default. A build script runs code at install time. The install refused the scripts of e s build and of the telemetry in OpenUI lang core.
 
-The p n p m error code says ignored builds. Two fixes work: the setting allow builds, or the setting strict dep builds with the value false. This applies to every strategy that installs.
+The p n p m error code says ignored builds. The setting strict dep builds, with the value false, fixed it. The spike record also names the setting allow builds. We could not check that second fix. The kit lockfile installs skipped the same scripts, but they gave only a warning and finished.
 
 ## strategy_kit_lockfile
 
@@ -226,7 +226,7 @@ The check needs a metadata cache of one hundred thirteen megabytes. Offline, it 
 
 ## kit_lockfile_failures
 
-Each failure of the kit lockfile strategy is fast and clear. A store with a missing package fails in zero point eight seconds with the error no offline tarball. A package file that does not match the lockfile fails with the error outdated lockfile. Neither failure touches the network.
+Each failure of the kit lockfile strategy is fast and clear. A store with a missing package fails in zero point eight seconds with the error no offline tarball. A package file that does not match the lockfile fails with the error outdated lockfile. The missing package case ran offline, against a dead registry address. We infer that the drift case also used no network, because the lockfile check fails first.
 
 ## strategy_shared_chunks
 
@@ -280,7 +280,7 @@ This front is the gate for host extras. Today the paths map has only zod. The wo
 
 ## pin_question
 
-On the diagram, we now look at the line from the kit to the pinned pages. A kit change can break a built widget. To pin a widget means to keep its page on the kit version that it built with. To rebuild means to build it again on the new kit.
+On the diagram, we now look at the line from the kit to the pages. A kit change can break a built widget. To pin a widget means to keep its page on the kit version that it built with. To rebuild means to build it again on the new kit.
 
 The operator direction says to decide from data. The spike built the three widgets on kit vee one, then again on two new kits. A rebuild of all three took eight point three to nine seconds.
 
@@ -306,7 +306,7 @@ The shared chunks strategy adds one more case. Its pages load the runtime of a k
 
 ## pin_policy
 
-Here is the policy that the data supports. We infer it, and it is not a decision. Pin each widget to its kit version by default. A built page holds its own copy of each package, so a kit change does not affect it.
+Here is the policy that the data supports. We infer it, and it is not a decision. Pin each widget to its kit version by default. With fresh install or kit lockfile, a built page holds its own copy of each package. A kit change then does not affect it. With shared chunks, a page needs the runtime of its own kit version.
 
 Rebuild a widget only on request. The rebuild runs the type gate, the build, and a render check. If a gate fails, the old page and the old lockfile stay.
 
@@ -324,13 +324,13 @@ An MCP resource is a named piece of data that a client reads on request. Server 
 
 ## describe_test
 
-The spike tested this with Claude Code version two point one point three one seven. A small MCP server had one tool, one resource, and instructions, each with a version marker. A fake model A P I on the same machine recorded what the model would get. Thus no paid run took place.
+The spike tested this with Claude Code version two point one point three one seven. A small MCP server had two tools, one resource, and instructions, each with a version marker. A third tool came only after the change. A fake model A P I on the same machine recorded what the model would get. Thus no paid run took place.
 
 Between two turns, the server raised the kit version. It sent list changed for tools and for resources. List changed is an MCP signal that says a list of tools or resources changed.
 
 ## describe_results
 
-Here are the results. Tool output and resources: yes. Claude Code read live data on each call, with kit version two after the change. List changed: yes. Claude Code read the tool and resource lists again within twelve to sixty-three milliseconds. A new tool showed on the next turn, as a deferred tool.
+Here are the results. Tool output and resources: yes. Claude Code read live data on each call, with kit version two after the change. List changed: yes. In all three runs, Claude Code read the tool and resource lists again within sixty-three milliseconds. A new tool showed on the next turn, as a deferred tool.
 
 A tool that the client already loaded, with a new description: no. The old text stayed for the whole session. The server instructions: no. Claude Code never read them again. The model also gets no push of a change. It learns of a change only from a new tool name or from a call.
 
@@ -338,7 +338,7 @@ A tool that the client already loaded, with a new description: no. The old text 
 
 Thus the kit facts go in tool output and in a resource. They do not go in a tool description or in the instructions. The instructions can stay fixed and say: call kit read for the packages. List changed only refreshes the resource list and announces a new tool name.
 
-For the same reason, kit add and kit remove stay on the tool list at all times. The call checks the setting. A description that said off would lie after the user turns the setting on.
+For the same reason, the spike design keeps kit add and kit remove on the tool list at all times. In that design, the call checks the setting. A description that said off would lie after the user turns the setting on.
 
 ## describe_cost
 
@@ -346,7 +346,7 @@ How much text does a package list cost? The spike measured twenty real packages.
 
 A card holds the index line, the types entry, an import line, the top exports, and a short readme part. The raw type files came to about two point five five million characters, about seven hundred seventy thousand tokens. Lucide alone was two point one seven million characters. The token numbers are estimates, the characters divided by three point three.
 
-Thus the guide gives one line for each package. A tool gives a card on request. The types never go inline. The agent gets the path of the type file and reads it with its own tools.
+Thus the spike design gives one index line for each package in the guide. A tool gives a card on request. In that design, the types never go inline. The agent gets the path of the type file and reads it with its own tools.
 
 ## describe_work
 
@@ -400,7 +400,7 @@ The work map sizes the MCP kit tools as medium and the kit service as large. Bot
 
 ## kit_routes
 
-On the diagram, we now move to the user door. The user door is a set of H T T P routes on the host. Get slash a p i slash kit returns the same body as kit read. Put slash a p i slash kit slash settings sets agents may add packages. Post slash a p i slash kit slash extras adds an extra.
+On the diagram, we now move to the user door. In the spike design, the user door is a set of H T T P routes on the host. No route exists yet. Get slash a p i slash kit returns the same body as kit read. Put slash a p i slash kit slash settings sets agents may add packages. Post slash a p i slash kit slash extras adds an extra.
 
 Delete slash a p i slash kit slash extras slash, then a name, removes one extra. Get slash a p i slash kit slash stream sends a signal on each kit change. The user door ignores kit locked.
 
@@ -409,16 +409,18 @@ These routes copy the shape of the widget routes of today. Those are program, ca
 
 ## settings_rules
 
-The user door ignores kit locked for a reason. The setting limits agents, not the person who owns the machine. The pane uses the same service as the tools, so both doors give the same errors.
+In the spike design, the user door ignores kit locked. We infer the reason: the setting limits agents, not the person who owns the machine. In the design, the pane and the tools use one service. We infer that both doors then give the same errors.
 
-On failure, the pane shows the error and the kit stays as it was. For example, install failed leaves the old folder in place. In use lists the slugs that still import the package. The pane listens to the kit stream, so a change from an agent shows at once.
+We also infer the pane behavior on failure. The pane shows the error, and the kit stays as it was. For example, install failed leaves the old folder in place. In use lists the slugs that still import the package. The pane listens to the kit stream, so a change from an agent shows at once.
 ## kit_feed
 
 The change feed is the list of recent changes that agents read with widget changes. Today each entry has a slug, a kind, and who made the change. The kinds are state, program, added, and removed. A kit change needs a new kind or a new feed. We infer that from the code. The spike design names only a change feed entry from an agent or a user.
 
 ## settings_pane
 
-The settings pane is a page for the user. It shows the setting as a switch. It lists the core packages, which the user cannot remove. It lists the extras, each with its side and who added it. A form adds or removes an extra through the routes. The work map sizes the pane as medium, an estimate.
+In the spike design, the settings pane is a page for the user. No pane exists yet. It shows the setting as a switch.
+
+It lists the core packages, which the user cannot remove. It lists the extras, each with its side and who added it. A form adds or removes an extra through the routes. The work map sizes the pane as medium, an estimate.
 
 ## serving_today
 
@@ -447,14 +449,16 @@ An MCP test calls kit add with the setting off and expects kit locked. It also r
 
 ## checks_today
 
-Some checks exist today and must change. The MCP check, widgets m c p, tests the nine tools. It must also test the four kit tools. The creation check, widgets create, runs the three gates. It must also run the type gate, the Vite build, and the render check. The smoke check of one widget must load the page of that slug.
+Some checks exist today and must change. The MCP check, widgets m c p, checks that the server lists the nine tools. It calls only the four interact tools. It must also test the four kit tools.
+
+The creation check, widgets create, runs the three gates. It must also run the type gate, the Vite build, and the render check. The smoke check of one widget must load the page of that slug.
 
 Each new check must fail on a broken build. A check that cannot fail proves nothing. We infer the list of changes from the work map and the current tools folder.
 ## tla_models
 
 TLA plus is a language for models of systems that change state. A model checker walks every order of steps and checks the rules. The repository has three widget models. One of them is widget install. It models install, reload, and remove, with crashes between steps.
 
-The kit adds a build step and a kit version to that model. It also adds a race, a kit remove during an install, which must give in use. A new small model covers kit add and kit remove against builds. We infer that the two other models need no change. The work map sizes this as medium, an estimate.
+The spike work map plans a build step and a kit version in that model. It also plans a race, a kit remove during an install, which must give in use. A new small model would cover kit add and kit remove against builds. We infer that the two other models need no change. The work map sizes this as medium, an estimate.
 
 ## prior_art
 
@@ -464,9 +468,11 @@ Raycast and VS Code put the packages of each extension into its own build. Val T
 
 ## risks_build
 
-Now the risks, stated plainly. The render check finds only errors that throw. A wrong prop of an untyped extra passes. The shared chunks strategy cannot drop unused code. Lucide adds nine hundred three kilobytes and recharts five hundred seventy-eight.
+Now the risks, stated plainly. The render check finds only errors that throw. The type gate refuses an untyped extra until the agent declares the module. After that, the spike record says that a wrong prop passes. We could not check that.
 
-The node modules folder of kit vee one is about two hundred twenty-eight megabytes. Lucide alone is about forty-five megabytes, and date f n s about thirty-eight. The spike record also says that about eighty-five megabytes is build tooling. We could not check that sentence.
+The shared chunks strategy cannot drop unused code. Lucide adds nine hundred three kilobytes and recharts five hundred seventy-eight.
+
+The node modules folder of kit vee one is about two hundred twenty-eight megabytes. Lucide alone is about forty-five megabytes, and date f n s about thirty-eight. The spike record also says that about eighty-five megabytes is build tooling. We measured the build tools at seventy-five to ninety megabytes. The range depends on which helper packages we count.
 
 ## risks_supply
 
