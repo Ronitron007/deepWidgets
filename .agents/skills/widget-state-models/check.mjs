@@ -2,12 +2,13 @@
 // Runs the widget state models with /statechart, and compares the reports with the baseline at the sync commit.
 //
 //   node check.mjs                                  list each model and its runs
-//   node check.mjs <model> [--mutants]              list the runs of one model
-//   node check.mjs <model> <out> [--mutants]        compare <out>/<run>/report.md with the baseline
-//   node check.mjs run <model> <out> [--mutants]    run each listed run with /statechart, then compare
+//   node check.mjs <model> [--mutants] [--full]              list the runs of one model
+//   node check.mjs <model> <out> [--mutants] [--full]        compare <out>/<run>/report.md with the baseline
+//   node check.mjs run <model> <out> [--mutants] [--full]    run each listed run with /statechart, then compare
 //
 // A config path is relative to the model folder, for example crash_lifecycle/cfg/mut/keep_prov.cfg.
 // Without --mutants, a command uses the main runs only. With --mutants, it also uses the mutant runs.
+// A run marked `slow` is in the full set only: add --full to use it. The default set checks each rule at least once.
 //
 // `run` needs the environment variable STATECHART_RUN: the command line of one /statechart run, as the
 // /statechart skill gives it, with the placeholders {spec}, {config}, {view}, and {out}. This script fills in
@@ -27,7 +28,7 @@ const CRASH_BREAKS = ['SampleNeverQuarantined', 'HashChangeLifts', 'ProvisionalO
   'SampleLiveInSafeMode']
 const ACTION_HOLDS = ['TypeOK', 'ReplaySameResult', 'ReplayFlag', 'ConflictOnOtherArgs', 'FIFO', 'QueryNoQueue',
   'BusyNeverRuns', 'NoAdmitAfterStop', 'DrainBeforeClose', 'RevCountsWrites', 'NoDeadlock']
-const INSTALL_HOLDS = ['TypeOK', 'GatesGuardHost', 'FailedReplaceKeepsOld', 'StateKept', 'BuiltInUntouched', 'OneBundlePerSlug', 'NewSeedSetsProgram',
+const INSTALL_HOLDS = ['TypeOK', 'GatesGuardHost', 'FailedReplaceKeepsOld', 'CommittedKept', 'CommittedNotStandby', 'StateKept', 'BuiltInUntouched', 'OneBundlePerSlug', 'NewSeedSetsProgram',
   'SameSeedKeepsProgram', 'SlugTakenOnlyForBuiltIn', 'QuarantineHolds', 'RollbackKeepsRecord', 'BuiltInSlugReserved', 'NoDeadlock']
 
 const actionMutants = {
@@ -45,7 +46,8 @@ const installMutants = {
   'M-skipGate-GatesGuardHost': 'GatesGuardHost', 'M-stateReset-StateKept': 'StateKept',
   'M-seedFile-SameSeedKeepsProgram': 'SameSeedKeepsProgram', 'M-noRestore-RollbackKeepsRecord': 'RollbackKeepsRecord',
   'M-oneName-QuarantineHolds': 'QuarantineHolds', 'M-offAllowed-BuiltInSlugReserved': 'BuiltInSlugReserved',
-  'M-removeFirst-FailedReplaceKeepsOld': 'FailedReplaceKeepsOld',
+  'M-removeFirst-FailedReplaceKeepsOld': 'FailedReplaceKeepsOld', 'M-guessA-CommittedKept': 'CommittedKept',
+  'M-noDefer-CommittedNotStandby': 'CommittedNotStandby',
 }
 
 // For each run: the config, the rules that must break, and the rules that must hold.
@@ -78,12 +80,13 @@ const MODELS = {
   widget_install: {
     spec: 'WidgetInstall.tla',
     runs: {
+      // The default set: one crash. The full set adds two crashes and two slugs.
       all: { config: 'cfg/WidgetInstall.cfg', breaks: [], holds: INSTALL_HOLDS },
       'no-crash': { config: 'cfg/NoCrash.cfg', breaks: [], holds: ['FailedReplaceKeepsOld', 'NewSeedSetsProgram', 'NoDeadlock'] },
-      quarantine: { config: 'cfg/P-QuarantineHolds.cfg', breaks: [], holds: ['QuarantineHolds', 'NoDeadlock'] },
-      'same-seed': { config: 'cfg/P-SameSeedKeepsProgram.cfg', breaks: [], holds: ['SameSeedKeepsProgram', 'NoDeadlock'] },
-      holds: { config: 'cfg/Holds.cfg', breaks: [], holds: INSTALL_HOLDS },
-      'two-slugs': { config: 'cfg/TwoSlugs.cfg', breaks: [], holds: INSTALL_HOLDS },
+      quarantine: { config: 'cfg/P-QuarantineHolds.cfg', breaks: [], holds: ['QuarantineHolds', 'NoDeadlock'], slow: true },
+      'same-seed': { config: 'cfg/P-SameSeedKeepsProgram.cfg', breaks: [], holds: ['SameSeedKeepsProgram', 'NoDeadlock'], slow: true },
+      holds: { config: 'cfg/Holds.cfg', breaks: [], holds: INSTALL_HOLDS, slow: true },
+      'two-slugs': { config: 'cfg/TwoSlugs.cfg', breaks: [], holds: INSTALL_HOLDS, slow: true },
     },
     mutants: Object.fromEntries(Object.entries(installMutants).map(([m, rule]) => [
       `mut-${m}`, { config: `cfg/mut/${m}.cfg`, breaks: [rule], holds: [] },
@@ -114,7 +117,8 @@ function list(name, runs = { ...MODELS[name].runs, ...MODELS[name].mutants }) {
 
 const args = process.argv.slice(2)
 const withMutants = args.includes('--mutants')
-const words = args.filter((a) => a !== '--mutants')
+const full = args.includes('--full')
+const words = args.filter((a) => a !== '--mutants' && a !== '--full')
 const running = words[0] === 'run'
 const [name, out] = running ? words.slice(1) : words
 const usage = () => {
@@ -128,7 +132,7 @@ if (name === undefined && !running && !withMutants) {
 if (!(name in MODELS) || words.length > (running ? 3 : 2) || (running && out === undefined)) usage()
 
 const model = MODELS[name]
-const runs = withMutants ? { ...model.runs, ...model.mutants } : model.runs
+const runs = Object.fromEntries(Object.entries(withMutants ? { ...model.runs, ...model.mutants } : model.runs).filter(([, r]) => full || r.slow !== true))
 if (out === undefined) {
   list(name, runs)
   process.exit(0)

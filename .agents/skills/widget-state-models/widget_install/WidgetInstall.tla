@@ -1,7 +1,7 @@
 ---------------------------- MODULE WidgetInstall ----------------------------
 (***************************************************************************)
 (* The agent tools widget_install, widget_reload, and widget_remove of     *)
-(* deepWidgets at commit b3af1ff7 (spec widget_fv.replace is in).       *)
+(* deepWidgets at commit 171ced6c (spec widget_fv.replace is in).       *)
 (*                                                                         *)
 (* Code: deepwidgets/mcp/src/creation.ts (C), deepwidgets/widgets/src/     *)
 (* index.ts (W), deepwidgets/widgets/src/isolation.ts (I),                 *)
@@ -14,7 +14,7 @@
 (* widget_fv.replace: each agent slug has two package names, A and B       *)
 (* (C:166-173). Each name is its own row and its own folder. A replace     *)
 (* installs the new version under the name that is not installed. Its      *)
-(* registration waits as the standby of the old entry (W:1185-1268), and   *)
+(* registration waits as the standby of the old entry (W:1210-1322), and   *)
 (* the old bundle goes only after the new one registered.                  *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, TLC
@@ -47,15 +47,15 @@ VARIABLES
   folder,     \* [Slugs -> [Names -> None \cup Codes]]  the folder of the name
   reg,        \* [Slugs -> {"none","live","failed","off"}]  the runtime entry of an agent registration of the slug
   row,        \* [Slugs -> {None} \cup Names]  the name whose row owns the live or failed entry
-  sby,        \* [Slugs -> {None} \cup Names]  the name whose registration waits as the standby (W:1210-1232)
+  sby,        \* [Slugs -> {None} \cup Names]  the name whose registration waits as the standby (W:1264-1286)
   sbyCode,    \* [Slugs -> {None} \cup Codes]  the code of the standby. It runs from memory, also after its folder goes.
-  offMap,     \* [Slugs -> BOOLEAN]          W:1187-1192 `off`: safe mode refused the agent slug in this host start
+  offMap,     \* [Slugs -> BOOLEAN]          W:1212-1217 `off`: safe mode refused the agent slug in this host start
   sampleOn,   \* the built-in sample row is on (the user can switch it in the plugin manager)
   prog,       \* [Slugs -> None \cup Seeds \cup {"edit"}]  stored program (storage table `program`)
   state,      \* [Slugs -> {"none","init","used"}]         stored state (storage table `state`)
   everUsed,   \* ghost: a user call wrote the state of the slug
   pseed,      \* [Slugs -> None \cup Seeds]  the seed hash in the program record (W:286-291); it lands
-              \* in the same put as prog. An edit keeps it (W:1061-1073). The older file .seeds/<slug>
+              \* in the same put as prog. An edit keeps it (W:1086-1098). The older file .seeds/<slug>
               \* (C:506-519) is not in the model: the model starts with no records.
   lastInst,   \* ghost: seed of the code that last went live for the slug. A load that throws, that safe
               \* mode refuses, that the quarantine holds, or that waits as a standby does not count. The
@@ -64,12 +64,13 @@ VARIABLES
   quar,       \* [Slugs -> [Names -> BOOLEAN]]  I: quarantine.json has an item for the row of the name
   bl,         \* [Slugs -> [Names -> BOOLEAN]]  the folder of the name still has the files whose hash the item names
   runBlamed,  \* ghost [Slugs -> BOOLEAN]: the live registration was loaded from blamed files
-  safe,       \* this host start is in safe mode (W:1187)
+  committed,  \* [Slugs -> {None} \cup Names]  W: committed.json, the name of the last install that registered (commit)
+  safe,       \* this host start is in safe mode (W:1212)
   crashes, calls,
   job         \* the one running installer job
 
 vars == <<inst, enabled, folder, reg, row, sby, sbyCode, offMap, sampleOn, prog, state, everUsed,
-          pseed, lastInst, quar, bl, runBlamed, safe, crashes, calls, job>>
+          pseed, lastInst, quar, bl, runBlamed, committed, safe, crashes, calls, job>>
 
 (* The runtime of one slug, as one record (below: RS and SetRS). *)
 rt == <<reg, row, sby, sbyCode, offMap, prog, pseed, state, quar, runBlamed, lastInst>>
@@ -77,7 +78,7 @@ rt == <<reg, row, sby, sbyCode, offMap, prog, pseed, state, quar, runBlamed, las
 NoJob == [op |-> "none", s |-> "none", c |-> "none", pc |-> "idle", replaced |-> FALSE,
           prevSeed |-> "none", old |-> "none", name |-> "none", oldCode |-> "none", oldOn |-> FALSE, oldLive |-> FALSE, early |-> FALSE,
           wrote |-> FALSE, edited |-> FALSE, app |-> "none", err |-> "", builtinHeld |-> FALSE, editedAtStart |-> FALSE,
-          snapP |-> "none", snapS |-> "none",
+          snapP |-> "none", snapS |-> "none", was |-> "none", keepC |-> "none",
           beforeP |-> "unset", beforeS |-> "unset", editAfter |-> FALSE, hold |-> FALSE, pend |-> {}, newLeft |-> FALSE, beforeL |-> "none"]
 
 TypeOK ==
@@ -95,6 +96,7 @@ TypeOK ==
   /\ pseed \in [Slugs -> {None} \cup Seeds]
   /\ quar \in [Slugs -> [Names -> BOOLEAN]]
   /\ bl \in [Slugs -> [Names -> BOOLEAN]]
+  /\ committed \in [Slugs -> {None} \cup Names]
   /\ safe \in BOOLEAN
 
 Init ==
@@ -116,6 +118,7 @@ Init ==
   /\ quar = [s \in Slugs |-> [n \in Names |-> FALSE]]
   /\ bl = [s \in Slugs |-> [n \in Names |-> FALSE]]
   /\ runBlamed = [s \in Slugs |-> FALSE]
+  /\ committed = [s \in Slugs |-> None]
   /\ safe = FALSE
   /\ crashes = 0
   /\ calls = 0
@@ -123,15 +126,15 @@ Init ==
 
 Installed(s) == \E n \in Names : inst[s][n]
 
-(* W:1300-1303 `list()`: live and failed entries, and the slugs that safe mode refused in this start. *)
+(* W:1354-1357 `list()`: live and failed entries, and the slugs that safe mode refused in this start. *)
 InList(s) == reg[s] # "none" \/ offMap[s] \/ (s = BuiltIn /\ sampleOn)
 
-(* C:607-610 (widget.builtin_slugs, W:115-138): the slug of a built-in widget is reserved, also *)
+(* C:610-612 (widget.builtin_slugs, W:115-138): the slug of a built-in widget is reserved, also *)
 (* while its row is off. Mutant offAllowed: only a live built-in takes its slug, as before the rule.   *)
 (* Mutant builtinRow also has no reservation: it is the row-id clash of aa7cd518.                     *)
 Reserved == Mutant \notin {"offAllowed", "builtinRow"}
 
-(* C:613-616: slug-taken counts the widgets in list() that are not off: live and failed entries. *)
+(* C:614-618: slug-taken counts the widgets in list() that are not off: live and failed entries. *)
 Taken(s) == reg[s] \in {"live", "failed"} \/ (s = BuiltIn /\ sampleOn)
 
 ---------------------------------------------------------------------------
@@ -153,7 +156,7 @@ SetRS(s, R) ==
   /\ runBlamed' = [runBlamed EXCEPT ![s] = R.rb]
   /\ lastInst' = [lastInst EXCEPT ![s] = R.li]
 
-(* W:1161-1182 seed of an agent row: no record, or a record whose seed hash differs from the seed  *)
+(* W:1186-1207 seed of an agent row: no record, or a record whose seed hash differs from the seed  *)
 (* of the code that loads, gets the seed of the code. Text and hash land in one put. A record     *)
 (* with no hash stays.                                                                           *)
 (* Mutant seedFile: the code before widget_fv.install. The hash is in its own file (.seeds/<slug>), *)
@@ -163,7 +166,7 @@ NewSeed(R, c) ==
   ELSE R.p = None \/ (R.ps # None /\ R.ps # Seed(c))
 LoadSeed(R, c) == IF Mutant = "seedFile" THEN R.ps ELSE Seed(c)
 
-(* W:1236-1268 start: the registration of name n with code c goes live. seed() runs in start, and    *)
+(* W:1290-1322 start: the registration of name n with code c goes live. seed() runs in start, and    *)
 (* the state record is made when there is none. blv: whether each folder has the blamed files.     *)
 Live(R, n, c, blv) ==
   [R EXCEPT !.reg = "live", !.row = n,
@@ -172,10 +175,10 @@ Live(R, n, c, blv) ==
             !.st = IF @ = "none" \/ Mutant = "stateReset" THEN "init" ELSE @,
             !.rb = blv[n], !.li = Seed(c)]
 
-(* I:233-247 lift, I:283-307 wrap: a quarantine item of the row ends only when other files load with  *)
-(* success. I:249-275, I:373-385 holdLift and settleLift: during the install job of the slug, a load  *)
+(* I:238-252 lift, I:288-312 wrap: a quarantine item of the row ends only when other files load with  *)
+(* success. I:254-280, I:378-390 holdLift and settleLift: during the install job of the slug, a load  *)
 (* with success only marks the item (pend). The item goes when the install succeeds.                   *)
-(* widget_fv.replace (I:262-274 loaded): during the install, the load also marks the item of the other  *)
+(* widget_fv.replace (I:267-279 loaded): during the install, the load also marks the item of the other  *)
 (* name of the slug. The replace removes that name before it succeeds, and LiveCheck lifts an item only *)
 (* when its folder no longer has the blamed files.                                                     *)
 (* A replace never loads other files under the row of the old name, and a row that loaded other files  *)
@@ -184,41 +187,54 @@ Live(R, n, c, blv) ==
 LiftQ(R, n, holding) ==
   [R EXCEPT !.q = [@ EXCEPT ![n] = @ /\ holding], !.pend = @ \cup {m \in {n, Other(n)} : R.q[m] /\ holding}]
 
-(* I:233-239 held: the item of the row holds it while its folder still has the blamed files.  *)
+(* I:238-244 held: the item of the row holds it while its folder still has the blamed files.  *)
 (* Mutant oneName: the quarantine knows only the first name of a slug.                         *)
 Held(R, n, blv) == R.q[n] /\ blv[n] /\ (Mutant # "oneName" \/ n = "A")
 
+(* W: committedRow: the committed name of slug s, when its row is installed and selected. *)
+Owner(s) == IF committed[s] # None /\ inst[s][committed[s]] /\ enabled[s][committed[s]] THEN committed[s] ELSE None
+
+(* W: add, `deferred`: a row of another name than the owner never takes the slug first.             *)
+(* Mutant noDefer: no deferral, so the row that loads first takes the slug.                          *)
+Deferred(n, own) == own # None /\ own # n /\ Mutant # "noDefer"
+
 (* A row of name n of slug s loads code c: hmr reconcile in PM installBundle, or a host start. *)
-(* sm: safe mode. holding: the install job of the slug holds the lift.                          *)
-Step(R, s, n, c, sm, holding, blv) ==
+(* sm: safe mode. holding: the install job of the slug holds the lift. own: Owner(s).          *)
+Step(R, s, n, c, sm, holding, blv, own) ==
   IF s = BuiltIn /\ Mutant # "builtinRow"
     \* Not reached by the code: widget.builtin_slugs refuses the slug of a built-in before a load
     \* (CheckInstalled). Only the mutants offAllowed and builtinRow install the slug sample. This branch
     \* is the behavior at aa7cd518: the agent row deepwidgets-widget-sample never started.
     THEN R
   ELSE IF Held(R, n, blv)
-    \* W:1334-1340 hold: a held row shows a failed entry, only when the slug has no entry.
-    THEN IF R.reg \in {"live", "failed"} THEN R ELSE [R EXCEPT !.reg = "failed", !.row = n]
+    \* W hold: a held row shows a failed entry, only when the slug has no entry and the row is not deferred.
+    THEN IF Deferred(n, own) \/ R.reg \in {"live", "failed"} THEN R ELSE [R EXCEPT !.reg = "failed", !.row = n]
   ELSE IF sm
-    \* W:1187-1192: safe mode refuses an agent widget (it goes into `off`) before the slug check.
+    \* W:1212-1217: safe mode refuses an agent widget (it goes into `off`) before the slug check.
     THEN [R EXCEPT !.off = TRUE, !.reg = IF @ \in {"live", "failed"} THEN @ ELSE "off", !.threw = TRUE]
   ELSE IF R.reg \in {"live", "failed"}
-    \* W:1193-1201: the slug has an entry. A registration of another agent row waits as its standby
-    \* (W:1212-1222 wait), and writes no seed. Bad code registers the standby, then throws: the end of
+    \* W:1218-1234: the slug has an entry. A registration of another agent row waits as its standby
+    \* (W:1266-1276 wait), and writes no seed. Bad code registers the standby, then throws: the end of
     \* its fiber drops the standby. A second standby, or the row of the entry itself, is a conflict.
     THEN IF R.row # n /\ R.sby = None /\ ApplyOk(c) THEN LiftQ([R EXCEPT !.sby = n, !.sc = c], n, holding)
          ELSE [R EXCEPT !.threw = TRUE]
+  ELSE IF Deferred(n, own) /\ R.sby = None
+    \* W add: the deferred row waits as the standby, also with no entry before it. No seed.
+    THEN IF ApplyOk(c) THEN LiftQ([R EXCEPT !.sby = n, !.sc = c], n, holding) ELSE [R EXCEPT !.threw = TRUE]
   ELSE IF ApplyOk(c) THEN LiftQ(Live(R, n, c, blv), n, holding)
   \* bad: seed() starts in start(), before apply throws. The end of the fiber removes the entry.
   ELSE [Live(R, n, c, blv) EXCEPT !.reg = "none", !.row = None, !.rb = FALSE, !.li = R.li, !.threw = TRUE]
 
-(* W:1224-1232 promote: the entry ended, and the standby takes its place (start, W:1236). *)
+(* W:1278-1286 promote: the entry ended, and the standby takes its place (start, W:1290). *)
 Promote(R, s) ==
   IF R.sby = None THEN R
   ELSE Live([R EXCEPT !.sby = None, !.sc = None], R.sby, R.sc, bl[s])
 
+(* W commit: the committed name of slug s is now n. A standby of n with no entry before it goes live. *)
+CommitR(R, s, n) == IF n # None /\ R.sby = n /\ R.reg \notin {"live", "failed"} THEN Promote(R, s) ELSE R
+
 (* The fiber of the row of name n ends: PM removeBundle deselects the bundle and reloads.        *)
-(* W:1256-1268: the entry of the row ends, and then its standby takes over. W:1217-1220: a       *)
+(* W:1310-1322: the entry of the row ends, and then its standby takes over. W:1271-1274: a       *)
 (* standby that ends is dropped. An off slug is no longer off (as before widget_fv.replace).      *)
 Dispose(R, s, n) ==
   IF R.row = n /\ R.reg \in {"live", "failed"}
@@ -241,7 +257,7 @@ Deselected(s, n) ==
   /\ enabled' = [enabled EXCEPT ![s][n] = FALSE]
   /\ SetRS(s, Dispose(RS(s), s, n))
 
-(* wrote: a load in the job changed the stored program (the seed rule of W:1161-1182). *)
+(* wrote: a load in the job changed the stored program (the seed rule of W:1186-1207). *)
 Wrote(s) == job.wrote \/ prog'[s] # prog[s]
 
 Goto(pc) == job' = [job EXCEPT !.pc = pc]
@@ -260,31 +276,31 @@ AgentInstall ==
        /\ (s = BuiltIn => c = "v1")
        /\ job' = NewJob("install", s, c, "gates")
   /\ calls' = calls + 1
-  /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, bl, safe, crashes>>
+  /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, bl, safe, committed, crashes>>
   /\ UNCHANGED rt
 
 AgentReload ==
   /\ job = NoJob /\ calls < MaxCalls
   /\ \E s \in AgentSlugs, c \in Codes : job' = NewJob("reload", s, c, "reloadCheck")
   /\ calls' = calls + 1
-  /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, bl, safe, crashes>>
+  /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, bl, safe, committed, crashes>>
   /\ UNCHANGED rt
 
 AgentRemove ==
   /\ job = NoJob /\ calls < MaxCalls
   /\ \E s \in Slugs : job' = NewJob("remove", s, "v1", "removeCheck")
   /\ calls' = calls + 1
-  /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, bl, safe, crashes>>
+  /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, bl, safe, committed, crashes>>
   /\ UNCHANGED rt
 
 ---------------------------------------------------------------------------
-(* installNow (C:596-652) and loadNew (C:659-716), one await per step. *)
+(* installNow (C:598-654) and loadNew (C:661-723), one await per step. *)
 
 JS == job.s
 JC == job.c
 
 (* The variables that a job step that only moves the job keeps. *)
-Keep == <<inst, enabled, folder, sampleOn, everUsed, bl, safe, crashes, calls>>
+Keep == <<inst, enabled, folder, sampleOn, everUsed, bl, committed, safe, crashes, calls>>
 
 (* C:554-562 reload: installedNames() and meta(). *)
 ReloadCheck ==
@@ -292,14 +308,14 @@ ReloadCheck ==
   /\ IF \E n \in Names : folder[JS][n] # None /\ inst[JS][n] THEN Goto("gates") ELSE End(FALSE, "not-installed")
   /\ UNCHANGED Keep /\ UNCHANGED rt
 
-(* C:597-603 runGates: a failed gate throws gate-failed before anything is written. *)
+(* C:599-605 runGates: a failed gate throws gate-failed before anything is written. *)
 Gates ==
   /\ job.pc = "gates"
   /\ IF GatePass(JC) \/ Mutant = "skipGate" THEN Goto("checkInstalled") ELSE End(FALSE, "gate-failed")
   /\ UNCHANGED Keep /\ UNCHANGED rt
 
-(* C:607-618 replaced = installedNames(slug) is not empty; slug-taken when not replaced and a widget *)
-(* of the slug is in list() and not off. Then clearOff (W:1360 clears an agent entry only) and the  *)
+(* C:610-620 replaced = installedNames(slug) is not empty; slug-taken when not replaced and a widget *)
+(* of the slug is in list() and not off. Then clearOff (W:1414 clears an agent entry only) and the  *)
 (* migration of the older .seeds file (C:506-519, not in the model).                                *)
 CheckInstalled ==
   /\ job.pc = "checkInstalled"
@@ -316,20 +332,26 @@ CheckInstalled ==
   /\ UNCHANGED Keep
   /\ UNCHANGED <<reg, row, sby, sbyCode, prog, pseed, state, quar, runBlamed, lastInst>>
 
-(* C:619-638 the old name and the new name. When a host crash left both names installed, the name of  *)
-(* the entry of the slug stays (registeredName: the live or failed row, else A), and the other one is   *)
-(* removed first (removeFirst). It is at most a standby, so its removal promotes nothing. Its folder is *)
-(* written again by WriteNew. The new version goes under the name that is not installed.              *)
+(* C installNow: the old name and the new name. When a host crash left both names installed, the       *)
+(* committed name stays. With no committed name installed, the name of the entry of the slug (live or   *)
+(* failed) stays. Else the install stops: the installer never guesses. The other name is removed first  *)
+(* (removeFirst). It is at most a standby, so its removal promotes nothing. Its folder is written again *)
+(* by WriteNew. The new version goes under the name that is not installed.                            *)
+(* Mutant guessA: no committed name, and with no entry, A stays.                                        *)
 (* The ghosts oldOn and oldLive: the old bundle is selected, and it is live, when the job decides.     *)
 (* Mutant removeFirst: the old bundle goes before the new one is written, as before widget_fv.replace. *)
 Decide ==
   /\ job.pc = "decide"
   /\ LET both == inst[JS]["A"] /\ inst[JS]["B"]
-         keep == IF both THEN (IF reg[JS] \in {"live", "failed"} /\ row[JS] # None THEN row[JS] ELSE "A")
+         c == committed[JS]
+         entry == IF reg[JS] \in {"live", "failed"} /\ row[JS] # None THEN row[JS] ELSE None
+         keep == IF both THEN (IF Mutant = "guessA" THEN (IF entry # None THEN entry ELSE "A")
+                               ELSE IF c # None /\ inst[JS][c] THEN c ELSE entry)
                  ELSE IF inst[JS]["A"] THEN "A" ELSE IF inst[JS]["B"] THEN "B" ELSE None
          new == IF keep = "A" THEN "B" ELSE "A"
          early == Mutant = "removeFirst" /\ keep # None
          J == [job EXCEPT !.old = keep, !.name = new, !.early = early,
+                          !.keepC = IF c # None /\ inst[JS][c] THEN c ELSE None,
                           !.oldCode = IF keep = None THEN None ELSE folder[JS][keep],
                           !.oldOn = keep # None /\ enabled[JS][keep],
                           !.oldLive = keep # None /\ reg[JS] = "live" /\ row[JS] = keep,
@@ -337,34 +359,37 @@ Decide ==
      IN IF ~both
           THEN /\ job' = J
                /\ UNCHANGED <<inst, enabled>> /\ UNCHANGED rt
+          ELSE IF keep = None
+          THEN /\ job' = [J EXCEPT !.old = None, !.pc = "err", !.err = "install-failed"]
+               /\ UNCHANGED <<inst, enabled>> /\ UNCHANGED rt
           ELSE \/ /\ Removed(JS, new)
                   /\ job' = [J EXCEPT !.wrote = Wrote(JS)]
                \/ /\ UNCHANGED <<inst, enabled>> /\ UNCHANGED rt
                   /\ job' = [J EXCEPT !.pc = "err", !.err = "install-failed"]
                \/ /\ Deselected(JS, new)
                   /\ job' = [J EXCEPT !.pc = "err", !.err = "install-failed", !.wrote = Wrote(JS)]
-  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, crashes, calls>>
+  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, committed, crashes, calls>>
 
-(* C:639 writeBundle(folder, name) (C:412-428): rm the folder of the new name, then write it. *)
+(* C:641 writeBundle(folder, name) (C:412-428): rm the folder of the new name, then write it. *)
 WriteNew ==
   /\ job.pc = "writeNew"
   /\ folder' = [folder EXCEPT ![JS][job.name] = JC]
   /\ bl' = [bl EXCEPT ![JS][job.name] = FALSE]
   /\ Goto("snapshot")
-  /\ UNCHANGED <<inst, enabled, sampleOn, everUsed, safe, crashes, calls>> /\ UNCHANGED rt
+  /\ UNCHANGED <<inst, enabled, sampleOn, everUsed, safe, committed, crashes, calls>> /\ UNCHANGED rt
 
-(* C:643-645 before = programRecord(slug) (W:1075-1080). Then holdLift(slug). beforeP and beforeS are *)
+(* C:645-647 before = programRecord(slug) (W:1100-1105). Then holdLift(slug). beforeP and beforeS are *)
 (* the ghost of the record before the install, for the rule RollbackKeepsRecord; snapP and snapS are  *)
 (* what the code keeps for its restore. A live old version can still take a user edit after this.     *)
 Snapshot ==
   /\ job.pc = "snapshot"
-  /\ job' = [job EXCEPT !.snapP = prog[JS], !.snapS = pseed[JS], !.pc = "installNew",
+  /\ job' = [job EXCEPT !.snapP = prog[JS], !.snapS = pseed[JS], !.pc = "installNew", !.was = committed[JS],
                         !.beforeP = prog[JS], !.beforeS = pseed[JS], !.beforeL = lastInst[JS], !.hold = TRUE]
   /\ UNCHANGED Keep /\ UNCHANGED rt
 
 Holding(s) == job.hold /\ job.s = s
 
-(* C:671 PM installBundle(folder) (PM:873-1012). With hmr, a package that is already in package.json  *)
+(* C:674 PM installBundle(folder) (PM:873-1012). With hmr, a package that is already in package.json  *)
 (* is refused (`already-installed`). pnpm can fail and change nothing. When the package goes in, the  *)
 (* row loads at once, and the result is `failed` at enable when apply throws (the package stays).     *)
 InstallNew ==
@@ -372,26 +397,34 @@ InstallNew ==
   /\ \/ /\ ~inst[JS][job.name]
         /\ inst' = [inst EXCEPT ![JS][job.name] = TRUE]
         /\ enabled' = [enabled EXCEPT ![JS][job.name] = TRUE]
-        /\ LET R == Step(RS(JS), JS, job.name, JC, safe, Holding(JS), bl[JS]) IN
+        /\ LET R == Step(RS(JS), JS, job.name, JC, safe, Holding(JS), bl[JS], Owner(JS)) IN
              /\ SetRS(JS, R)
              /\ job' = [job EXCEPT !.app = IF R.threw THEN "failed" ELSE "applied", !.pc = "waitReg",
                                    !.wrote = job.wrote \/ R.p # prog[JS], !.pend = job.pend \cup R.pend]
      \/ /\ UNCHANGED <<inst, enabled>> /\ UNCHANGED rt
         /\ job' = [job EXCEPT !.app = "failed", !.pc = "waitReg"]
-  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, crashes, calls>>
+  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, committed, crashes, calls>>
 
-(* C:673-675 applied && registeredName(slug, [name]) within 5 s: the row of the new name has the live *)
+(* C:676-678 applied && registeredName(slug, [name]) within 5 s: the row of the new name has the live *)
 (* entry or the standby. The wait can also time out when the widget registers late                    *)
 (* (replay-quarantine.mjs, a-late).                                                                  *)
 WaitReg ==
   /\ job.pc = "waitReg"
   /\ \/ /\ job.app = "applied"
         /\ (reg[JS] = "live" /\ row[JS] = job.name) \/ sby[JS] = job.name
-        /\ Goto(IF job.old # None /\ ~job.early THEN "removeOld" ELSE "live")
+        /\ Goto("commit")
      \/ Goto("undoCheck")
   /\ UNCHANGED Keep /\ UNCHANGED rt
 
-(* C:676-688 removeBundle(old). Its entry ends, and the standby of the new name takes its place.   *)
+(* C loadNew: the commit point. The committed name is the new name (W commit, which can promote). *)
+Commit ==
+  /\ job.pc = "commit"
+  /\ committed' = [committed EXCEPT ![JS] = job.name]
+  /\ SetRS(JS, CommitR(RS(JS), JS, job.name))
+  /\ job' = [job EXCEPT !.pc = IF job.old # None /\ ~job.early THEN "removeOld" ELSE "live", !.wrote = Wrote(JS)]
+  /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, bl, safe, crashes, calls>>
+
+(* C:682-694 removeBundle(old). Its entry ends, and the standby of the new name takes its place.   *)
 (* When the removal fails and the new version is live (pnpm remove failed after the deselect, or the *)
 (* old version was not live), the install succeeds with a warning. Else the install fails, and the  *)
 (* old version stays.                                                                                *)
@@ -406,17 +439,17 @@ RemoveOld ==
                               !.pc = IF job.early THEN "err"
                                      ELSE IF reg'[JS] = "live" /\ row'[JS] = job.name THEN "live" ELSE "undoCheck",
                               !.err = IF job.early THEN "install-failed" ELSE @]
-  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, crashes, calls>>
+  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, committed, crashes, calls>>
 
-(* C:679 rm the folder of the old name. *)
+(* C:685 rm the folder of the old name. *)
 RmOld ==
   /\ job.pc = "rmOld"
   /\ folder' = [folder EXCEPT ![JS][job.old] = None]
   /\ bl' = [bl EXCEPT ![JS][job.old] = FALSE]
   /\ Goto(IF job.early THEN "writeNew" ELSE "live")
-  /\ UNCHANGED <<inst, enabled, sampleOn, everUsed, safe, crashes, calls>> /\ UNCHANGED rt
+  /\ UNCHANGED <<inst, enabled, sampleOn, everUsed, safe, committed, crashes, calls>> /\ UNCHANGED rt
 
-(* C:689-690 waitLive(slug): the slug shows in list(). On success, settleLift(slug, true) ends a  *)
+(* C:695-696 waitLive(slug): the slug shows in list(). On success, settleLift(slug, true) ends a  *)
 (* quarantine item that a load of other files marked.                                            *)
 LiveCheck ==
   /\ job.pc = "live"
@@ -428,8 +461,8 @@ LiveCheck ==
   /\ UNCHANGED Keep
   /\ UNCHANGED <<reg, row, sby, sbyCode, offMap, prog, pseed, state, runBlamed, lastInst>>
 
-(* C:693-695 after = programRecord(slug); a record with no seed hash takes the hash of this seed     *)
-(* (W:1092-1096 re-checks in one update). The load set a new seed already (W:1161-1182).              *)
+(* C:699-701 after = programRecord(slug); a record with no seed hash takes the hash of this seed     *)
+(* (W:1117-1121 re-checks in one update). The load set a new seed already (W:1186-1207).              *)
 Adopt ==
   /\ job.pc = "adopt"
   /\ IF Mutant = "seedFile"
@@ -454,32 +487,35 @@ WriteSeed ==
   /\ UNCHANGED Keep
   /\ UNCHANGED <<reg, row, sby, sbyCode, offMap, prog, state, quar, runBlamed, lastInst>>
 
-(* C:701 if installedNames(slug) has the new name. *)
+(* C:708 if installedNames(slug) has the new name. *)
 UndoCheck ==
   /\ job.pc = "undoCheck"
-  /\ Goto(IF inst[JS][job.name] THEN "undoRemove" ELSE "rmFolder")
-  /\ UNCHANGED Keep /\ UNCHANGED rt
+  \* C loadNew: the committed name from before the install comes back.
+  /\ committed' = [committed EXCEPT ![JS] = job.was]
+  /\ SetRS(JS, CommitR(RS(JS), JS, job.was))
+  /\ job' = [job EXCEPT !.pc = IF inst[JS][job.name] THEN "undoRemove" ELSE "rmFolder", !.wrote = Wrote(JS)]
+  /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, bl, safe, crashes, calls>>
 
-(* C:702-703 removeBundle of the new bundle; its result is only reported. Its standby is dropped. *)
+(* C:709-710 removeBundle of the new bundle; its result is only reported. Its standby is dropped. *)
 UndoRemove ==
   /\ job.pc = "undoRemove"
   /\ \/ Removed(JS, job.name)
      \/ UNCHANGED <<inst, enabled>> /\ UNCHANGED rt
      \/ Deselected(JS, job.name)
   /\ job' = [job EXCEPT !.pc = "rmFolder", !.wrote = Wrote(JS)]
-  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, crashes, calls>>
+  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, committed, crashes, calls>>
 
-(* C:705-706 clearOff(slug); rm the folder of the new name. *)
+(* C:712-713 clearOff(slug); rm the folder of the new name. *)
 RmFolder ==
   /\ job.pc = "rmFolder"
   /\ folder' = [folder EXCEPT ![JS][job.name] = None]
   /\ bl' = [bl EXCEPT ![JS][job.name] = FALSE]
   /\ offMap' = [offMap EXCEPT ![JS] = IF JS = BuiltIn THEN @ ELSE FALSE]
   /\ Goto("restoreProgram")
-  /\ UNCHANGED <<inst, enabled, sampleOn, everUsed, safe, crashes, calls>>
+  /\ UNCHANGED <<inst, enabled, sampleOn, everUsed, safe, committed, crashes, calls>>
   /\ UNCHANGED <<reg, row, sby, sbyCode, prog, pseed, state, quar, runBlamed, lastInst>>
 
-(* C:710-715 restoreProgram(slug, before) when no version of the slug is live (W:1082-1090; no record *)
+(* C:717-722 restoreProgram(slug, before) when no version of the slug is live (W:1107-1115; no record *)
 (* deletes it). When a version still runs, its record stays: the old version, whose user edits stay, *)
 (* or a failed bundle that could not be removed. Then settleLift(slug, false): the hold ends, and a   *)
 (* marked quarantine stays. Then throw install-failed. Mutant noRestore: no restore at all.          *)
@@ -496,7 +532,7 @@ RestoreProgram ==
   /\ UNCHANGED <<reg, row, sby, sbyCode, offMap, state, quar, runBlamed>>
 
 ---------------------------------------------------------------------------
-(* remove (C:564-585). *)
+(* remove (C:564-587). *)
 
 (* C:566-568 installedNames() and meta(). *)
 RemoveCheck ==
@@ -514,14 +550,16 @@ RemoveBundle ==
           /\ End(FALSE, "install-failed")
        \/ /\ Deselected(JS, n)
           /\ End(FALSE, "install-failed")
-  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, crashes, calls>>
+  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, committed, crashes, calls>>
 
-(* C:580-582 rm both folders; clearOff(slug). *)
+(* C remove: rm both folders; clearOff(slug); commit(slug, undefined). *)
 RemoveFolder ==
   /\ job.pc = "removeFolder"
   /\ folder' = [folder EXCEPT ![JS] = [n \in Names |-> None]]
   /\ bl' = [bl EXCEPT ![JS] = [n \in Names |-> FALSE]]
   /\ offMap' = [offMap EXCEPT ![JS] = IF JS = BuiltIn THEN @ ELSE FALSE]
+  \* commit(slug, undefined): the slug has no committed name.
+  /\ committed' = [committed EXCEPT ![JS] = None]
   /\ End(TRUE, "")
   /\ UNCHANGED <<inst, enabled, sampleOn, everUsed, safe, crashes, calls>>
   /\ UNCHANGED <<reg, row, sby, sbyCode, prog, pseed, state, quar, runBlamed, lastInst>>
@@ -542,9 +580,9 @@ UserCall ==
        /\ state' = [state EXCEPT ![s] = "used"]
        /\ everUsed' = [everUsed EXCEPT ![s] = TRUE]
   /\ UNCHANGED <<inst, enabled, folder, reg, row, sby, sbyCode, offMap, sampleOn, prog,
-                 pseed, lastInst, quar, bl, runBlamed, safe, crashes, calls, job>>
+                 pseed, lastInst, quar, bl, runBlamed, safe, committed, crashes, calls, job>>
 
-(* A plugin or the widget edits the stored program: ctx.widgets.setProgram (W:1061-1073). The edit *)
+(* A plugin or the widget edits the stored program: ctx.widgets.setProgram (W:1086-1098). The edit *)
 (* keeps the seed hash of the record. During a replace, the old version is live and takes edits.  *)
 UserEdit ==
   /\ \E s \in AgentSlugs :
@@ -552,13 +590,13 @@ UserEdit ==
        /\ prog' = [prog EXCEPT ![s] = "edit"]
        /\ job' = IF job # NoJob /\ job.s = s THEN [job EXCEPT !.edited = TRUE, !.editAfter = job.beforeP # "unset"] ELSE job
   /\ UNCHANGED <<inst, enabled, folder, reg, row, sby, sbyCode, offMap, sampleOn, state, everUsed,
-                 pseed, lastInst, quar, bl, runBlamed, safe, crashes, calls>>
+                 pseed, lastInst, quar, bl, runBlamed, safe, committed, crashes, calls>>
 
 (* The user turns the built-in sample row off or on (PM setPluginEnabled). *)
 ToggleSample ==
   /\ sampleOn' = ~sampleOn
   /\ UNCHANGED <<inst, enabled, folder, reg, row, sby, sbyCode, offMap, prog, state, everUsed,
-                 pseed, lastInst, quar, bl, runBlamed, safe, crashes, calls, job>>
+                 pseed, lastInst, quar, bl, runBlamed, safe, committed, crashes, calls, job>>
 
 (* The host exits at once (I:claim), and the supervisor starts it again. A crash in running agent    *)
 (* code (the live row, or the row of the standby) is blamed on its row: the quarantine names the hash *)
@@ -575,8 +613,8 @@ Crash ==
               up(s, n) == inst[s][n] /\ enabled[s][n] /\ folder[s][n] # None /\ s # BuiltIn
               R0(s) == [reg |-> "none", row |-> None, sby |-> None, sc |-> None, off |-> FALSE, p |-> prog[s], ps |-> pseed[s],
                         st |-> state[s], q |-> q0[s], rb |-> FALSE, li |-> lastInst[s], threw |-> FALSE, pend |-> {}]
-              R1(s) == IF up(s, first) THEN Step(R0(s), s, first, folder[s][first], sm, FALSE, b0[s]) ELSE R0(s)
-              R2(s) == IF up(s, Other(first)) THEN Step(R1(s), s, Other(first), folder[s][Other(first)], sm, FALSE, b0[s]) ELSE R1(s)
+              R1(s) == IF up(s, first) THEN Step(R0(s), s, first, folder[s][first], sm, FALSE, b0[s], Owner(s)) ELSE R0(s)
+              R2(s) == IF up(s, Other(first)) THEN Step(R1(s), s, Other(first), folder[s][Other(first)], sm, FALSE, b0[s], Owner(s)) ELSE R1(s)
           IN /\ reg' = [s \in Slugs |-> R2(s).reg]
              /\ row' = [s \in Slugs |-> R2(s).row]
              /\ sby' = [s \in Slugs |-> R2(s).sby]
@@ -592,11 +630,11 @@ Crash ==
              /\ safe' = sm
   /\ crashes' = crashes + 1
   /\ job' = NoJob
-  /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, calls>>
+  /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, committed, calls>>
 
 Next ==
   \/ AgentInstall \/ AgentReload \/ AgentRemove
-  \/ ReloadCheck \/ Gates \/ CheckInstalled \/ Decide \/ WriteNew \/ Snapshot \/ InstallNew \/ WaitReg
+  \/ ReloadCheck \/ Gates \/ CheckInstalled \/ Decide \/ WriteNew \/ Snapshot \/ InstallNew \/ WaitReg \/ Commit
   \/ RemoveOld \/ RmOld \/ LiveCheck \/ Adopt \/ WriteSeed
   \/ UndoCheck \/ UndoRemove \/ RmFolder \/ RestoreProgram
   \/ RemoveCheck \/ RemoveBundle \/ RemoveFolder \/ Return
@@ -607,7 +645,7 @@ Spec == Init /\ [][Next]_vars
 ---------------------------------------------------------------------------
 (* The rules. *)
 
-(* gates.never_host: "Code that fails a gate never reaches the host." spec widget_phase2.creation.gates; C:5-6, C:597-603. *)
+(* gates.never_host: "Code that fails a gate never reaches the host." spec widget_phase2.creation.gates; C:5-6, C:599-605. *)
 GatesGuardHost ==
   \A s \in Slugs, n \in Names : folder[s][n] # "lint"
 
@@ -624,13 +662,13 @@ FailedReplaceKeepsOld ==
 StateKept == \A s \in Slugs : everUsed[s] => state[s] = "used"
 
 (* program.new_seed: "After an install with a new seed program, the stored program is the new seed."  *)
-(* spec widget_fv.install; W:1161-1182. New: differs from the seed of the code that last went live.  *)
+(* spec widget_fv.install; W:1186-1207. New: differs from the seed of the code that last went live.  *)
 NewSeedSetsProgram ==
   (job.pc = "ok" /\ job.op # "remove" /\ job.s \in AgentSlugs /\ Seed(job.c) # job.prevSeed) =>
     (prog[job.s] \in {Seed(job.c), None} \/ job.edited)
 
 (* program.same_seed: "After an install with the same seed, an edited stored program stays." spec       *)
-(* widget_fv.install; W:1161-1182, W:1061-1073; a load of the job is the writer (`wrote`);              *)
+(* widget_fv.install; W:1186-1207, W:1086-1098; a load of the job is the writer (`wrote`);              *)
 (* tools/widgets-create.mjs "a reinstall of the same seed program leaves the stored program alone".     *)
 SameSeedKeepsProgram ==
   (job.pc = "ok" /\ job.op # "remove" /\ job.s \in AgentSlugs /\ Seed(job.c) = job.prevSeed /\ job.editedAtStart)
@@ -652,7 +690,7 @@ OneBundlePerSlug ==
 
 (* slug.taken_only_builtin: slug-taken only for the slug of a built-in widget (widget.builtin_slugs),  *)
 (* or when a live widget that is not an agent bundle has the slug.                                      *)
-(* spec widget_phase2.creation.rows and widget_fv.install; C:607-616.                                  *)
+(* spec widget_phase2.creation.rows and widget_fv.install; C:610-618.                                  *)
 SlugTakenOnlyForBuiltIn ==
   (job.pc = "err" /\ job.err = "slug-taken") => job.builtinHeld
 
@@ -663,13 +701,26 @@ QuarantineHolds ==
   \A s \in AgentSlugs : ~(reg[s] = "live" /\ runBlamed[s])
 
 (* rollback.keeps_record: "A rolled-back install leaves the stored program and its seed hash as they   *)
-(* were before the install." spec widget_fv.install; C:643, C:710-711. A user edit after the snapshot  *)
+(* were before the install." spec widget_fv.install; C:645, C:717-718. A user edit after the snapshot  *)
 (* of the job is a newer write, so it is out of the rule. So is a failed bundle that could not be      *)
 (* removed and still runs (newLeft). widget_fv.replace: a failed replace never wrote the record, as its *)
 (* standby wrote no seed, so the rule holds at each failed end of an install.                         *)
 RollbackKeepsRecord ==
   (job.pc = "err" /\ job.beforeP # "unset" /\ ~job.editAfter /\ ~job.newLeft) =>
     (prog[job.s] = job.beforeP /\ pseed[job.s] = job.beforeS)
+
+(* replace.committed_kept: "An install that fails keeps the committed version installed, and it stays the   *)
+(* committed version." spec widget_fv.replace (review round 1). keepC: the committed name, when it was     *)
+(* installed as the job picked the old name.                                                              *)
+CommittedKept ==
+  (job.pc = "err" /\ job.keepC # None) => (inst[job.s][job.keepC] /\ committed[job.s] = job.keepC)
+
+(* replace.committed_owns: "At a host start, the row of the committed version owns the slug. A row of     *)
+(* another version waits as its standby, also when it loads first." spec widget_fv.replace (review round 1). *)
+(* An install job of the slug is out of the rule: from its commit, its new name is committed and waits      *)
+(* until the old name goes.                                                                                 *)
+CommittedNotStandby ==
+  \A s \in AgentSlugs : job.s # s => ~(committed[s] # None /\ sby[s] = committed[s])
 
 (* builtin.reserved: "The slug of a built-in widget is reserved. widget_install gives slug-taken for   *)
 (* that slug, also when the built-in widget is off." spec widget_fv.install (widget.builtin_slugs).  *)

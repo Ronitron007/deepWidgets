@@ -6,7 +6,7 @@ const phase = (j) => {
   switch (j.pc) {
     case 'idle': return 'No tool call running'
     case 'gates': case 'reloadCheck': case 'checkInstalled': case 'decide': return `${j.op} ${j.s}: checking`
-    case 'writeNew': case 'snapshot': case 'installNew': case 'waitReg': return `${j.op} ${j.s}: new bundle going in under ${nameText[j.name] ?? j.name}`
+    case 'writeNew': case 'snapshot': case 'installNew': case 'waitReg': case 'commit': return `${j.op} ${j.s}: new bundle going in under ${nameText[j.name] ?? j.name}`
     case 'removeOld': case 'rmOld': return `${j.op} ${j.s}: removing the old bundle`
     case 'live': case 'adopt': case 'writeSeed': return `${j.op} ${j.s}: new bundle in, seed step`
     case 'undoCheck': case 'undoRemove': case 'rmFolder': case 'restoreProgram': return `${j.op} ${j.s}: rolling back the new bundle`
@@ -23,6 +23,7 @@ const slot = (v, s) => {
   for (const n of names) parts.push(`${s} ${nameText[n]}: ${code[v.folder[s][n]] ?? v.folder[s][n]} installed${v.enabled[s][n] ? '' : ' but deselected'}`)
   parts.push(v.reg[s] === 'none' ? 'not running' : `${regText[v.reg[s]]}${v.row[s] !== 'none' ? ` from ${nameText[v.row[s]]}` : ''}`)
   if (v.sby[s] !== 'none') parts.push(`${nameText[v.sby[s]]} waits as the standby`)
+  if (v.committed[s] !== 'none') parts.push(`${nameText[v.committed[s]]} is committed`)
   if (v.prog[s] !== 'none' && s !== 'sample') parts.push(`program ${v.prog[s]}`)
   if (v.pseed[s] !== 'none' && s !== 'sample') parts.push(`seed hash ${v.pseed[s]}`)
   for (const n of ['A', 'B']) if (v.quar[s][n]) parts.push(`quarantine item on ${nameText[n]}`)
@@ -49,7 +50,7 @@ export const step = (action, from, to) => {
     case 'Gates': return to.job.pc === 'err' ? 'a gate refuses the code' : 'the gates pass'
     case 'ReloadCheck': return to.job.pc === 'err' ? 'reload finds no bundle' : 'reload finds the bundle'
     case 'CheckInstalled': return to.job.pc === 'err' ? 'the slug is taken' : 'the slug check passes'
-    case 'Decide': return to.job.pc === 'err' ? 'removing the leftover bundle fails'
+    case 'Decide': return to.job.pc === 'err' ? (to.job.old === 'none' ? 'no installed name is committed or live; the install stops' : 'removing the leftover bundle fails')
       : to.job.pc === 'removeOld' ? 'the installer removes the old bundle first'
         : `the installer picks ${nameText[j.name]} for the new bundle`
     case 'WriteNew': return 'the new bundle is written to its folder'
@@ -57,13 +58,14 @@ export const step = (action, from, to) => {
     case 'InstallNew': return !to.inst[s][j.name] ? 'the plugin manager does not install it'
       : `the plugin manager installs it (${to.job.app})${to.sby[s] === j.name ? '; it waits as the standby' : ''}${to.prog[s] !== from.prog[s] ? '; the load stores its seed' : ''}`
     case 'WaitReg': return to.job.pc === 'undoCheck' ? 'the new bundle does not register within 5 s, or the result is not applied' : 'the new bundle registered'
+    case 'Commit': return `the installer commits ${nameText[j.name]}${to.reg[s] === 'live' && from.reg[s] !== 'live' ? '; its standby goes live' : ''}`
     case 'RemoveOld': return to.job.pc === 'rmOld' ? `the old bundle is removed${to.reg[s] === 'live' && to.row[s] === j.name ? '; the new one takes over' : ''}`
       : to.job.pc === 'live' ? 'pnpm remove of the old bundle fails, and the new one is live' : 'removing the old bundle fails'
     case 'RmOld': return 'the old folder is deleted'
     case 'LiveCheck': return to.job.pc === 'adopt' ? `the slug shows in widget_list${Object.values(from.quar[s]).some(Boolean) && !Object.values(to.quar[s]).some(Boolean) ? '; the quarantine ends' : ''}` : 'the slug does not show in widget_list'
     case 'Adopt': return to.prog[s] !== from.prog[s] ? 'the old installer sets the stored program to the new seed' : to.pseed[s] !== from.pseed[s] ? 'the record with no seed hash takes the hash of this seed' : 'the installer reads the program record'
     case 'WriteSeed': return 'the old installer writes the seed file last'
-    case 'UndoCheck': return 'the installer checks for the failed bundle'
+    case 'UndoCheck': return 'the installer puts back the committed name and checks for the failed bundle'
     case 'UndoRemove': return to.inst[s][j.name] ? 'removing the failed bundle fails' : 'the failed bundle is removed'
     case 'RmFolder': return 'the new folder is deleted'
     case 'RestoreProgram': return to.prog[s] === from.prog[s] && to.pseed[s] === from.pseed[s] ? 'the call fails with install-failed; the record stays' : 'the program record before the load is put back; the call fails'
