@@ -44,6 +44,18 @@ The host is the OAuth 2.1 authorization server and the resource server, on the l
 
 8. On Deny, or when the dialog is closed, the host redirects with `access_denied`.
 
+## Endpoints `mcp_consent.endpoints`
+
+The spike `mcp_consent.spikes.clients` found these needs with Claude Code 2.1.317.
+
+- The host serves the metadata as exact routes at the site root, outside `/mcp`: `/.well-known/oauth-protected-resource`, `/.well-known/oauth-protected-resource/mcp`, and `/.well-known/oauth-authorization-server`.
+
+- The host keeps each client registration in storage, so a registration lives across host restarts. A client reuses its client ID after a restart, and a lost registration stops its login.
+
+- The host accepts a redirect URI only on `localhost` or `127.0.0.1`, on any port. Claude Code uses `http://localhost:<port>/callback`, and the port changes at each registration.
+
+- The host has a revocation endpoint, `/revoke`. A client logout revokes its tokens there.
+
 A local process can drive a browser page. It can not click a native dialog without the macOS Accessibility permission. Thus the approval comes from the operator.
 
 ## Tokens `mcp_consent.tokens`
@@ -66,7 +78,7 @@ The stdio bridge moves into `@deepwidgets/mcp` as a `bin`. It runs the same flow
 
 ## Fence `mcp_consent.fence`
 
-The fence of `widget_mvp.mcp` stays. The host still refuses a request with an `Origin` header or a `Sec-Fetch-Site` header, a request whose `Host` is not loopback, and a request from a socket peer that is not loopback. The authorization pages accept `Origin` only from the host's own loopback origin.
+The fence of `widget_mvp.mcp` stays. The host still refuses a request with an `Origin` header or a `Sec-Fetch-Site` header, a request whose `Host` is not loopback, and a request from a socket peer that is not loopback. The browser opens `/authorize` as a top-level page, so that page accepts the `Sec-Fetch-Site` header. Each other route keeps the full fence. `/token`, `/register`, and `/revoke` get calls from the client process, not from a browser.
 
 ## Provisional choices `mcp_consent.provisional`
 
@@ -83,4 +95,4 @@ The operator has not decided these items. A later decision can change each one.
 
 | Name | Question | Blocks |
 |---|---|---|
-| `mcp_consent.spikes.clients` | Does Claude Code complete the MCP OAuth flow against a loopback authorization server with dynamic client registration? Which MCP SDK parts can the host use for the authorization server? | `mcp.consent_server` |
+| `mcp_consent.spikes.clients` | Done on 2026-11-03. Claude Code 2.1.317 completes the flow with an `http` issuer on `127.0.0.1`: discovery, registration, PKCE, exchange, refresh with rotation, and revoke. `@modelcontextprotocol/server` 2.2.0 gives the token check (`requireBearerAuth`) with no Express. It has no authorization server, so the host builds that part. | none |
