@@ -1,9 +1,9 @@
 --------------------------- MODULE crash_lifecycle ---------------------------
 (***************************************************************************)
-(* crash_lifecycle: the outermost state machine of deepWidgets at SYNCSHA. *)
+(* crash_lifecycle: the outermost state machine of deepWidgets at ff12c440. *)
 (* Host process + crash.json/provisional.json + quarantine.json + the       *)
 (* watchdog thread + the Electron-main supervisor (HostCrashPolicy).        *)
-(* Code refs (path:line at SYNCSHA):                                       *)
+(* Code refs (path:line at ff12c440):                                       *)
 (*   SUP  = apps/desktop/src/deepwidgets-supervisor.ts                      *)
 (*   POL  = apps/desktop/src/deepwidgets-crash-policy.ts                    *)
 (*   ISO  = deepwidgets/widgets/src/isolation.ts                            *)

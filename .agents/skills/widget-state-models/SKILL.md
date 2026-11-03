@@ -25,8 +25,8 @@ Each model has its own sync commit. At its sync commit, a model describes the co
 
 | Model | Sync commit | Note |
 |---|---|---|
-| `crash_lifecycle` | `SYNCSHA` | The unit `widget.install_records` changed `held`, and added `lift`, `holdLift`, and `settleLift` in `isolation.ts`. The model has no install, so a load with success lifts the quarantine. The other covered lines only moved. |
-| `widget_install` | `SYNCSHA` | The fix of `widget_fv.install`, with `widget.builtin_slugs`. The `BuiltIn` branch of `Load` is the behavior at `aa7cd518`. The code does not reach it, because the slug of a built-in widget is reserved. Only the mutants `offAllowed` and `builtinRow` reach it. |
+| `crash_lifecycle` | `ff12c440` | The unit `widget.install_records` changed `held`, and added `lift`, `holdLift`, and `settleLift` in `isolation.ts`. The model has no install, so a load with success lifts the quarantine. The other covered lines only moved. |
+| `widget_install` | `ff12c440` | The fix of `widget_fv.install`, with `widget.builtin_slugs`. The `BuiltIn` branch of `Load` is the behavior at `aa7cd518`. The code does not reach it, because the slug of a built-in widget is reserved. Only the mutants `offAllowed` and `builtinRow` reach it. |
 | `action_contract` | `aa7cd518` | Not in sync. [Ronitron007/deepWidgets#75](https://github.com/Ronitron007/deepWidgets/pull/75) fixed `widget_fv.action` and changed the covered lines. Its model of the fixed code is not in this skill. |
 
 The first check ran at `38df710e`.
