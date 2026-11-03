@@ -1,7 +1,7 @@
 ---------------------------- MODULE WidgetInstall ----------------------------
 (***************************************************************************)
 (* The agent tools widget_install, widget_reload, and widget_remove of     *)
-(* deepWidgets with spec widget_fv.replace (unit widget.install_replace).  *)
+(* deepWidgets at commit b3af1ff7 (spec widget_fv.replace is in).       *)
 (*                                                                         *)
 (* Code: deepwidgets/mcp/src/creation.ts (C), deepwidgets/widgets/src/     *)
 (* index.ts (W), deepwidgets/widgets/src/isolation.ts (I),                 *)
