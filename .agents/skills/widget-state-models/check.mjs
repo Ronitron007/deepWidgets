@@ -28,7 +28,7 @@ const CRASH_BREAKS = ['SampleNeverQuarantined', 'HashChangeLifts', 'ProvisionalO
   'SampleLiveInSafeMode']
 const ACTION_HOLDS = ['TypeOK', 'ReplaySameResult', 'ReplayFlag', 'ConflictOnOtherArgs', 'FIFO', 'QueryNoQueue',
   'BusyNeverRuns', 'NoAdmitAfterStop', 'DrainBeforeClose', 'RevCountsWrites', 'NoDeadlock']
-const INSTALL_HOLDS = ['TypeOK', 'GatesGuardHost', 'FailedReplaceKeepsOld', 'CommittedKept', 'CommittedNotStandby', 'StateKept', 'BuiltInUntouched', 'OneBundlePerSlug', 'NewSeedSetsProgram',
+const INSTALL_HOLDS = ['TypeOK', 'GatesGuardHost', 'FailedReplaceKeepsOld', 'NeverRemoveLastGood', 'CommittedNotStandby', 'StateKept', 'BuiltInUntouched', 'OneBundlePerSlug', 'NewSeedSetsProgram',
   'SameSeedKeepsProgram', 'SlugTakenOnlyForBuiltIn', 'QuarantineHolds', 'RollbackKeepsRecord', 'BuiltInSlugReserved', 'NoDeadlock']
 
 const actionMutants = {
@@ -46,7 +46,7 @@ const installMutants = {
   'M-skipGate-GatesGuardHost': 'GatesGuardHost', 'M-stateReset-StateKept': 'StateKept',
   'M-seedFile-SameSeedKeepsProgram': 'SameSeedKeepsProgram', 'M-noRestore-RollbackKeepsRecord': 'RollbackKeepsRecord',
   'M-oneName-QuarantineHolds': 'QuarantineHolds', 'M-offAllowed-BuiltInSlugReserved': 'BuiltInSlugReserved',
-  'M-removeFirst-FailedReplaceKeepsOld': 'FailedReplaceKeepsOld', 'M-guessA-CommittedKept': 'CommittedKept',
+  'M-removeFirst-FailedReplaceKeepsOld': 'FailedReplaceKeepsOld', 'M-noLiveCheck-NeverRemoveLastGood': 'NeverRemoveLastGood',
   'M-noDefer-CommittedNotStandby': 'CommittedNotStandby',
 }
 
@@ -80,7 +80,7 @@ const MODELS = {
   widget_install: {
     spec: 'WidgetInstall.tla',
     runs: {
-      // The default set: one crash. The full set adds two crashes and two slugs.
+      // The default set: one crash, and no DeselectFails in `all`. The full set adds DeselectFails, two crashes, and two slugs.
       all: { config: 'cfg/WidgetInstall.cfg', breaks: [], holds: INSTALL_HOLDS },
       'no-crash': { config: 'cfg/NoCrash.cfg', breaks: [], holds: ['FailedReplaceKeepsOld', 'NewSeedSetsProgram', 'NoDeadlock'] },
       quarantine: { config: 'cfg/P-QuarantineHolds.cfg', breaks: [], holds: ['QuarantineHolds', 'NoDeadlock'], slow: true },
