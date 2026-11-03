@@ -15,7 +15,7 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { z } from 'zod'
-import { agentRow, callerRoot, createIsolation, runAs, runningRow, widgetRow } from './isolation.ts'
+import { agentRow, callerRoot, createIsolation, isAgentRow, runAs, runningRow, widgetRow } from './isolation.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -325,12 +325,22 @@ interface Registration {
   actions: Map<string, WidgetAction<unknown>>
   /** The widget row that registered it; its code runs in the blame store of that row. */
   row?: string
-  /** True when the row is the row of an agent bundle, `deepwidgets-agent-<slug>`. */
+  /** True when the row is the row of an agent bundle, `deepwidgets-agent-<slug>` or its second name (widget_fv.replace). */
   agent?: boolean
 }
 
 /** The hash of a seed program, as the program record keeps it. */
 export const seedHash = (text: string): string => createHash('sha256').update(text).digest('hex')
+
+/** widget_fv.replace: the Loader rows that registered a slug. */
+export interface RegisteredRows {
+  /** The row of the live entry. */
+  live?: string
+  /** The row of the failed entry of a quarantined row. */
+  failed?: string
+  /** The row of the registration that waits for the entry to end. */
+  standby?: string
+}
 
 /** The internal side of the service, made by `apply`. */
 interface Runtime {
@@ -353,6 +363,7 @@ interface Runtime {
   builtInSlug(slug: string): Promise<boolean>
   holdLift(slug: string): void
   settleLift(slug: string, ok: boolean): void
+  rowsOf(slug: string): RegisteredRows
   changes(since: string | undefined): { cursor: string, changes: WidgetChange[], reset?: true }
   cursor(): string
 }
@@ -532,6 +543,11 @@ export class WidgetRecordsService extends Service {
   /** The install of `slug` ends. With `ok`, a quarantined row of the slug that loaded other files leaves the quarantine. */
   settleLift(slug: string, ok: boolean): void {
     guard(() => { this.runtime.settleLift(slug, ok) })
+  }
+
+  /** widget_fv.replace: the Loader rows that registered `slug`: of its live or failed entry, and of its standby. */
+  rowsOf(slug: string): RegisteredRows {
+    return guard(() => this.runtime.rowsOf(slug))
   }
 }
 
@@ -1174,7 +1190,51 @@ export function apply(ctx: Context, config: Config): void {
       ctx.logger.warn(`widgets: ${message}`)
       throw new WidgetError('safe-mode', message)
     }
-    if (widgets.has(slug)) throw new WidgetError('conflict', `the slug ${slug} already has a live registration`)
+    const current = widgets.get(slug)
+    if (current !== undefined) {
+      // widget_fv.replace: a new version of an agent widget, under the second package name, waits for the old one.
+      if (failure === undefined && registration.agent === true && current.registration.agent === true
+        && registration.row !== undefined && registration.row !== current.registration.row && !standby.has(slug)) {
+        return wait(registration)
+      }
+      throw new WidgetError('conflict', `the slug ${slug} already has a live registration`)
+    }
+    return start(registration, Promise.resolve(), failure)
+  }
+
+  /**
+   * widget_fv.replace: the standby of each slug. An agent registration of a slug whose entry belongs to another agent
+   * row waits here, so the installer can load a new version under the second package name while the old one runs.
+   * A standby is not live, and it writes no seed. When the entry ends, the standby takes its place.
+   */
+  const standby = new Map<string, { registration: Registration, dispose?: () => Promise<void> }>()
+
+  function wait(registration: Registration): () => Promise<void> {
+    const { slug } = registration
+    const item: { registration: Registration, dispose?: () => Promise<void> } = { registration }
+    standby.set(slug, item)
+    ctx.logger.info(`widgets: the row ${String(registration.row)} waits to take over ${slug} from the row ${String(widgets.get(slug)?.registration.row)}`)
+    return async () => {
+      if (standby.get(slug) === item) standby.delete(slug)
+      else await item.dispose?.()
+    }
+  }
+
+  /** widget_fv.replace: the entry of `slug` ended. Its standby starts behind the mutation queue of that entry. */
+  function promote(slug: string, after: Promise<unknown>): void {
+    const item = standby.get(slug)
+    if (item === undefined || widgets.has(slug)) return
+    standby.delete(slug)
+    item.dispose = start(item.registration, after)
+  }
+
+  /**
+   * Make the entry of a registration live.
+   * @param after - the end of the mutation queue of the entry before it. The seed and the first job wait for it, so
+   * two versions of a slug never write at the same time.
+   */
+  function start(registration: Registration, after: Promise<unknown>, failure?: string): () => Promise<void> {
+    const { slug } = registration
     for (const action of registration.actions.values()) {
       longestTimeoutMs = Math.max(longestTimeoutMs, action.timeoutMs ?? registration.timeoutMs ?? DEFAULT_TIMEOUT_MS)
     }
@@ -1182,8 +1242,8 @@ export function apply(ctx: Context, config: Config): void {
       slug,
       registration,
       streams: new Set(),
-      tail: Promise.resolve(),
-      seeded: failure === undefined ? seed(registration) : Promise.resolve(),
+      tail: after,
+      seeded: failure === undefined ? after.then(() => seed(registration)) : Promise.resolve(),
       routes: [],
       ...(failure === undefined ? {} : { failure }),
     }
@@ -1204,7 +1264,19 @@ export function apply(ctx: Context, config: Config): void {
       for (const dispose of entry.routes) await dispose()
       logChange({ slug, kind: 'removed', by: 'host' })
       pushEvent({ type: 'removed', slug })
+      promote(slug, entry.tail)
     }
+  }
+
+  /** widget_fv.replace: the rows of the entry and of the standby of `slug`. */
+  function rowsOf(slug: string): RegisteredRows {
+    const entry = widgets.get(slug)
+    const rows: RegisteredRows = {}
+    const row = entry?.registration.row
+    if (row !== undefined) rows[entry?.failure === undefined ? 'live' : 'failed'] = row
+    const waiting = standby.get(slug)?.registration.row
+    if (waiting !== undefined) rows.standby = waiting
+    return rows
   }
 
   function summary(entry: Entry): WidgetSummary {
@@ -1262,7 +1334,7 @@ export function apply(ctx: Context, config: Config): void {
   const isolation = createIsolation(ctx, {
     hold(slugs, row, reason) {
       const disposers = slugs.filter((slug) => !widgets.has(slug)).map((slug) => add({
-        slug, title: slug, program: '', initialState: null, timeoutMs: undefined, actions: new Map(), row,
+        slug, title: slug, program: '', initialState: null, timeoutMs: undefined, actions: new Map(), row, agent: isAgentRow(row),
       }, undefined, () => false, reason))
       return async () => { for (const dispose of disposers) await dispose() }
     },
@@ -1289,6 +1361,7 @@ export function apply(ctx: Context, config: Config): void {
     builtInSlug: async (slug) => (await builtInSlugs(ctx)).has(slug),
     holdLift: (slug) => { isolation.holdLift(slug) },
     settleLift: (slug, ok) => { isolation.settleLift(slug, ok) },
+    rowsOf,
     changes,
     cursor,
   }

@@ -6,13 +6,15 @@
  * test run in a throwaway process. Code that fails a gate never reaches the host. A bundle that
  * passes is written into a folder that the profile owns, `<profile>/deepwidgets-widgets/<slug>`,
  * and the plugin manager installs that folder; `hmr` applies it at once. A second install of one
- * slug removes the old bundle first and puts it back when the new one fails. The state of a slug
- * is in the runtime storage, so it stays across a replace and a remove.
+ * slug installs the new bundle under the other agent package name of the slug, in its own folder
+ * (`widget_fv.replace`). The new version waits as the standby of the old one. The old bundle goes
+ * only after the new one registers, so a failed reinstall keeps the old version live. The state of
+ * a slug is in the runtime storage, so it stays across a replace and a remove.
  * @module @deepwidgets/mcp/creation
  */
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, rmdir, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -162,6 +164,13 @@ const errorText = (error: unknown): string => error instanceof Error ? error.mes
  * A built-in widget row is `deepwidgets-widget-<name>`, so an agent bundle cannot take its row id.
  */
 export const bundleName = (slug: string): string => `deepwidgets-agent-${slug}`
+
+/**
+ * widget_fv.replace: the second package name and row id of the agent bundle of `slug`. A replace installs the new
+ * version under the agent name that is not installed, so the two names take turns. A slug has no `.`, so the name of
+ * one slug is never the name of another.
+ */
+export const secondBundleName = (slug: string): string => `deepwidgets-agent-${slug}.b`
 
 /** The package name and row id that an older install gave the agent bundle of `slug`. An install of the slug removes it. */
 export const legacyBundleName = (slug: string): string => `deepwidgets-widget-${slug}`
@@ -395,16 +404,14 @@ export async function runGates(dir: string): Promise<GatesOutcome> {
  * The patch file of a widget bundle: one row. Safe mode needs nothing here: the runtime refuses an
  * agent widget at `ctx.widgets.register` (`widget_phase2.isolation.supervisor`).
  */
-function patchText(slug: string): string {
-  const name = bundleName(slug)
+function patchText(name: string): string {
   return ['- insert:', `    - id: ${name}`, `      name: ${name}`, ''].join('\n')
 }
 
 /** Write a complete bundle folder. */
-async function writeBundle(folder: string, widget: TestRunWidget, code: string, source: string): Promise<void> {
+async function writeBundle(folder: string, name: string, widget: TestRunWidget, code: string, source: string): Promise<void> {
   await rm(folder, { recursive: true, force: true })
   await mkdir(folder, { recursive: true })
-  const name = bundleName(widget.slug)
   await writeFile(join(folder, 'package.json'), `${JSON.stringify({
     name,
     version: '1.0.0',
@@ -415,7 +422,7 @@ async function writeBundle(folder: string, widget: TestRunWidget, code: string, 
     dsh: { bundle: { patch: './cordis.patch.yml' } },
   }, null, 2)}\n`)
   await writeFile(join(folder, 'index.js'), code)
-  await writeFile(join(folder, 'cordis.patch.yml'), patchText(widget.slug))
+  await writeFile(join(folder, 'cordis.patch.yml'), patchText(name))
   const meta: WidgetMeta = { slug: widget.slug, source, installedAt: new Date().toISOString() }
   await writeFile(join(folder, META_FILE), `${JSON.stringify(meta, null, 2)}\n`)
 }
@@ -446,18 +453,24 @@ export class WidgetInstaller {
     return next
   }
 
+  /** The folder of the agent bundle of `slug`: `<root>/<slug>`. The older name of the slug used it too. */
   private folderOf(slug: string): string {
     return join(this.root, slug)
   }
 
+  /** The folder of the package `name` of `slug`. The second name has its own folder, `<root>/<slug>.b`. */
+  private folderOfName(slug: string, name: string): string {
+    return name === secondBundleName(slug) ? `${this.folderOf(slug)}.b` : this.folderOf(slug)
+  }
+
   /**
-   * The installed agent bundles of `slug`: the current name, and the older name when the profile dependency of that
-   * name is the agent folder of the slug. Another bundle with the older name is not an agent bundle and stays.
-   * A built-in widget is not installed in the profile, so its row never shows here.
+   * The installed agent bundles of `slug`: the current name, the second name (`widget_fv.replace`), and the older name
+   * when the profile dependency of that name is the agent folder of the slug. Another bundle with the older name is not
+   * an agent bundle and stays. A built-in widget is not installed in the profile, so its row never shows here.
    */
   private async installedNames(slug: string): Promise<string[]> {
     const installed = new Map((await this.services.pluginManager.listBundles()).filter((bundle) => bundle.installed).map((bundle) => [bundle.name, bundle]))
-    const names = installed.has(bundleName(slug)) ? [bundleName(slug)] : []
+    const names = [bundleName(slug), secondBundleName(slug)].filter((name) => installed.has(name))
     const legacy = installed.get(legacyBundleName(slug))
     if (legacy !== undefined && await this.isAgentFolder(legacy.source, slug)) names.push(legacyBundleName(slug))
     return names
@@ -470,6 +483,20 @@ export class WidgetInstaller {
     // The profile can record the folder behind a link (on macOS /var is /private/var), so the real paths are compared.
     const real = (path: string): Promise<string> => realpath(path).catch(() => resolve(path))
     return await real(local[1]) === await real(this.folderOf(slug))
+  }
+
+  /**
+   * widget_fv.replace: which of `names` registered `slug`, by the rows of `which` in this order: `live` (the live
+   * entry), `failed` (the failed entry of a quarantined row), and `standby` (a registration that waits for the entry).
+   */
+  private registeredName(slug: string, names: string[], which: ('live' | 'failed' | 'standby')[]): string | undefined {
+    const rows = this.services.records.rowsOf(slug)
+    for (const kind of which) {
+      const row = rows[kind]
+      const name = row === undefined ? undefined : names.find((item) => row === item || row.endsWith(`:${item}`))
+      if (name !== undefined) return name
+    }
+    return undefined
   }
 
   /**
@@ -491,22 +518,31 @@ export class WidgetInstaller {
     await rmdir(join(this.root, LEGACY_SEEDS_DIR)).catch(() => undefined)
   }
 
-  private async meta(slug: string): Promise<WidgetMeta | undefined> {
-    try {
-      return JSON.parse(await readFile(join(this.folderOf(slug), META_FILE), 'utf8')) as WidgetMeta
-    } catch {
-      // No folder or no record: the slug has no agent bundle.
-      return undefined
+  /** The record of the installed agent bundle of `slug`: of the name that registered the slug, else of the first name. */
+  private async meta(slug: string, names: string[]): Promise<WidgetMeta | undefined> {
+    const first = this.registeredName(slug, names, ['live', 'failed', 'standby'])
+    for (const name of first === undefined ? names : [first, ...names]) {
+      try {
+        return JSON.parse(await readFile(join(this.folderOfName(slug, name), META_FILE), 'utf8')) as WidgetMeta
+      } catch {
+        // No folder or no record for this name.
+      }
     }
+    return undefined
   }
 
-  private async waitLive(slug: string): Promise<boolean> {
+  /** Wait until `test` is true, for at most {@link LIVE_WAIT_MS}. */
+  private async waitFor(test: () => boolean): Promise<boolean> {
     const until = Date.now() + LIVE_WAIT_MS
     while (Date.now() < until) {
-      if (this.services.widgets.list().some((widget) => widget.slug === slug)) return true
+      if (test()) return true
       await new Promise((resolve) => { setTimeout(resolve, 100) })
     }
     return false
+  }
+
+  private waitLive(slug: string): Promise<boolean> {
+    return this.waitFor(() => this.services.widgets.list().some((widget) => widget.slug === slug))
   }
 
   /** Run the gates and install `dir`. A bundle of the same slug is replaced. */
@@ -517,8 +553,9 @@ export class WidgetInstaller {
   /** Run the gates on the source folder of the installed `slug` again and replace its bundle. */
   reload(slug: string): Promise<InstallOutcome> {
     return this.serial(async () => {
-      const meta = await this.meta(slug)
-      if (meta === undefined || (await this.installedNames(slug)).length === 0) throw new CreationError('not-installed', `no agent widget bundle has the slug ${JSON.stringify(slug)}`)
+      const names = await this.installedNames(slug)
+      const meta = await this.meta(slug, names)
+      if (meta === undefined || names.length === 0) throw new CreationError('not-installed', `no agent widget bundle has the slug ${JSON.stringify(slug)}`)
       return this.installNow(meta.source, slug)
     })
   }
@@ -526,8 +563,8 @@ export class WidgetInstaller {
   /** Remove the bundle of `slug`. Its state stays in storage. */
   remove(slug: string): Promise<{ slug: string, application: ChangeResult['application'] }> {
     return this.serial(async () => {
-      const meta = await this.meta(slug)
-      const names = meta === undefined ? [] : await this.installedNames(slug)
+      const installed = await this.installedNames(slug)
+      const names = await this.meta(slug, installed) === undefined ? [] : installed
       if (names.length === 0) throw new CreationError('not-installed', `no agent widget bundle has the slug ${JSON.stringify(slug)}`)
       let application: ChangeResult['application'] = 'applied'
       const removed: string[] = []
@@ -541,9 +578,19 @@ export class WidgetInstaller {
         application = result.application
       }
       await rm(this.folderOf(slug), { recursive: true, force: true })
+      await rm(this.folderOfName(slug, secondBundleName(slug)), { recursive: true, force: true })
       this.services.records.clearOff(slug)
       return { slug, application }
     })
+  }
+
+  /** Remove the bundle `name` of `slug` before the install. It failed: nothing changed, and the install stops. */
+  private async removeFirst(slug: string, name: string, why: string): Promise<void> {
+    const removal = await this.services.pluginManager.removeBundle(name)
+    if (removal.application !== 'applied') {
+      throw new CreationError('install-failed', `the plugin manager did not remove ${why} ${name}; nothing was installed`, { diagnostics: resultDiagnostics(removal) })
+    }
+    if (name !== legacyBundleName(slug)) await rm(this.folderOfName(slug, name), { recursive: true, force: true })
   }
 
   private async installNow(dir: string, expected: string | undefined): Promise<InstallOutcome> {
@@ -557,14 +604,11 @@ export class WidgetInstaller {
     const { slug } = widget
     if (expected !== undefined && slug !== expected) throw new CreationError('slug-changed', `the source now registers ${JSON.stringify(slug)}, not ${JSON.stringify(expected)}`)
     const warnings = outcome.gates.flatMap((gate) => gate.warnings)
-    const folder = this.folderOf(slug)
-    const name = bundleName(slug)
     // widget_fv.install (widget.builtin_slugs): the slug of a built-in widget is reserved, also while it is off.
     if (await this.services.records.builtInSlug(slug)) {
       throw new CreationError('slug-taken', `the slug ${JSON.stringify(slug)} is the slug of a built-in widget`)
     }
-    // An older install named the bundle with the row id of a built-in widget. This install removes it.
-    const previous = await this.installedNames(slug)
+    let previous = await this.installedNames(slug)
     const replaced = previous.length > 0
     // widget_fv.install: a widget that safe mode turned off is not live, so it does not take the slug.
     if (!replaced && this.services.widgets.list().some((item) => item.slug === slug && item.off === undefined)) {
@@ -573,86 +617,101 @@ export class WidgetInstaller {
     this.services.records.clearOff(slug)
     await this.migrateSeed(slug)
     await mkdir(this.root, { recursive: true })
-    const next = `${folder}.next`
-    const backup = `${folder}.previous`
-    await writeBundle(next, widget, code, dir)
-    if (replaced) {
-      const removed: string[] = []
-      for (const old of previous) {
-        const removal = await this.services.pluginManager.removeBundle(old)
-        if (removal.application !== 'applied') {
-          await rm(next, { recursive: true, force: true })
-          const state = removed.length === 0 ? 'the old bundle stays' : `${removed.join(', ')} was removed, and ${old} stays`
-          throw new CreationError('install-failed', `the plugin manager did not remove the old bundle ${old}; ${state}`, { diagnostics: resultDiagnostics(removal) })
-        }
-        removed.push(old)
-      }
-      await rm(backup, { recursive: true, force: true })
-      await rename(folder, backup)
-    } else {
-      await rm(folder, { recursive: true, force: true })
+    // widget_fv.replace: a host crash during a replace can leave both agent names installed. The name of the entry of
+    // the slug (live, or failed in the quarantine) stays, and the other one goes first, so a free name is left for the
+    // new version. The other one is at most a standby, so its removal starts no code and writes no seed.
+    const both = [bundleName(slug), secondBundleName(slug)]
+    if (both.every((name) => previous.includes(name))) {
+      const keep = this.registeredName(slug, both, ['live', 'failed']) ?? bundleName(slug)
+      const leftover = both.find((name) => name !== keep) ?? secondBundleName(slug)
+      await this.removeFirst(slug, leftover, 'the leftover bundle')
+      previous = previous.filter((name) => name !== leftover)
     }
-    await rename(next, folder)
+    // An older install named the bundle with the row id of a built-in widget, in the folder of the current name. Its
+    // row is not an agent row, so the new version can not wait for it: it goes first, as before widget_fv.replace.
+    if (previous.includes(legacyBundleName(slug))) {
+      await this.removeFirst(slug, legacyBundleName(slug), 'the bundle with the older name')
+      previous = previous.filter((name) => name !== legacyBundleName(slug))
+    }
+    const old = previous[0]
+    const name = old === bundleName(slug) ? secondBundleName(slug) : bundleName(slug)
+    const folder = this.folderOfName(slug, name)
+    await writeBundle(folder, name, widget, code, dir)
 
-    // widget_fv.install: the program record before the load. The slug is not live here, so no edit can change it.
+    // widget_fv.install: the program record before the load. A standby writes no seed, so only the load of a first
+    // install, or a user edit through the live old version, can change it during the install.
     const before = await this.services.records.programRecord(slug)
     // widget_fv.install: a quarantine of the slug ends only when the whole install succeeds, not when the load does.
     this.services.records.holdLift(slug)
     try {
-      return await this.loadNew({ slug, widget, folder, backup, name, replaced, before, gates: outcome.gates, warnings })
+      return await this.loadNew({ slug, widget, folder, name, old, replaced, before, gates: outcome.gates, warnings })
     } finally {
       // After a success the hold is already settled; this ends it after a throw.
       this.services.records.settleLift(slug, false)
     }
   }
 
-  /** The load of the new bundle of `installNow`, its success, and its rollback. */
+  /**
+   * The load of the new bundle of `installNow`, the removal of the old bundle, and the rollback (`widget_fv.replace`).
+   * The old bundle goes only after the new one registered: live, or as the standby of the old one. When the old one
+   * goes, its entry ends and the standby takes its place. A failure before that point removes only the new bundle.
+   */
   private async loadNew(job: {
     slug: string
     widget: TestRunWidget
     folder: string
-    backup: string
     name: string
+    old: string | undefined
     replaced: boolean
     before: ProgramRecord | undefined
     gates: GateReport[]
     warnings: string[]
   }): Promise<InstallOutcome> {
-    const { slug, widget, folder, backup, name, replaced, before } = job
+    const { slug, widget, folder, name, old, replaced, before } = job
     const result = await this.services.pluginManager.installBundle(folder)
-    if (result.application === 'applied' && await this.waitLive(slug)) {
+    const diagnostics = resultDiagnostics(result)
+    let registered = result.application === 'applied' && await this.waitFor(() => this.registeredName(slug, [name], ['live', 'standby']) !== undefined)
+    if (result.application === 'applied' && !registered) diagnostics.push(`the widget ${slug} of ${name} did not register within ${String(LIVE_WAIT_MS)} ms`)
+    const warnings = [...job.warnings]
+    if (registered && old !== undefined) {
+      const removal = await this.services.pluginManager.removeBundle(old)
+      if (removal.application === 'applied') {
+        await rm(this.folderOfName(slug, old), { recursive: true, force: true })
+      } else if (this.registeredName(slug, [name], ['live']) !== undefined) {
+        // The new version is live: the plugin manager turned the old bundle off before `pnpm remove` failed, or the old
+        // version was not live. The old bundle is a leftover, and the next install of the slug removes it.
+        warnings.push(`the plugin manager did not remove the old bundle ${old}; the new version is live, and the next install of ${slug} removes the old bundle: ${resultDiagnostics(removal).join('; ')}`)
+      } else {
+        registered = false
+        diagnostics.push(`the plugin manager did not remove the old bundle ${old}: ${resultDiagnostics(removal).join('; ')}`)
+      }
+    }
+    if (registered && await this.waitLive(slug)) {
       this.services.records.settleLift(slug, true)
-      await rm(backup, { recursive: true, force: true })
       // The stored program wins over the seed, and it stays across a remove. A new seed in the code is the newer
       // intent: the load set it, in the same write as its hash (`seed` in the widgets runtime).
       const after = await this.services.records.programRecord(slug)
       // A record of an older format with no hash: the stored program stays, and it takes the hash of this seed.
       if (after !== undefined && after.seed === undefined) await this.services.records.adoptSeed(slug, hashText(widget.program))
       const programUpdated = before?.seed !== undefined && after?.seed !== before.seed
-      return { slug, replaced, application: result.application, programUpdated, gates: job.gates, warnings: job.warnings }
+      return { slug, replaced, application: result.application, programUpdated, gates: job.gates, warnings }
     }
+    if (registered) diagnostics.push(`the widget ${slug} did not show in widget_list within ${String(LIVE_WAIT_MS)} ms`)
 
-    const diagnostics = resultDiagnostics(result)
-    if (result.application === 'applied') diagnostics.push(`the widget ${slug} did not show in widget_list within ${String(LIVE_WAIT_MS)} ms`)
     if ((await this.installedNames(slug)).includes(name)) {
       const undo = await this.services.pluginManager.removeBundle(name)
       if (undo.application !== 'applied') diagnostics.push(`the failed bundle was not removed: ${resultDiagnostics(undo).join('; ')}`)
     }
     this.services.records.clearOff(slug)
     await rm(folder, { recursive: true, force: true })
-    // widget_fv.install: the failed load can have written the program record. Put back the record and its seed hash.
-    // When the failed bundle could not be removed and still runs, the record stays: it is the record of that code.
+    // widget_fv.install: the failed load of a first install can have written the program record. Put back the record
+    // and its seed hash. When a version still runs, the record stays: it is the record of that code. widget_fv.replace:
+    // that version is the old one, whose user edits during the install stay, or a failed bundle that could not be removed.
     const stillLive = this.services.widgets.list().some((item) => item.slug === slug && item.off === undefined && item.failed === undefined)
     if (!stillLive) await this.services.records.restoreProgram(slug, before, { by: 'widget_install' })
-    // The install failed: a load of other files during it does not end a quarantine. The old files load after this.
+    // The install failed: a load of other files during it does not end a quarantine.
     this.services.records.settleLift(slug, false)
-    if (replaced) {
-      await rename(backup, folder)
-      const restore = await this.services.pluginManager.installBundle(folder)
-      diagnostics.push(restore.application === 'applied'
-        ? 'the previous bundle was installed again'
-        : `the previous bundle was not installed again: ${resultDiagnostics(restore).join('; ')}`)
-    }
+    if (old !== undefined) diagnostics.push(`the previous bundle ${old} was not removed, and it stays`)
     throw new CreationError('install-failed', `the plugin manager did not apply ${name}`, { diagnostics })
   }
 }

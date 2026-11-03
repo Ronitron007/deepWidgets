@@ -27,7 +27,7 @@ const CRASH_BREAKS = ['SampleNeverQuarantined', 'HashChangeLifts', 'ProvisionalO
   'SampleLiveInSafeMode']
 const ACTION_HOLDS = ['TypeOK', 'ReplaySameResult', 'ReplayFlag', 'ConflictOnOtherArgs', 'FIFO', 'QueryNoQueue',
   'BusyNeverRuns', 'NoAdmitAfterStop', 'DrainBeforeClose', 'RevCountsWrites', 'NoDeadlock']
-const INSTALL_HOLDS = ['TypeOK', 'GatesGuardHost', 'StateKept', 'BuiltInUntouched', 'OneBundlePerSlug', 'NewSeedSetsProgram',
+const INSTALL_HOLDS = ['TypeOK', 'GatesGuardHost', 'FailedReplaceKeepsOld', 'StateKept', 'BuiltInUntouched', 'OneBundlePerSlug', 'NewSeedSetsProgram',
   'SameSeedKeepsProgram', 'SlugTakenOnlyForBuiltIn', 'QuarantineHolds', 'RollbackKeepsRecord', 'BuiltInSlugReserved', 'NoDeadlock']
 
 const actionMutants = {
@@ -44,7 +44,8 @@ const installMutants = {
   'M-builtinRow-BuiltInUntouched': 'BuiltInUntouched', 'M-builtinRow-OneBundlePerSlug': 'OneBundlePerSlug',
   'M-skipGate-GatesGuardHost': 'GatesGuardHost', 'M-stateReset-StateKept': 'StateKept',
   'M-seedFile-SameSeedKeepsProgram': 'SameSeedKeepsProgram', 'M-noRestore-RollbackKeepsRecord': 'RollbackKeepsRecord',
-  'M-liftAtLoad-QuarantineHolds': 'QuarantineHolds', 'M-offAllowed-BuiltInSlugReserved': 'BuiltInSlugReserved',
+  'M-oneName-QuarantineHolds': 'QuarantineHolds', 'M-offAllowed-BuiltInSlugReserved': 'BuiltInSlugReserved',
+  'M-removeFirst-FailedReplaceKeepsOld': 'FailedReplaceKeepsOld',
 }
 
 // For each run: the config, the rules that must break, and the rules that must hold.
@@ -77,10 +78,8 @@ const MODELS = {
   widget_install: {
     spec: 'WidgetInstall.tla',
     runs: {
-      all: { config: 'cfg/WidgetInstall.cfg', breaks: ['FailedReplaceKeepsOld'], holds: [] },
-      // The live-wait timeout makes this model bigger: the bound stops the run after the first break. The runs
-      // holds and two-slugs check NewSeedSetsProgram and NoDeadlock.
-      'no-crash': { config: 'cfg/NoCrash.cfg', breaks: ['FailedReplaceKeepsOld'], holds: [] },
+      all: { config: 'cfg/WidgetInstall.cfg', breaks: [], holds: INSTALL_HOLDS },
+      'no-crash': { config: 'cfg/NoCrash.cfg', breaks: [], holds: ['FailedReplaceKeepsOld', 'NewSeedSetsProgram', 'NoDeadlock'] },
       quarantine: { config: 'cfg/P-QuarantineHolds.cfg', breaks: [], holds: ['QuarantineHolds', 'NoDeadlock'] },
       'same-seed': { config: 'cfg/P-SameSeedKeepsProgram.cfg', breaks: [], holds: ['SameSeedKeepsProgram', 'NoDeadlock'] },
       holds: { config: 'cfg/Holds.cfg', breaks: [], holds: INSTALL_HOLDS },

@@ -11,7 +11,7 @@ const { check, done } = checks('replay sameseed')
 /** The 0-based line of the first statement after the live check of installNow, in the built @deepwidgets/mcp. */
 function faultLine() {
   const lines = readFileSync(join(ROOT, 'deepwidgets/mcp/lib/index.js'), 'utf8').split('\n')
-  const found = lines.flatMap((line, index) => line.includes("result.application === \"applied\" && await this.waitLive(slug)") ? [index] : [])
+  const found = lines.flatMap((line, index) => line.includes("registered && await this.waitLive(slug)") ? [index] : [])
   if (found.length !== 1) throw new Error(`the live check of installNow is on ${String(found.length)} lines of the built file`)
   return found[0] + 1
 }

@@ -2,7 +2,7 @@
  * Blame at exit and quarantine (`widget_phase2.isolation.blame` in `docs/specs/widget-phase2.md`).
  *
  * The runtime runs the plugin body of each widget row (a Loader row with an id `deepwidgets-widget-*`, or
- * `deepwidgets-agent-*` for an agent bundle, `widget_phase2.creation.rows`) and each
+ * `deepwidgets-agent-*` for an agent bundle, `widget_phase2.creation.rows` and `widget_fv.replace`) and each
  * action handler inside an AsyncLocalStorage store that names the row. Timers, promises, and listeners that the
  * widget code creates there keep the store. On a fatal error, the claimer reads the store; when the store is empty,
  * it matches the stack against the package folder of each widget row. It writes `$DSH_HOME/deepwidgets/crash.json`
@@ -83,6 +83,11 @@ function ownerEntry(fiber: Fiber): RowView | undefined {
 export function widgetRow(fiber: Fiber): string | undefined {
   const entry = ownerEntry(fiber)
   return entry === undefined ? undefined : widgetRowOfEntry(entry)
+}
+
+/** Whether the Loader row id `row` (an entry id, which can have the ids of its groups in front) is the row of an agent bundle. */
+export function isAgentRow(row: string): boolean {
+  return AGENT_ROW.test(row.slice(row.lastIndexOf(':') + 1))
 }
 
 /** Whether the row that owns `fiber` is the row of an agent bundle, `deepwidgets-agent-<slug>`. */
@@ -243,11 +248,25 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
   // widget_fv.install: the slugs with a running install, and the rows that loaded other files during one.
   const installing = new Set<string>()
   const pending = new Set<string>()
-  /** Whether the quarantine item of `row` is for `slug`: by its slugs, or by the agent row id of the slug. */
-  const ofSlug = (row: string, item: Quarantine, slug: string): boolean =>
-    item.slugs.includes(slug) || row === `deepwidgets-agent-${slug}` || row.endsWith(`:deepwidgets-agent-${slug}`)
+  /**
+   * Whether the quarantine item of `row` is for `slug`: by its slugs, or by an agent row id of the slug. The second
+   * name `deepwidgets-agent-<slug>.b` is the other agent row id of the slug (widget_fv.replace).
+   */
+  const ofSlug = (row: string, item: Quarantine, slug: string): boolean => item.slugs.includes(slug) || agentRowOf(row, slug)
+  /** Whether `row` is an agent row id of `slug`. */
+  const agentRowOf = (row: string, slug: string): boolean => {
+    const id = row.slice(row.lastIndexOf(':') + 1)
+    return id === `deepwidgets-agent-${slug}` || id === `deepwidgets-agent-${slug}.b`
+  }
   /** Files of a quarantined `row` with another hash loaded with success. Lift now, or after the install of its slug. */
   function loaded(row: string): void {
+    // widget_fv.replace: during an install of a slug, an agent row of the slug that loads with success also marks the
+    // quarantine item of the other agent row of the slug. The install removes that row before it succeeds, so the
+    // blamed files are gone when settleLift lifts the item. A failed install keeps the item.
+    for (const slug of installing) {
+      if (!agentRowOf(row, slug)) continue
+      for (const other of quarantine.keys()) if (other !== row && agentRowOf(other, slug)) pending.add(other)
+    }
     const item = quarantine.get(row)
     if (item === undefined) return
     if ([...installing].some((slug) => ofSlug(row, item, slug))) pending.add(row)
@@ -275,7 +294,7 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
       }
       const effect = runAs(row, () => execute.call(this))
       // A throw leaves before the lift. An async body lifts when its promise resolves.
-      if (!quarantine.has(row)) return effect
+      if (!quarantine.has(row) && installing.size === 0) return effect
       if (effect !== null && typeof effect === 'object' && 'then' in effect && typeof effect.then === 'function') {
         return (effect as PromiseLike<unknown>).then((value) => {
           loaded(row)
