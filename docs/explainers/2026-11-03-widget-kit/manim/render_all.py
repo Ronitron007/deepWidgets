@@ -82,7 +82,8 @@ def probe_duration(p: Path) -> float:
 def render_one(out_name, module, cls, frames) -> dict:
     for d in ("scenes", "frames", "logs", "reports", "media"):
         (R / d).mkdir(parents=True, exist_ok=True)
-    media = R / "media" / module[:-3]
+    # one media folder per scene: renders of one module with -j share no text cache
+    media = R / "media" / f"{module[:-3]}-{out_name}"
     log = R / "logs" / f"{out_name}.log"
     report = R / "reports" / f"{out_name}.json"
     if report.exists():
