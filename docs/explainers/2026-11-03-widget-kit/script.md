@@ -334,11 +334,11 @@ Table `kit v1` (from `results-v1.tsv`): `shadcn  vite 2.811 s  796 KB`, `clock  
 
 **Narration**
 
-Vite has no build cache that stays between builds. A warm build saves only about one point four seconds. Thus each install pays the full build time. For a small widget, that is about one second. For a large library, it is about two point eight to three point eight seconds.
+Vite has no build cache that stays between builds. A warm build saves only about one point four seconds. Thus each install pays the full build time. For a small widget, that is about one second. For a large library, it is about two point eight to four point three seconds.
 
 **Visuals**
 
-Two bars: `cold 4.3 s`, `warm 2.8 to 2.9 s` for shadcn. Label: `no persistent build cache; warm saves about 1.4 s`. Range strip: `small widget about 1 s`, `large library about 2.8 to 3.8 s`.
+Two bars: `cold 4.3 s`, `warm 2.8 to 2.9 s` for shadcn. Label: `no persistent build cache; warm saves about 1.4 s`. Range strip: `small widget about 1 s`, `large library about 2.8 to 4.3 s`.
 
 ## `tailwind_source`
 
@@ -1059,9 +1059,9 @@ Outline: the `settings pane` door glows. Route table, tag `spike design, no rout
 
 **Narration**
 
-In the spike design, the user door ignores kit locked. We infer the reason: the setting limits agents, not the person who owns the machine. In the design, the pane and the tools use one service. We infer that both doors then give the same errors.
+In the spike design, the user door ignores kit locked. We infer the reason: the setting limits agents, not the person who owns the machine. In the design, the pane and the tools use one service. We infer that the other errors are the same at both doors.
 
-We also infer the pane behavior on failure. The pane shows the error, and the kit stays as it was. For example, install failed leaves the old folder in place. In use lists the slugs that still import the package. The pane listens to the kit stream, so a change from an agent shows at once.
+The spike design also says what a failure does. For example, install failed leaves the kit and its old folder in place. In use lists the slugs that still import the package. We infer that the pane shows the error. The pane listens to the kit stream, so a change from an agent shows at once.
 
 **Visuals**
 
