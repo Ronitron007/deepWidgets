@@ -8,7 +8,13 @@ import { Host, writeWidget, program, short, checks, recordOf } from './lib.mjs'
 const work = mkdtempSync(join(tmpdir(), 'widget-state-models-install-reserved-'))
 const host = new Host(work)
 const { check, done } = checks('replay reserved')
-const toggle = (on) => `const m = wc.ctx.get('pluginManager'); const r = (await m.listPlugins()).filter((x) => x.moduleName === '@deepwidgets/widget-sample'); if (r.length !== 1) return { rows: r.length }; const out = await m.setPluginEnabled(r[0].entryId, ${on}); return { application: out.application, error: out.error ?? null }`
+// The inspector call can inherit the hmr transaction store of host work in flight. Each plugin manager call leaves
+// it, as hmr.watchConfig does (the fix of tools/widgets-blame.mjs).
+const toggle = (on) => `const m = wc.ctx.get('pluginManager'); const hmr = wc.ctx.get('hmr')
+  if (hmr !== undefined && typeof hmr.executing?.exit !== 'function') throw new Error('the hmr service has no executing.exit')
+  const run = (fn) => hmr === undefined ? fn() : hmr.executing.exit(fn)
+  const r = (await run(() => m.listPlugins())).filter((x) => x.moduleName === '@deepwidgets/widget-sample'); if (r.length !== 1) return { rows: r.length }
+  const out = await run(() => m.setPluginEnabled(r[0].entryId, ${on})); return { application: out.application, error: out.error ?? null }`
 try {
   await host.start()
   const ins = await host.inspector()
