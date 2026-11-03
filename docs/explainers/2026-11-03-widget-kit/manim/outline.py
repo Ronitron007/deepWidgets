@@ -167,7 +167,7 @@ class OutlineDiagram(VGroup):
         tg = self._node("type_gate", self._label(("type", "gate")), CREATION, h=1.6)
         vb = self._node("vite_build", self._label(("Vite", "build")), VITE, h=1.6)
         rc = self._node("render_check", self._label(("render", "check")), CREATION, h=1.6)
-        pp = self._node("pinned_pages", self._label(("pinned", "pages"), "per slug"), SHELL, h=1.6)
+        pp = self._node("pinned_pages", self._label(("page",), "per slug"), SHELL, h=1.6)
         row_k = [kp, lib, tg, vb, rc, pp]
         self._spread(row_k, x0, x1, ky)
         VGroup(kl, cfg).arrange(DOWN, buff=0.18).move_to(kp.box)
