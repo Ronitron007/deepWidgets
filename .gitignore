@@ -49,3 +49,6 @@ worktrees/
 .typert-*/
 native/system/test/bin/
 deepwidgets/shell/dist/
+
+# Generated company-signed CUA release record.
+/packages/experimental/cua-macos/cua-helper.json
