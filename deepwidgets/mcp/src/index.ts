@@ -31,7 +31,7 @@ import { CreationError, templateFiles, widgetTypesText, WidgetInstaller } from '
 import type { CreationErrorCode, GateName } from './creation.ts'
 
 export const name = 'deepwidgets-mcp'
-export const inject = ['webServer', 'widgets']
+export const inject = ['webServer', 'widgets', 'widgetRecords']
 
 const TOKEN_BODY_LIMIT = 4_096
 const execFileAsync = promisify(execFile)
@@ -458,6 +458,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       pluginManager: inner.pluginManager,
       profileDir: inner.profileContext.dir,
       widgets: ctx.widgets,
+      records: ctx.widgetRecords,
     })
     inner.effect(() => () => { installer = undefined }, 'mcp: the widget installer')
   })

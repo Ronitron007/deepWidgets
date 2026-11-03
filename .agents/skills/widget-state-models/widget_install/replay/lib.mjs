@@ -116,3 +116,29 @@ export const afterRegister = (code) => (text) => {
 export const imports = (line) => (text) => `${line}\n${text}`
 export const compose = (...fs) => (x) => fs.reduce((v, f) => f(v), x)
 export const short = (v) => JSON.stringify(v)?.slice(0, 700)
+
+/** The checks of one replay. `done` prints the verdict and exits 0 only when each check passed. */
+export function checks(label) {
+  const results = []
+  return {
+    check(name, ok, detail = '') {
+      results.push(Boolean(ok))
+      console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail === '' ? '' : `: ${String(detail).slice(0, 600)}`}`)
+    },
+    done(work) {
+      const failed = results.filter((ok) => !ok).length
+      const pass = failed === 0 && results.length > 0
+      console.log(`${label}: ${pass ? 'pass' : `fail: ${String(failed)} of ${String(results.length)} checks failed`} (work ${work})`)
+      process.exitCode = pass ? 0 : 1
+    },
+  }
+}
+
+/** The widget registers 8 s after apply in the host, and at once in the test run of the gates. */
+export const lateRegister = (text) => {
+  if (!text.includes('  ctx.widgets.register({') || !text.includes(APPLY_END)) throw new Error('template changed')
+  return text.replace('  ctx.widgets.register({', '  const register = (): void => {\n    ctx.widgets.register({')
+    .replace(APPLY_END, "    ],\n  })\n  }\n  if ('setProgram' in ctx.widgets) ctx.timeout(register, 8_000)\n  else register()\n}")
+}
+/** The program record of `slug`, read in the host through the service `widgetRecords`. */
+export const recordOf = (ins, slug) => ins.run(`const r = await wc.ctx.get('widgetRecords').programRecord(${JSON.stringify(slug)}); return r === undefined ? null : { rev: r.rev, text: r.text, seed: r.seed ?? null }`)

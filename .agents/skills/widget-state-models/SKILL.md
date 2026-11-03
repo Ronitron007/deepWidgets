@@ -13,15 +13,23 @@ You do not need to read TLA+ to use this skill. The tables below give each rule 
 
 Use this skill when your change touches a file in `widget_state_models.coverage`. Use it also when you fix a finding of the spec `widget_fv` (`docs/specs/widget-fv.md`).
 
-To see if the covered code changed after the sync commit, run this command:
+To see if the covered code changed after the sync commit of a model, run this command. Use the sync commit of the model (`widget_state_models.sync`) in place of `<sync>`:
 
 ```bash
-git diff --stat aa7cd518 HEAD -- apps/desktop/src/deepwidgets-supervisor.ts apps/desktop/src/deepwidgets-crash-policy.ts apps/desktop/src/host-process.ts apps/desktop/src/main.ts apps/desktop-host/src/index.ts deepwidgets/widgets/src/isolation.ts deepwidgets/widgets/src/watchdog.ts deepwidgets/widgets/src/watchdog-worker.ts deepwidgets/widgets/src/index.ts deepwidgets/mcp/src/creation.ts packages/storage/storage-domain/src/domain.ts packages/boot/plugin-manager/src/index.ts
+git diff --stat <sync> HEAD -- apps/desktop/src/deepwidgets-supervisor.ts apps/desktop/src/deepwidgets-crash-policy.ts apps/desktop/src/host-process.ts apps/desktop/src/main.ts apps/desktop-host/src/index.ts deepwidgets/widgets/src/isolation.ts deepwidgets/widgets/src/watchdog.ts deepwidgets/widgets/src/watchdog-worker.ts deepwidgets/widgets/src/index.ts deepwidgets/mcp/src/creation.ts packages/storage/storage-domain/src/domain.ts packages/boot/plugin-manager/src/index.ts
 ```
 
 ## Sync commit `widget_state_models.sync`
 
-The sync commit is `aa7cd518`. At this commit, each model describes the covered code. The first check ran at `38df710e`. The resync to `aa7cd518` moved line numbers only. Each line number in this skill and in the models is a line at this commit.
+Each model has its own sync commit. At its sync commit, a model describes the covered code. Each line number of a model, and of its coverage table in this skill, is a line at the sync commit of that model.
+
+| Model | Sync commit | Note |
+|---|---|---|
+| `crash_lifecycle` | `ff12c440` | The unit `widget.install_records` changed `held`, and added `lift`, `holdLift`, and `settleLift` in `isolation.ts`. The model has no install, so a load with success lifts the quarantine. The other covered lines only moved. |
+| `widget_install` | `ff12c440` | The fix of `widget_fv.install`, with `widget.builtin_slugs`. The `BuiltIn` branch of `Load` is the behavior at `aa7cd518`. The code does not reach it, because the slug of a built-in widget is reserved. Only the mutants `offAllowed` and `builtinRow` reach it. |
+| `action_contract` | `aa7cd518` | Not in sync. [Ronitron007/deepWidgets#75](https://github.com/Ronitron007/deepWidgets/pull/75) fixed `widget_fv.action` and changed the covered lines. Its model of the fixed code is not in this skill. |
+
+The first check ran at `38df710e`.
 
 Move the sync commit only after you confirm that each model still describes the code at the new commit. To confirm it, do these steps:
 
@@ -33,11 +41,11 @@ Move the sync commit only after you confirm that each model still describes the 
 
 4. Run each model (`widget_state_models.rerun`). Get the baseline result, or a result that you can explain by the change.
 
-5. Change the commit in this section, in `widget_state_models.when`, and in `widget_state_models.coverage`.
+5. Change the sync commit of the model in this section, and the line ranges of the model in `widget_state_models.coverage`.
 
 ## Coverage `widget_state_models.coverage`
 
-Each model covers these files and functions. The line ranges are at the sync commit.
+Each model covers these files and functions. The line ranges are at the sync commit of the model.
 
 ### `crash_lifecycle`
 
@@ -45,10 +53,10 @@ Each model covers these files and functions. The line ranges are at the sync com
 |---|---|
 | `apps/desktop/src/deepwidgets-supervisor.ts` | `discardProvisionalRecord` 36-44, `hostPidOf` 47-50, `blamedRow` 58-63, `abortedExit` 76-79, `blamedByRecords` 87-98, `DesktopHostSupervisor` 108-193 (`ready` 142-145, `failed` 152-184, `dispose` 187-192) |
 | `apps/desktop/src/deepwidgets-crash-policy.ts` | `HostCrashPolicy` 27-52 (`crash` 38-51), and the constants 8-16 |
-| `deepwidgets/widgets/src/isolation.ts` | the quarantine contract 1-12, `runAs` 81-83, `createIsolation` 167-299 (the record apply at boot 176-197, `held` 199-209, `wrap` 218-232, `claim` 251-278, `track` 290-296) |
+| `deepwidgets/widgets/src/isolation.ts` | the quarantine contract 1-20, `runAs` 103-105, `createIsolation` 193-368 (the record apply at boot 196-222, `held` 228-233, `lift` 236-241, the install hold 244-255, `wrap` 264-288, `claim` 307-334, `track` 346-352, `holdLift` and `settleLift` 354-366) |
 | `deepwidgets/widgets/src/watchdog.ts` | `inSlot` 40-49, `startWatchdog` 92-146 (the heartbeat 123, `track` 139-144) |
 | `deepwidgets/widgets/src/watchdog-worker.ts` | `recordOf` 108-122, `removeProvisional` 125-130, the poll loop 145-200 |
-| `deepwidgets/widgets/src/index.ts` | `SAFE_MODE_ENV` and `BUILT_IN_WIDGET_FOLDERS` 37-45, safe mode in `apply` 504, `add` 874-913 |
+| `deepwidgets/widgets/src/index.ts` | `SAFE_MODE_ENV` and `BUILT_IN_WIDGET_FOLDERS` 39-47, safe mode in `apply` 662, `add` 1169-1208 |
 | `apps/desktop/src/host-process.ts` | `DesktopHostProcess.start` 210-280 (the `fatal` event 254, the exit failure 274-275), `fail` 379-391 |
 | `apps/desktop/src/main.ts` | the safe-mode environment 549, `supervisor.ready` and `supervisor.failed` 630-631 |
 | `apps/desktop-host/src/index.ts` | the IPC `fatal` message of a failed boot 154-166 |
@@ -64,9 +72,10 @@ Each model covers these files and functions. The line ranges are at the sync com
 
 | File | Functions and lines |
 |---|---|
-| `deepwidgets/mcp/src/creation.ts` | `runGates` 363-382, `WidgetInstaller` 425-575 (`serial` 433-437, `seedFile` 448-450, `lastSeed` 453-460, `waitLive` 471-478, `install` 481-483, `reload` 486-492, `remove` 494-504, `installNow` 506-574) |
-| `deepwidgets/widgets/src/index.ts` | `WidgetsService` 302-396 (313), safe mode in `apply` 504-505, `call` 729-760, `setProgram` 795-804, `seed` 863-871, `add` 874-913, `list` 933-936 |
-| `deepwidgets/widgets/src/isolation.ts` | the quarantine contract 1-12, `held` 199-209 |
+| `deepwidgets/mcp/src/creation.ts` | `runGates` 373-392, `WidgetInstaller` 435-658 (`serial` 443-447, `migrateSeed` 479-492, `waitLive` 503-510, `install` 513-515, `reload` 518-524, `remove` 527-547, `installNow` 549-607, `loadNew` 610-657) |
+| `deepwidgets/widgets/src/index.ts` | `builtInSlugs` 115-138, `programSchema` 286-291, `buildRegistration` 378, `WidgetsService` 388-483 (`register` 406-421), `WidgetRecordsService` 489-536 and `guard` 539-543, safe mode in `apply` 662-664, `call` 971-1002, `setProgram` 1045-1057, `programRecord` 1059-1064, `restoreProgram` 1066-1074, `adoptSeed` 1076-1080, `seed` 1145-1166, `add` 1169-1208, `list` 1228-1231, the runtime of `widgetRecords` 1288-1291 |
+| `deepwidgets/widgets/src/isolation.ts` | the quarantine contract 1-20, `agentRow` 89-92, `runningRow` 95-97, `held` 228-233, `lift` 236-241, the install hold 244-255, `wrap` 264-288, `holdLift` and `settleLift` 354-366 |
+| `deepwidgets/widget-sample/src/index.ts` | `widgetSlugs` |
 | `packages/boot/plugin-manager/src/index.ts` | `installBundle` 873-1012, `waitForInstall` 1020-1029, `removeBundle` 1047-1079 |
 
 ## Rules and findings `widget_state_models.rules`
@@ -115,13 +124,21 @@ Each model covers these files and functions. The line ranges are at the sync com
 | `StateKept` | The state of a slug stays after install, replace, reload, and remove. | holds | |
 | `BuiltInUntouched` | An agent tool never replaces or removes a built-in widget. | holds | |
 | `OneBundlePerSlug` | At most one live bundle registers a slug. | holds | |
-| `NewSeedSetsProgram` | After an install with a new seed program, the stored program is the new seed. | breaks | `widget_fv.install` |
-| `SameSeedKeepsProgram` | After an install with the same seed, an edited stored program stays. | breaks | `widget_fv.install` |
-| `SlugTakenOnlyForBuiltIn` | `widget_install` gives `slug-taken` only when a live widget that is not an agent bundle has the slug. | breaks | `widget_fv.install` |
-| `QuarantineHolds` | A quarantined widget comes back only when the hash of its files changes. | breaks | `widget_fv.install` |
+| `NewSeedSetsProgram` | After an install with a new seed program, the stored program is the new seed. | holds | `widget_fv.install` |
+| `SameSeedKeepsProgram` | After an install with the same seed, an edited stored program stays. | holds | `widget_fv.install` |
+| `SlugTakenOnlyForBuiltIn` | `widget_install` gives `slug-taken` only for the slug of a built-in widget, or when a live widget that is not an agent bundle has the slug. | holds | `widget_fv.install` |
+| `QuarantineHolds` | A quarantined widget comes back only when the hash of its files changes. | holds | `widget_fv.install` |
+| `RollbackKeepsRecord` | A rolled-back install puts back the stored program and its seed hash. | holds | `widget_fv.install` |
+| `BuiltInSlugReserved` | No agent bundle of the slug of a built-in widget is installed, also while the built-in is off. | holds | `widget_fv.install` (`widget.builtin_slugs`) |
 | `FailedReplaceKeepsOld` | A failed reinstall keeps the old version live. | breaks | `widget_fv.replace` |
 
 Each model also has `TypeOK` and `NoDeadlock`. These rules check the model itself, and they hold.
+
+In `widget_install`, "new seed" and "same seed" compare with the seed of the code that last went live for the slug (the ghost `lastInst`). A load that throws, that safe mode refuses, or that the quarantine holds applies no seed. Thus it does not count. The restore of a rollback also puts back `lastInst`. This follows `widget_fv.install`: a rolled-back install leaves the stored program and its seed hash as they were before the install.
+
+`RollbackKeepsRecord` compares with the ghost `beforeP` and `beforeS`, which the job keeps when it reads the record. It applies when the record is put back. It does not apply after a user edit in the job, or when the failed bundle could not be removed and still runs.
+
+The `widget_install` model can time out the live wait of an install, also when the widget is live. A replay showed this path: a widget that registers after 5 s.
 
 ### Rule names `widget_state_models.names`
 
@@ -134,6 +151,8 @@ The plan `docs/plans/widget-fv.md` and the comments in the models use other name
 | `program.same_seed` | `SameSeedKeepsProgram` |
 | `quarantine.holds` | `QuarantineHolds` |
 | `slug.taken_only_builtin` | `SlugTakenOnlyForBuiltIn` |
+| `rollback.keeps_record` | `RollbackKeepsRecord` |
+| `builtin.reserved` | `BuiltInSlugReserved` |
 | `replace.keeps_old` | `FailedReplaceKeepsOld` |
 | `gates.never_host` | `GatesGuardHost` |
 | `state.kept` | `StateKept` |
@@ -186,7 +205,7 @@ Use `action_contract` or `widget_install` in place of `crash_lifecycle` for the 
 
 To see the runs of a model, run `node .agents/skills/widget-state-models/check.mjs crash_lifecycle`. Each config path is relative to the model folder, for example `crash_lifecycle/cfg/mut/keep_prov.cfg`. To run one config by hand, give `/statechart` the spec, the config, and the `view.mjs` of the model folder. Put the result in `<out folder>/<run name>`. Then run `check.mjs` with the model and the out folder, without `run`, to compare.
 
-On an idle Mac, the main runs take about 2 minutes for `crash_lifecycle`, 4 minutes for `action_contract`, and 7 minutes for `widget_install`. The runs `idem-hold` and `two-slugs` take the most time. When other jobs load the machine, the runs can take three times as long.
+On an idle Mac, the main runs take about 2 minutes for `crash_lifecycle`, 4 minutes for `action_contract`, and 15 minutes for `widget_install` (the run `two-slugs` takes about 9 minutes). The runs `idem-hold` and `two-slugs` take the most time. When other jobs load the machine, the runs can take three times as long.
 
 ### Mutant runs `widget_state_models.mutants`
 
@@ -198,7 +217,7 @@ To use the mutant runs too, add `--mutants` to a `check.mjs` command. The mutant
 |---|---|---|
 | `crash_lifecycle` | `no_blame_skip`, `safe_off_by_one`, `give_up_late`, `no_dispose`, `no_quarantine`, `no_pid_check`, `keep_prov` | `BlamedCrashNeverCounts`, `SafeModeAfterTwo`, `GiveUpAtFour`, `NoRestartAfterGiveUp`, `QuarantinedNeverRuns`, `RecordOnlyBlamesItsHost`, `ProvisionalGoneAfterBeat` |
 | `action_contract` | `any_turn`, `dup_no_flag`, `no_cancel`, `no_drain`, `no_hash_check`, `no_stop_check`, `query_queued`, `stale_rev`, `replay_live_rev` | `FIFO`, `ReplayFlag`, `BusyNeverRuns`, `DrainBeforeClose`, `ConflictOnOtherArgs`, `NoAdmitAfterStop`, `QueryNoQueue`, `RevCountsWrites`, `ReplaySameResult` |
-| `widget_install` | `skipGate`, `stateReset`, `builtinRow` | `GatesGuardHost`, `StateKept`, `BuiltInUntouched` and `OneBundlePerSlug` |
+| `widget_install` | `skipGate`, `stateReset`, `builtinRow`, `seedFile`, `noRestore`, `liftAtLoad`, `offAllowed` | `GatesGuardHost`, `StateKept`, `BuiltInUntouched` and `OneBundlePerSlug`, `SameSeedKeepsProgram`, `RollbackKeepsRecord`, `QuarantineHolds`, `BuiltInSlugReserved` |
 
 In `action_contract`, each mutant also has a control run `-none` with the same bounds. The control run must hold.
 
@@ -230,9 +249,9 @@ corepack pnpm run build:artifacts
 |---|---|---|
 | `crash_lifecycle` | `node_modules/.bin/vitest run --root .agents/skills/widget-state-models/crash_lifecycle/replay` | `InnocentNeverQuarantined`, `ProvisionalOnlyOnAbort` (two paths), `HashChangeLifts` and its control, `SampleNeverQuarantined` with `SampleLiveInSafeMode` |
 | `action_contract` | `node .agents/skills/widget-state-models/action_contract/replay.mjs <crash\|late\|overlap\|natural>` | `crash`: `AtMostOnce` after a restart. `late`: `NoLateWrite`, and `AtMostOnce` with no restart. `overlap`: `OneAtATime`. `natural`: `NoLateWrite` with no patched disk, in 400 calls near the timeout. |
-| `widget_install` | `node .agents/skills/widget-state-models/widget_install/replay/replay-<name>.mjs` | `newseed`: `NewSeedSetsProgram`. `sameseed`: `SameSeedKeepsProgram`. `quarantine`: `QuarantineHolds`. `replace`: `FailedReplaceKeepsOld`. `builtin`: `BuiltInUntouched` and `OneBundlePerSlug`. `safe`: `SlugTakenOnlyForBuiltIn`, in a safe-mode host start. |
+| `widget_install` | `node .agents/skills/widget-state-models/widget_install/replay/replay-<name>.mjs` | `newseed`: `NewSeedSetsProgram`. `sameseed`: `SameSeedKeepsProgram`. `quarantine`: `QuarantineHolds`. `replace`: `FailedReplaceKeepsOld`. `builtin`: `BuiltInUntouched` and `OneBundlePerSlug`. `safe`: `SlugTakenOnlyForBuiltIn`, in a safe-mode host start. `rollback`: `RollbackKeepsRecord`. `quarantine` also has the live-wait timeout. `reserved`: `BuiltInSlugReserved`. `guard`: widget code can not use the service `widgetRecords` (not in a model). `node tools/widgets-install-replay.mjs` runs `newseed`, `sameseed`, `rollback`, `quarantine`, `safe`, `reserved`, and `guard`. |
 
-The `crash_lifecycle` replays assert the bad behavior that the code has at the sync commit. Thus a fix of `widget_fv.crash` makes them fail. The `action_contract` replays print `CONFIRMED` when the bug occurs. The `widget_install` replays print the facts of each step.
+The `crash_lifecycle` replays assert the bad behavior that the code has at the sync commit. Thus a fix of `widget_fv.crash` makes them fail. The `action_contract` replays print `CONFIRMED` when the bug occurs. The `widget_install` replays `newseed`, `sameseed`, `rollback`, `quarantine`, `safe`, `reserved`, and `guard` assert the fix of `widget_fv.install`. Each prints `PASS` or `FAIL` for each check, and exits with 0 only when each check passes. The replays `replace` and `builtin` print the facts of each step.
 
 When a fix lands, change the replay of its rule so that it asserts the correct behavior.
 
