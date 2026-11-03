@@ -16,6 +16,12 @@ These rules add to `widget_mvp.runtime.contract`.
 
 - A call that wrote gives a request record. A retry of that call gives `replayed: true` and does not write again.
 
+- When the timeout fires after the write of a call started, the call waits only for its started writes to settle. Then the call gives the code `timeout-after-write`, HTTP status 504, and the new revision. Its request record holds that answer. The slot frees at that time.
+
+- After a call gives its answer, each later write of that call is refused. Thus a handler that hangs after its write never holds the slot.
+
+- Code before `widget.action_settle` can not open a state record that holds request records. A downgrade past this unit is not supported.
+
 The replay found these breaks at `deepwidgets/widgets/src/index.ts`, lines 635, 648 to 696, 718, and 774 to 791.
 
 ## Install records `widget_fv.install`
