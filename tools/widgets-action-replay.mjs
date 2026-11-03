@@ -4,14 +4,17 @@
  * It boots the CLI host (web profile) on free loopback ports, as tools/widgets-runtime.mjs does,
  * and runs these replays:
  *
- * - `late`: a write is on a slow disk when the timeout fires. The call must not give `timeout`
- *   and write. A retry must not write again.
+ * - `late`: a write is on a slow disk when the timeout fires. The call waits for the write and
+ *   gives `timeout-after-write` with the rev, not `timeout`. A retry gives that answer again.
  * - `natural`: 400 calls that write close to their timeout, with no slow disk. No call that
- *   gives `timeout` writes (rule NoLateWrite).
+ *   gives `timeout` writes (rule NoLateWrite). Each `timeout-after-write` call wrote once.
  * - `overlap`: call A writes to a slow disk past its timeout. Call B reads, waits, and writes.
  *   No update is lost (rule OneAtATime).
  * - `crash`: SIGKILL after the state write and before the outcome record. The retry gives
  *   `replayed: true`, and the state changed once (rule AtMostOnce).
+ * - `hang`: a handler writes, then hangs. The call gives `timeout-after-write` with the rev,
+ *   the next mutation of the slug runs, the later write of the hung handler is refused, and
+ *   a retry gives the recorded answer.
  *
  * Set WIDGETS_ACTION_REPLAY to a comma list of replay names to run only those.
  * Prints `widgets-action-replay: pass` and exits 0 only when every check passes.
@@ -157,9 +160,15 @@ async function startHost(home) {
   const cookie = login.headers.getSetCookie().map((line) => line.split(';')[0]).join('; ')
   if (cookie === '') throw new Error(`the login gave no cookie (${String(login.status)})`)
   const base = `http://127.0.0.1:${String(port)}`
+  /** A call that gets no answer in 15 s gives status 0, so a hung call fails a check and does not hang the replay. */
   const post = async (path, body) => {
-    const r = await fetch(base + path, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify(body) })
-    return { status: r.status, body: await r.json().catch(() => null) }
+    try {
+      const r = await fetch(base + path, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) })
+      return { status: r.status, body: await r.json().catch(() => null) }
+    } catch (error) {
+      if (error?.name === 'TimeoutError') return { status: 0, body: { error: 'no answer in 15 s' } }
+      throw error
+    }
   }
   const kill = () => new Promise((resolve) => {
     if (child.exitCode !== null || child.signalCode !== null) return resolve()
@@ -187,6 +196,10 @@ const WIDGET = `
         await w.update((s) => ({ ...s, n: seen + 1 })); return 'done' } },
       { name: 'nearEdge', kind: 'mutation', timeoutMs: 200, handler: async (args, w) => {
         await pause(args.wait); await w.update((s) => ({ ...s, n: s.n + 1 })); return 'done' } },
+      { name: 'writeThenHang', kind: 'mutation', timeoutMs: 300, handler: async (_a, w) => {
+        await w.update((s) => ({ ...s, n: s.n + 1 })); await pause(600)
+        try { await w.update((s) => ({ ...s, n: s.n + 100 })); wc.hangLate = 'wrote' } catch (error) { wc.hangLate = error.code ?? String(error) }
+        await new Promise(() => {}) } },
       { name: 'get', kind: 'query', handler: (_a, w) => w.state },
     ],
   }
@@ -229,13 +242,13 @@ async function late() {
     const a = await host.post('/api/widgets/fv/call', { action: 'quickWrite', requestId: 'r2' })
     await sleep(1500)
     const after = await state(host)
-    const timedOutAndWrote = a.status === 504 && after.rev > 0
-    check('late: a call whose write is on disk at the timeout does not give timeout and write', !timedOutAndWrote && a.status === 200 && a.body?.result === 'done' && after.n === 1,
+    const timedOutAndWrote = a.body?.error?.code === 'timeout' && after.rev > 0
+    check('late: a call whose write is on disk at the timeout gives timeout-after-write with rev 1', !timedOutAndWrote && a.status === 504 && a.body?.error?.code === 'timeout-after-write' && a.body.error.rev === 1 && after.n === 1,
       `answer ${String(a.status)} ${JSON.stringify(a.body)}; state ${JSON.stringify(after)}`)
     await host.inspector.run('globalThis.__fvSlow = 0')
     const retry = await host.post('/api/widgets/fv/call', { action: 'quickWrite', requestId: 'r2' })
     const again = await state(host)
-    check('late: the retry gives replayed: true and does not write again', retry.status === 200 && retry.body?.replayed === true && again.n === 1,
+    check('late: the retry gives the recorded answer and does not write again', retry.status === 504 && retry.body?.error?.code === 'timeout-after-write' && retry.body.error.rev === 1 && again.n === 1,
       `retry ${JSON.stringify(retry.body)}; state ${JSON.stringify(again)}`)
   } finally {
     await host.close()
@@ -251,6 +264,7 @@ async function natural() {
     let timeouts = 0
     let lateWrites = 0
     let okWrites = 0
+    let afterWrite = 0
     let other = 0
     for (let i = 0; i < calls; i += 1) {
       const before = (await state(host)).rev
@@ -258,14 +272,16 @@ async function natural() {
       // A refused write settles at once. Wait past it before the rev is read.
       await sleep(60)
       const after = (await state(host)).rev
-      if (r.status === 504) {
+      const code = r.body?.error?.code
+      if (code === 'timeout') {
         timeouts += 1
         if (after > before) lateWrites += 1
-      } else if (r.status === 200 && after === before + 1) okWrites += 1
+      } else if (code === 'timeout-after-write' && after === before + 1 && r.body.error.rev === after) afterWrite += 1
+      else if (r.status === 200 && after === before + 1) okWrites += 1
       else other += 1
     }
     check(`natural: of ${String(calls)} calls, no call that gives timeout writes`, calls >= 300 && lateWrites === 0 && other === 0,
-      `${String(timeouts)} gave timeout, ${String(lateWrites)} of them wrote; ${String(okWrites)} gave ok and wrote once; ${String(other)} other`)
+      `${String(timeouts)} gave timeout, ${String(lateWrites)} of them wrote; ${String(afterWrite)} gave timeout-after-write and wrote once; ${String(okWrites)} gave ok and wrote once; ${String(other)} other`)
   } finally {
     await host.close()
   }
@@ -324,7 +340,30 @@ async function crash() {
   }
 }
 
-const REPLAYS = { late, natural, overlap, crash }
+/** widget_fv.action: a handler that hangs after its write never holds the slot. */
+async function hang() {
+  const host = await startHost(join(work, 'hang'))
+  try {
+    await host.inspector.run(WIDGET)
+    const hung = await host.post('/api/widgets/fv/call', { action: 'writeThenHang', requestId: 'h1' })
+    check('hang: the call gives 504 timeout-after-write with rev 1', hung.status === 504 && hung.body?.error?.code === 'timeout-after-write' && hung.body.error.rev === 1,
+      `${String(hung.status)} ${JSON.stringify(hung.body)}`)
+    const next = await host.post('/api/widgets/fv/call', { action: 'quickWrite' })
+    check('hang: the next mutation of the slug runs and does not get busy', next.status === 200 && next.body?.rev === 2, `${String(next.status)} ${JSON.stringify(next.body)}`)
+    await sleep(800)
+    const facts = await host.inspector.run('return wc.hangLate')
+    const s = await state(host)
+    check('hang: the later write of the hung handler is refused', facts === 'timeout' && s.rev === 2 && s.n === 2, `later write ${String(facts)}; state ${JSON.stringify(s)}`)
+    const retry = await host.post('/api/widgets/fv/call', { action: 'writeThenHang', requestId: 'h1' })
+    const after = await state(host)
+    check('hang: the retry gives the recorded answer and does not write', retry.status === 504 && retry.body?.error?.code === 'timeout-after-write' && retry.body.error.rev === 1 && after.rev === 2,
+      `${String(retry.status)} ${JSON.stringify(retry.body)}; state ${JSON.stringify(after)}`)
+  } finally {
+    await host.close()
+  }
+}
+
+const REPLAYS = { late, natural, overlap, crash, hang }
 
 let exitCode = 1
 try {
