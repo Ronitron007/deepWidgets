@@ -5,7 +5,7 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomUUID } from 'node:crypto'
-import { realpathSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Service } from '@deepseek-ai/cordis'
@@ -15,7 +15,9 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { z } from 'zod'
-import { agentRow, callerRoot, createIsolation, runAs, runningRow, widgetRow } from './isolation.ts'
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { agentRow, callerRoot, createIsolation, isAgentRow, rowId, runAs, runningRow, widgetRow } from './isolation.ts'
+import { readJson, writeJsonSync } from './records.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -51,7 +53,9 @@ const BUILT_IN_ROOTS = BUILT_IN_WIDGET_FOLDERS.map((folder) => join(realpathSync
 
 /** The part of a Loader entry that {@link builtInSlugs} reads. */
 interface LoaderEntryView {
-  readonly options: { readonly name?: unknown }
+  readonly options: { readonly name?: unknown, readonly id?: unknown }
+  /** True when the entry or a group that owns it is off. */
+  readonly disabled?: boolean
   readonly moduleNamespace?: unknown
   readonly parent?: { readonly tree?: { readonly ctx?: { readonly baseUrl?: string }, import?(name: string): Promise<unknown> } }
 }
@@ -325,12 +329,29 @@ interface Registration {
   actions: Map<string, WidgetAction<unknown>>
   /** The widget row that registered it; its code runs in the blame store of that row. */
   row?: string
-  /** True when the row is the row of an agent bundle, `deepwidgets-agent-<slug>`. */
+  /** True when the row is the row of an agent bundle, `deepwidgets-agent-<slug>` or its second name (widget_fv.replace). */
   agent?: boolean
+  /**
+   * widget_fv.replace: true when an install can replace the row: an agent row, or an agent bundle of the older row id
+   * `deepwidgets-widget-<slug>` that is not built in. Set by `add`.
+   */
+  replaceable?: boolean
 }
 
 /** The hash of a seed program, as the program record keeps it. */
 export const seedHash = (text: string): string => createHash('sha256').update(text).digest('hex')
+
+/** widget_fv.replace: the Loader rows that registered a slug. */
+export interface RegisteredRows {
+  /** The row of the live entry. */
+  live?: string
+  /** The row of the failed entry of a quarantined row. */
+  failed?: string
+  /** The row of the registration that waits for the entry to end. */
+  standby?: string
+  /** The committed name, when its row failed in this Host start and another version took the slug (the fallback). */
+  fallback?: string
+}
 
 /** The internal side of the service, made by `apply`. */
 interface Runtime {
@@ -353,6 +374,9 @@ interface Runtime {
   builtInSlug(slug: string): Promise<boolean>
   holdLift(slug: string): void
   settleLift(slug: string, ok: boolean): void
+  rowsOf(slug: string): RegisteredRows
+  commit(slug: string, name: string | undefined): void
+  committed(slug: string): string | undefined
   changes(since: string | undefined): { cursor: string, changes: WidgetChange[], reset?: true }
   cursor(): string
 }
@@ -533,6 +557,25 @@ export class WidgetRecordsService extends Service {
   settleLift(slug: string, ok: boolean): void {
     guard(() => { this.runtime.settleLift(slug, ok) })
   }
+
+  /** widget_fv.replace: the Loader rows that registered `slug`: of its live or failed entry, and of its standby. */
+  rowsOf(slug: string): RegisteredRows {
+    return guard(() => this.runtime.rowsOf(slug))
+  }
+
+  /**
+   * widget_fv.replace: record the package name of the committed version of `slug`, or forget it with undefined. At a
+   * Host start, the row of the committed name owns the slug, and a row of another agent name of the slug waits as its
+   * standby. A standby of the committed name with no entry before it goes live at once.
+   */
+  commit(slug: string, name: string | undefined): void {
+    guard(() => { this.runtime.commit(slug, name) })
+  }
+
+  /** widget_fv.replace: the package name of the committed version of `slug`, or undefined. */
+  committed(slug: string): string | undefined {
+    return guard(() => this.runtime.committed(slug))
+  }
 }
 
 /** Run `fn` only outside widget code. Widget code that reaches {@link WidgetRecordsService} gets an error. */
@@ -560,6 +603,8 @@ interface Entry {
   routes: (() => Promise<void>)[]
   /** Set for a quarantined widget: the reason. It has no actions and no seed. */
   failure?: string
+  /** widget_fv.replace: end the entry (its disposer). Its standby then takes its place. */
+  end?: () => Promise<void>
 }
 
 /** State of one running call or write. */
@@ -1174,7 +1219,135 @@ export function apply(ctx: Context, config: Config): void {
       ctx.logger.warn(`widgets: ${message}`)
       throw new WidgetError('safe-mode', message)
     }
-    if (widgets.has(slug)) throw new WidgetError('conflict', `the slug ${slug} already has a live registration`)
+    registration.replaceable = registration.agent === true
+      || (registration.row !== undefined && rowId(registration.row) === `deepwidgets-widget-${slug}` && !builtIn())
+    // widget_fv.replace: when the row of the committed version of the slug is in the Loader config and on, a row of
+    // another version of the slug never takes the slug first. It waits as the standby, and a held row of it shows nothing.
+    const owner = committedRow(slug)
+    const deferred = registration.replaceable && owner !== undefined && registration.row !== undefined && rowId(registration.row) !== owner
+    // A held row of the committed version is a failed start of it: the fallback.
+    if (failure !== undefined && registration.row !== undefined && rowId(registration.row) === ownerName(slug)) fallBack(slug, registration.row)
+    const current = widgets.get(slug)
+    if (failure !== undefined && deferred) return () => Promise.resolve()
+    if (current === undefined) return failure === undefined && deferred && !standby.has(slug) ? wait(registration) : start(registration, Promise.resolve(), failure)
+    // widget_fv.replace: a new version of an agent widget, under another package name, waits for the old one.
+    if (failure === undefined && registration.replaceable && current.registration.replaceable === true
+      && registration.row !== undefined && registration.row !== current.registration.row && !standby.has(slug)) {
+      const disposer = wait(registration)
+      release(slug)
+      return disposer
+    }
+    throw new WidgetError('conflict', `the slug ${slug} already has a live registration`)
+  }
+
+  // widget_fv.replace: the package name of the committed version of each slug, kept across Host starts.
+  const committedFile = join(resolveDshHome(), 'deepwidgets', 'committed.json')
+  /** The names in the file, or undefined when the file is missing or can not be read. */
+  function readCommits(): Map<string, string> | undefined {
+    const stored = readJson(committedFile)
+    if (stored === null || typeof stored !== 'object' || Array.isArray(stored)) return undefined
+    return new Map(Object.entries(stored).filter((item): item is [string, string] => typeof item[1] === 'string'))
+  }
+  /**
+   * A file that can not be read is rebuilt from the Loader config: a slug with one agent row that is on gets that name.
+   * A slug with two such rows gets none, so no row of it waits, and an install removes nothing until one is live.
+   */
+  function rebuildCommits(): Map<string, string> {
+    const names = new Map<string, string[]>()
+    const loader = ctx.get('loader') as LoaderView | undefined
+    for (const entry of loader?.entries?.() ?? []) {
+      const id = entry.options.id
+      const match = typeof id === 'string' && entry.disabled !== true ? /^deepwidgets-agent-([a-z0-9][a-z0-9-]*?)(?:\.b)?$/.exec(id) : null
+      if (match?.[1] !== undefined && typeof id === 'string') names.set(match[1], [...(names.get(match[1]) ?? []), id])
+    }
+    return new Map([...names].flatMap(([slug, ids]) => ids.length === 1 && ids[0] !== undefined ? [[slug, ids[0]] as [string, string]] : []))
+  }
+  const commits = readCommits() ?? (existsSync(committedFile) ? rebuildCommits() : new Map<string, string>())
+  if (existsSync(committedFile) && readCommits() === undefined) ctx.logger.warn(`widgets: ${committedFile} can not be read; it is rebuilt from the Loader config`)
+  /** The slugs whose committed row failed in this Host start, so another version took the slug (the fallback). */
+  const fallback = new Set<string>()
+  /** The slugs with an install in progress (holdLift to settleLift). */
+  const installing = new Set<string>()
+  /** The committed name of `slug`, when a Loader row with that id is on. A name with no such row is not used. */
+  function ownerName(slug: string): string | undefined {
+    const name = commits.get(slug)
+    const loader = ctx.get('loader') as LoaderView | undefined
+    if (name === undefined || loader?.entries === undefined) return undefined
+    for (const entry of loader.entries()) if (entry.options.id === name && entry.disabled !== true) return name
+    return undefined
+  }
+  /** The committed name of `slug` that owns the slug in this Host start: not after a fallback. */
+  const committedRow = (slug: string): string | undefined => fallback.has(slug) ? undefined : ownerName(slug)
+  /**
+   * widget_fv.replace: the committed row of `slug` failed in this Host start (it threw, or it is held). Another
+   * version of the slug can take the slug. The file keeps the committed name: the next install that succeeds decides.
+   */
+  function fallBack(slug: string, row: string): void {
+    if (fallback.has(slug)) return
+    fallback.add(slug)
+    ctx.logger.warn(`widgets: the committed row ${row} of ${slug} failed in this Host start; another version of ${slug} can take it`)
+    release(slug)
+  }
+  /**
+   * After a fallback, the standby of `slug` takes the slug: at once, or when the failed entry of the committed row ends.
+   * During an install of the slug, the new version waits until the installer removes the old one.
+   */
+  function release(slug: string): void {
+    if (!fallback.has(slug) || !standby.has(slug) || installing.has(slug)) return
+    const entry = widgets.get(slug)
+    if (entry === undefined) promote(slug, Promise.resolve())
+    else if (entry.failure !== undefined && entry.registration.row !== undefined && rowId(entry.registration.row) === ownerName(slug)) void entry.end?.()
+  }
+  /** widget_fv.replace: the plugin body of `row` threw. When it is the committed row of a slug, the fallback starts. */
+  function rowFailed(row: string): void {
+    for (const slug of commits.keys()) if (ownerName(slug) === rowId(row)) fallBack(slug, row)
+  }
+  function commit(slug: string, name: string | undefined): void {
+    if (name === undefined) commits.delete(slug)
+    else commits.set(slug, name)
+    fallback.delete(slug)
+    // Merge with the file, so that a write never drops the name of another slug, also after a read that failed.
+    const merged = new Map([...(readCommits() ?? []), ...commits])
+    if (name === undefined) merged.delete(slug)
+    writeJsonSync(committedFile, Object.fromEntries(merged))
+    // A standby of the committed name with no entry before it goes live now.
+    const item = standby.get(slug)
+    if (name !== undefined && item?.registration.row !== undefined && rowId(item.registration.row) === name && !widgets.has(slug)) promote(slug, Promise.resolve())
+  }
+
+  /**
+   * widget_fv.replace: the standby of each slug. An agent registration of a slug whose entry belongs to another agent
+   * row waits here, so the installer can load a new version under the second package name while the old one runs.
+   * A standby is not live, and it writes no seed. When the entry ends, the standby takes its place.
+   */
+  const standby = new Map<string, { registration: Registration, dispose?: () => Promise<void> }>()
+
+  function wait(registration: Registration): () => Promise<void> {
+    const { slug } = registration
+    const item: { registration: Registration, dispose?: () => Promise<void> } = { registration }
+    standby.set(slug, item)
+    ctx.logger.info(`widgets: the row ${String(registration.row)} waits to take over ${slug} from the row ${String(widgets.get(slug)?.registration.row)}`)
+    return async () => {
+      if (standby.get(slug) === item) standby.delete(slug)
+      else await item.dispose?.()
+    }
+  }
+
+  /** widget_fv.replace: the entry of `slug` ended. Its standby starts behind the mutation queue of that entry. */
+  function promote(slug: string, after: Promise<unknown>): void {
+    const item = standby.get(slug)
+    if (item === undefined || widgets.has(slug)) return
+    standby.delete(slug)
+    item.dispose = start(item.registration, after)
+  }
+
+  /**
+   * Make the entry of a registration live.
+   * @param after - the end of the mutation queue of the entry before it. The seed and the first job wait for it, so
+   * two versions of a slug never write at the same time.
+   */
+  function start(registration: Registration, after: Promise<unknown>, failure?: string): () => Promise<void> {
+    const { slug } = registration
     for (const action of registration.actions.values()) {
       longestTimeoutMs = Math.max(longestTimeoutMs, action.timeoutMs ?? registration.timeoutMs ?? DEFAULT_TIMEOUT_MS)
     }
@@ -1182,8 +1355,8 @@ export function apply(ctx: Context, config: Config): void {
       slug,
       registration,
       streams: new Set(),
-      tail: Promise.resolve(),
-      seeded: failure === undefined ? seed(registration) : Promise.resolve(),
+      tail: after,
+      seeded: failure === undefined ? after.then(() => seed(registration)) : Promise.resolve(),
       routes: [],
       ...(failure === undefined ? {} : { failure }),
     }
@@ -1193,7 +1366,7 @@ export function apply(ctx: Context, config: Config): void {
     logChange({ slug, kind: 'added', by: 'host' })
     pushEvent({ type: 'added', slug })
 
-    return async () => {
+    entry.end = async () => {
       if (widgets.get(slug) !== entry) return
       widgets.delete(slug)
       const frame = sseFrame({ type: 'removed' })
@@ -1204,7 +1377,24 @@ export function apply(ctx: Context, config: Config): void {
       for (const dispose of entry.routes) await dispose()
       logChange({ slug, kind: 'removed', by: 'host' })
       pushEvent({ type: 'removed', slug })
+      promote(slug, entry.tail)
     }
+    return entry.end
+  }
+
+  /** widget_fv.replace: the rows of the entry and of the standby of `slug`. */
+  function rowsOf(slug: string): RegisteredRows {
+    const entry = widgets.get(slug)
+    const rows: RegisteredRows = {}
+    const row = entry?.registration.row
+    if (row !== undefined) rows[entry?.failure === undefined ? 'live' : 'failed'] = row
+    if (fallback.has(slug)) {
+      const name = ownerName(slug)
+      if (name !== undefined) rows.fallback = name
+    }
+    const waiting = standby.get(slug)?.registration.row
+    if (waiting !== undefined) rows.standby = waiting
+    return rows
   }
 
   function summary(entry: Entry): WidgetSummary {
@@ -1260,12 +1450,13 @@ export function apply(ctx: Context, config: Config): void {
 
   // widget_phase2.isolation.blame: a quarantined widget row loads as one failed entry for each of its slugs.
   const isolation = createIsolation(ctx, {
-    hold(slugs, row, reason) {
+    hold(slugs, row, reason, fiber) {
       const disposers = slugs.filter((slug) => !widgets.has(slug)).map((slug) => add({
-        slug, title: slug, program: '', initialState: null, timeoutMs: undefined, actions: new Map(), row,
-      }, undefined, () => false, reason))
+        slug, title: slug, program: '', initialState: null, timeoutMs: undefined, actions: new Map(), row, agent: isAgentRow(row),
+      }, undefined, () => fiber !== undefined && isBuiltInRow(ctx, fiber), reason))
       return async () => { for (const dispose of disposers) await dispose() }
     },
+    failed: (row) => { rowFailed(row) },
   })
 
   // The service methods report each failure as a WidgetError, so the caller sees one form.
@@ -1286,9 +1477,12 @@ export function apply(ctx: Context, config: Config): void {
     restoreProgram: (slug, record, by) => admit(() => restoreProgram(slug, record, by)),
     adoptSeed: (slug, seed) => admit(() => adoptSeed(slug, seed)),
     clearOff: (slug) => { if (off.get(slug)?.agent === true) off.delete(slug) },
+    commit,
+    committed: (slug) => commits.get(slug),
     builtInSlug: async (slug) => (await builtInSlugs(ctx)).has(slug),
-    holdLift: (slug) => { isolation.holdLift(slug) },
-    settleLift: (slug, ok) => { isolation.settleLift(slug, ok) },
+    holdLift: (slug) => { installing.add(slug); isolation.holdLift(slug) },
+    settleLift: (slug, ok) => { installing.delete(slug); isolation.settleLift(slug, ok) },
+    rowsOf,
     changes,
     cursor,
   }

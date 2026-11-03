@@ -142,3 +142,13 @@ export const lateRegister = (text) => {
 }
 /** The program record of `slug`, read in the host through the service `widgetRecords`. */
 export const recordOf = (ins, slug) => ins.run(`const r = await wc.ctx.get('widgetRecords').programRecord(${JSON.stringify(slug)}); return r === undefined ? null : { rev: r.rev, text: r.text, seed: r.seed ?? null }`)
+/**
+ * Run `body` in the host through the inspector, outside the hmr transaction store that the inspector call can inherit
+ * from host work in flight (as tools/widgets-blame.mjs does with `hmr.executing.exit`).
+ */
+export const outside = (ins, body) => ins.run(`const hmr = wc.ctx.get('hmr'); const go = async () => { ${body} }; if (hmr !== undefined && typeof hmr.executing?.exit !== 'function') throw new Error('the hmr service has no executing.exit'); return await (hmr === undefined ? go() : hmr.executing.exit(go))`)
+/** The agent dependencies of the profile: the package names that start with `deepwidgets-agent-<slug>`. */
+export const agentDeps = (home, slug) => {
+  const pkg = JSON.parse(readFileSync(join(home, 'profiles/web/package.json'), 'utf8'))
+  return Object.keys(pkg.dependencies ?? {}).filter((name) => name === `deepwidgets-agent-${slug}` || name.startsWith(`deepwidgets-agent-${slug}.`)).sort()
+}

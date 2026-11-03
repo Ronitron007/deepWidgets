@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Check of the install records (unit widget.install_records, spec widget_fv.install).
+ * Check of the install records (unit widget.install_records, spec widget_fv.install) and of the replace (unit
+ * widget.install_replace, spec widget_fv.replace).
  *
  * It runs the `widget_install` replays of the skill widget-state-models on the CLI host of this checkout. Each replay
  * asserts the rule of `widget_fv.install`:
@@ -12,9 +13,17 @@
  * - safe: in safe mode, remove and install clear the off entry of an agent slug, and only a live widget that is not an
  *   agent bundle gives slug-taken;
  * - reserved: the slug of a built-in widget gives slug-taken, also while the built-in is off;
- * - guard: widget code can not use the install records.
+ * - guard: widget code can not use the install records;
+ * - replace: a failed reinstall keeps the old version live, with its state and its program, and a good reinstall moves
+ *   the slug to the other agent package name;
+ * - putback: a failed reinstall keeps the old version live also when the old code can not start again;
+ * - legacy: a failed reinstall over a bundle with the older row id keeps that bundle live;
+ * - committed: after an interrupted replace, the committed version owns the slug at the next start, and an install in
+ *   safe mode removes nothing;
+ * - fallback: when the committed version fails at the start, the other version takes the slug, and an install that
+ *   fails never removes it.
  *
- * Usage: node tools/widgets-install-replay.mjs [newseed|sameseed|rollback|quarantine|safe|reserved|guard ...]. With no name, it runs all of them.
+ * Usage: node tools/widgets-install-replay.mjs [newseed|sameseed|rollback|quarantine|safe|reserved|guard|replace|putback|legacy|committed|fallback ...]. With no name, it runs all of them.
  * Prints `widgets-install-replay: pass` and exits 0 only when each replay passes.
  * Needs `corepack pnpm run build:artifacts` first. It does not use port 47615.
  */
@@ -24,7 +33,7 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const REPLAYS = join(ROOT, '.agents/skills/widget-state-models/widget_install/replay')
-const ALL = ['newseed', 'sameseed', 'rollback', 'quarantine', 'safe', 'reserved', 'guard']
+const ALL = ['newseed', 'sameseed', 'rollback', 'quarantine', 'safe', 'reserved', 'guard', 'replace', 'putback', 'legacy', 'committed', 'fallback']
 
 const names = process.argv.slice(2)
 const unknown = names.filter((name) => !ALL.includes(name))

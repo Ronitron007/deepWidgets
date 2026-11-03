@@ -1,6 +1,6 @@
 // quarantine.holds (widget_fv.install): v1 crashes the host when a marker says so (host only). The next start
-// quarantines it. A reinstall that fails in the host rolls back to the v1 folder, with the blamed hash: the quarantine
-// holds. An install whose files load but do not register within the live wait of 5 s is rolled back too: the
+// quarantines it. A reinstall that fails in the host is removed, and the v1 folder with the blamed hash stays: the
+// quarantine holds (widget_fv.replace: the v1 bundle never leaves). An install whose files load but do not register within the live wait of 5 s is rolled back too: the
 // quarantine holds. Then an install of other files that load with success ends it.
 import { createServer } from 'node:http'
 import { mkdtempSync, readFileSync } from 'node:fs'
@@ -13,7 +13,8 @@ const { check, done } = checks('replay quarantine')
 let marker = 'ok'
 const mport = await freePort()
 const server = createServer((req, res) => { res.end(marker) }).listen(mport, '127.0.0.1')
-const quarantined = () => { try { return JSON.parse(readFileSync(join(host.home, 'deepwidgets/quarantine.json'), 'utf8')).filter((q) => String(q.row).endsWith('deepwidgets-agent-a')).length > 0 } catch { return false } }
+// widget_fv.replace: an agent row of slug a is deepwidgets-agent-a or deepwidgets-agent-a.b.
+const quarantined = () => { try { return JSON.parse(readFileSync(join(host.home, 'deepwidgets/quarantine.json'), 'utf8')).filter((q) => /(?:^|:)deepwidgets-agent-a(?:\.b)?$/.test(String(q.row))).length > 0 } catch { return false } }
 const widgetA = async () => (await host.list()).find((w) => w.slug === 'a')
 try {
   await host.start()
@@ -32,7 +33,7 @@ try {
   const late = writeWidget(work, 'a-late', tpl, compose(program('SEED-LATE'), lateRegister))
   const rl = await host.call('widget_install', { dir: late })
   const afterLate = await widgetA()
-  check('an install that loads but registers after the live wait gives install-failed', rl.isError && rl.body?.error?.code === 'install-failed' && rl.body?.error?.diagnostics?.some((d) => d.includes('did not show')), short(rl.body?.error))
+  check('an install that loads but registers after the live wait gives install-failed', rl.isError && rl.body?.error?.code === 'install-failed' && rl.body?.error?.diagnostics?.some((d) => d.includes('did not register')), short(rl.body?.error))
   check('the quarantine holds after the live-wait timeout and its rollback', typeof afterLate?.failed === 'string' && quarantined(), short(afterLate))
   const bad = writeWidget(work, 'a-bad', tpl, compose(program('SEED-P2'), afterRegister("if ('setProgram' in ctx.widgets) throw new Error('host only failure')")))
   const r2 = await host.call('widget_install', { dir: bad })

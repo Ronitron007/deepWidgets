@@ -170,8 +170,8 @@ function toolOk(body: Record<string, unknown>): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(body) }], structuredContent: body }
 }
 
-function toolError(code: ToolErrorCode, message: string, extra: { rev?: number | undefined, gate?: GateName | undefined, diagnostics?: string[] } = {}): CallToolResult {
-  const error: ToolError = { code, message, nextStep: NEXT_STEP[code] }
+function toolError(code: ToolErrorCode, message: string, extra: { rev?: number | undefined, gate?: GateName | undefined, diagnostics?: string[], nextStep?: string | undefined } = {}): CallToolResult {
+  const error: ToolError = { code, message, nextStep: extra.nextStep ?? NEXT_STEP[code] }
   if (extra.rev !== undefined) error.rev = extra.rev
   if (extra.gate !== undefined) error.gate = extra.gate
   if (extra.diagnostics !== undefined) error.diagnostics = extra.diagnostics
@@ -344,7 +344,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       return toolOk(await run())
     } catch (error) {
       if (isWidgetError(error)) return toolError(error.code, error.message, { rev: error.rev })
-      if (error instanceof CreationError) return toolError(error.code, error.message, { gate: error.gate, diagnostics: error.diagnostics })
+      if (error instanceof CreationError) return toolError(error.code, error.message, { gate: error.gate, diagnostics: error.diagnostics, nextStep: error.nextStep })
       ctx.logger.warn('mcp: a tool failed', error)
       return toolError('internal-error', error instanceof Error ? error.message : String(error))
     }
