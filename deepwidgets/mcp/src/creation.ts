@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { BundleInfo, ChangeResult } from '@deepseek-ai/dsh-plugin-manager/types'
+import type { ProgramRecord } from '@deepwidgets/widgets'
 import { endlessLoops } from './loop-check.ts'
 import type { TestRunReport, TestRunWidget } from './testrun-child.ts'
 
@@ -116,6 +117,8 @@ export interface CreationServices {
   /** The folder of the current profile. */
   readonly profileDir: string
   readonly widgets: Context['widgets']
+  /** The install records of the widget runtime (`widget_fv.install`). Widget code can not use them. */
+  readonly records: Context['widgetRecords']
 }
 
 /** Where the tools of the gates are. They resolve from this package, not from a working folder. */
@@ -482,7 +485,7 @@ export class WidgetInstaller {
       // No file: an install of this version wrote the hash into the program record, or no install applied a seed.
       return
     }
-    if (legacy !== '') await this.services.widgets.adoptSeed(slug, legacy)
+    if (legacy !== '') await this.services.records.adoptSeed(slug, legacy)
     await rm(file, { force: true })
     // The folder goes with its last file. Another slug can still have a file in it.
     await rmdir(join(this.root, LEGACY_SEEDS_DIR)).catch(() => undefined)
@@ -538,7 +541,7 @@ export class WidgetInstaller {
         application = result.application
       }
       await rm(this.folderOf(slug), { recursive: true, force: true })
-      this.services.widgets.clearOff(slug)
+      this.services.records.clearOff(slug)
       return { slug, application }
     })
   }
@@ -556,6 +559,10 @@ export class WidgetInstaller {
     const warnings = outcome.gates.flatMap((gate) => gate.warnings)
     const folder = this.folderOf(slug)
     const name = bundleName(slug)
+    // widget_fv.install (widget.builtin_slugs): the slug of a built-in widget is reserved, also while it is off.
+    if (await this.services.records.builtInSlug(slug)) {
+      throw new CreationError('slug-taken', `the slug ${JSON.stringify(slug)} is the slug of a built-in widget`)
+    }
     // An older install named the bundle with the row id of a built-in widget. This install removes it.
     const previous = await this.installedNames(slug)
     const replaced = previous.length > 0
@@ -563,7 +570,7 @@ export class WidgetInstaller {
     if (!replaced && this.services.widgets.list().some((item) => item.slug === slug && item.off === undefined)) {
       throw new CreationError('slug-taken', `a widget that is not an agent bundle has the slug ${JSON.stringify(slug)}`)
     }
-    this.services.widgets.clearOff(slug)
+    this.services.records.clearOff(slug)
     await this.migrateSeed(slug)
     await mkdir(this.root, { recursive: true })
     const next = `${folder}.next`
@@ -588,17 +595,41 @@ export class WidgetInstaller {
     await rename(next, folder)
 
     // widget_fv.install: the program record before the load. The slug is not live here, so no edit can change it.
-    const before = await this.services.widgets.programRecord(slug)
+    const before = await this.services.records.programRecord(slug)
+    // widget_fv.install: a quarantine of the slug ends only when the whole install succeeds, not when the load does.
+    this.services.records.holdLift(slug)
+    try {
+      return await this.loadNew({ slug, widget, folder, backup, name, replaced, before, gates: outcome.gates, warnings })
+    } finally {
+      // After a success the hold is already settled; this ends it after a throw.
+      this.services.records.settleLift(slug, false)
+    }
+  }
+
+  /** The load of the new bundle of `installNow`, its success, and its rollback. */
+  private async loadNew(job: {
+    slug: string
+    widget: TestRunWidget
+    folder: string
+    backup: string
+    name: string
+    replaced: boolean
+    before: ProgramRecord | undefined
+    gates: GateReport[]
+    warnings: string[]
+  }): Promise<InstallOutcome> {
+    const { slug, widget, folder, backup, name, replaced, before } = job
     const result = await this.services.pluginManager.installBundle(folder)
     if (result.application === 'applied' && await this.waitLive(slug)) {
+      this.services.records.settleLift(slug, true)
       await rm(backup, { recursive: true, force: true })
       // The stored program wins over the seed, and it stays across a remove. A new seed in the code is the newer
       // intent: the load set it, in the same write as its hash (`seed` in the widgets runtime).
-      const after = await this.services.widgets.programRecord(slug)
+      const after = await this.services.records.programRecord(slug)
       // A record of an older format with no hash: the stored program stays, and it takes the hash of this seed.
-      if (after !== undefined && after.seed === undefined) await this.services.widgets.adoptSeed(slug, hashText(widget.program))
+      if (after !== undefined && after.seed === undefined) await this.services.records.adoptSeed(slug, hashText(widget.program))
       const programUpdated = before?.seed !== undefined && after?.seed !== before.seed
-      return { slug, replaced, application: result.application, programUpdated, gates: outcome.gates, warnings }
+      return { slug, replaced, application: result.application, programUpdated, gates: job.gates, warnings: job.warnings }
     }
 
     const diagnostics = resultDiagnostics(result)
@@ -607,10 +638,14 @@ export class WidgetInstaller {
       const undo = await this.services.pluginManager.removeBundle(name)
       if (undo.application !== 'applied') diagnostics.push(`the failed bundle was not removed: ${resultDiagnostics(undo).join('; ')}`)
     }
-    this.services.widgets.clearOff(slug)
+    this.services.records.clearOff(slug)
     await rm(folder, { recursive: true, force: true })
     // widget_fv.install: the failed load can have written the program record. Put back the record and its seed hash.
-    await this.services.widgets.restoreProgram(slug, before, { by: 'widget_install' })
+    // When the failed bundle could not be removed and still runs, the record stays: it is the record of that code.
+    const stillLive = this.services.widgets.list().some((item) => item.slug === slug && item.off === undefined && item.failed === undefined)
+    if (!stillLive) await this.services.records.restoreProgram(slug, before, { by: 'widget_install' })
+    // The install failed: a load of other files during it does not end a quarantine. The old files load after this.
+    this.services.records.settleLift(slug, false)
     if (replaced) {
       await rename(backup, folder)
       const restore = await this.services.pluginManager.installBundle(folder)

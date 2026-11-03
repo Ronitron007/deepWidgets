@@ -15,12 +15,14 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { z } from 'zod'
-import { agentRow, callerRoot, createIsolation, runAs, widgetRow } from './isolation.ts'
+import { agentRow, callerRoot, createIsolation, runAs, runningRow, widgetRow } from './isolation.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
     /** The widget runtime of `@deepwidgets/widgets`. */
     widgets: WidgetsService
+    /** The install records of the widget runtime (`widget_fv.install`). Only the installer uses them. */
+    widgetRecords: WidgetRecordsService
   }
 }
 
@@ -47,14 +49,23 @@ export const BUILT_IN_WIDGET_FOLDERS: readonly string[] = ['widget-sample']
 /** This file is `deepwidgets/widgets/lib/index.js` (or `src/index.ts`), so `../..` is the repository folder `deepwidgets/`. */
 const BUILT_IN_ROOTS = BUILT_IN_WIDGET_FOLDERS.map((folder) => join(realpathSync(fileURLToPath(new URL('../..', import.meta.url))), folder) + sep)
 
-/** The part of the Loader service that {@link isBuiltInRow} reads. */
+/** The part of a Loader entry that {@link builtInSlugs} reads. */
+interface LoaderEntryView {
+  readonly options: { readonly name?: unknown }
+  readonly moduleNamespace?: unknown
+  readonly parent?: { readonly tree?: { readonly ctx?: { readonly baseUrl?: string }, import?(name: string): Promise<unknown> } }
+}
+
+/** The part of the Loader service that {@link isBuiltInRow} and {@link builtInSlugs} read. */
 interface LoaderView {
   readonly internal?: {
     readonly loadCache: {
       keys(): Iterable<string>
       get(url: string): { readonly module?: { getNamespace(): unknown } } | undefined
     }
+    resolve?(specifier: string, parentURL: string, importAttributes: Record<string, string>): Promise<{ url: string }>
   }
+  entries?(): Iterable<LoaderEntryView>
   unwrapExports(exports: unknown): unknown
 }
 
@@ -95,6 +106,37 @@ function isBuiltInRow(ctx: Context, fiber: Fiber): boolean {
   }
   return found
 }
+/**
+ * widget_fv.install (`widget.builtin_slugs`): the slugs of the built-in widget rows, also of a row that is off.
+ * A row is built in when its module file is in a folder of {@link BUILT_IN_WIDGET_FOLDERS}, as safe mode checks it.
+ * The Loader config gives the module of each row, also of a row that is off. The module of a built-in bundle names its
+ * slugs in the export `widgetSlugs`.
+ */
+async function builtInSlugs(ctx: Context): Promise<Set<string>> {
+  const slugs = new Set<string>()
+  const loader = ctx.get('loader') as LoaderView | undefined
+  const internal = loader?.internal
+  if (loader?.entries === undefined || internal?.resolve === undefined) return slugs
+  for (const entry of loader.entries()) {
+    const name = entry.options.name
+    const tree = entry.parent?.tree
+    const baseUrl = tree?.ctx?.baseUrl
+    if (typeof name !== 'string' || name.startsWith('cordis:') || baseUrl === undefined) continue
+    let url: string
+    try {
+      url = (await internal.resolve(name, baseUrl, {})).url
+    } catch {
+      // A module that does not resolve can not be a built-in bundle.
+      continue
+    }
+    if (!isBuiltInFile(url)) continue
+    const namespace = entry.moduleNamespace ?? await tree?.import?.(name)
+    const declared = (loader.unwrapExports(namespace) as { widgetSlugs?: unknown } | undefined)?.widgetSlugs
+    if (Array.isArray(declared)) for (const slug of declared) if (typeof slug === 'string') slugs.add(slug)
+  }
+  return slugs
+}
+
 const PING_MS = 15_000
 const encoder = new TextEncoder()
 
@@ -308,6 +350,9 @@ interface Runtime {
   restoreProgram(slug: string, record: ProgramRecord | undefined, by: string): Promise<void>
   adoptSeed(slug: string, seed: string): Promise<void>
   clearOff(slug: string): void
+  builtInSlug(slug: string): Promise<boolean>
+  holdLift(slug: string): void
+  settleLift(slug: string, ok: boolean): void
   changes(since: string | undefined): { cursor: string, changes: WidgetChange[], reset?: true }
   cursor(): string
 }
@@ -425,36 +470,6 @@ export class WidgetsService extends Service {
   }
 
   /**
-   * widget_fv.install: the stored program record of `slug`, also when the slug is not live. For a live slug, it waits
-   * for the seed write of its registration.
-   * @returns undefined when storage has no program for the slug.
-   */
-  programRecord(slug: string): Promise<ProgramRecord | undefined> {
-    return this.runtime.programRecord(slug)
-  }
-
-  /**
-   * widget_fv.install: put back the program record that `programRecord` gave before an install, or delete the record
-   * when it gave undefined. The rollback of a failed install calls it.
-   */
-  restoreProgram(slug: string, record: ProgramRecord | undefined, options: { by?: string } = {}): Promise<void> {
-    return this.runtime.restoreProgram(slug, record, options.by ?? `plugin:${this.ctx.fiber.name}`)
-  }
-
-  /** widget_fv.install: set the seed hash of a program record of an older format, which has none. The text stays. */
-  adoptSeed(slug: string, seed: string): Promise<void> {
-    return this.runtime.adoptSeed(slug, seed)
-  }
-
-  /**
-   * widget_fv.install: forget that safe mode turned the agent widget `slug` off in this Host start.
-   * `widget_install` and `widget_remove` call it. The off entry of a widget that is not an agent bundle stays.
-   */
-  clearOff(slug: string): void {
-    this.runtime.clearOff(slug)
-  }
-
-  /**
    * The change feed after a cursor of {@link cursor}. A cursor of another process gives `reset: true`.
    */
   changes(since: string | undefined): { cursor: string, changes: WidgetChange[], reset?: true } {
@@ -465,6 +480,66 @@ export class WidgetsService extends Service {
   cursor(): string {
     return this.runtime.cursor()
   }
+}
+
+/**
+ * The service `widgetRecords` (`widget_fv.install`): the install records of the widget runtime. The installer of
+ * `@deepwidgets/mcp` uses it. Widget code can not: each method throws when it runs in the store of a widget row.
+ */
+export class WidgetRecordsService extends Service {
+  // A private field (#) does not work: the caller context reads the service through a proxy.
+  private readonly runtime: Runtime
+
+  constructor(ctx: Context, runtime: Runtime) {
+    super(ctx, 'widgetRecords')
+    this.runtime = runtime
+  }
+
+  /**
+   * The stored program record of `slug`, also when the slug is not live. For a live slug, it waits
+   * for the seed write of its registration.
+   * @returns undefined when storage has no program for the slug.
+   */
+  programRecord(slug: string): Promise<ProgramRecord | undefined> {
+    return guard(() => this.runtime.programRecord(slug))
+  }
+
+  /** Put back the program record that `programRecord` gave before an install, or delete it when that gave undefined. */
+  restoreProgram(slug: string, record: ProgramRecord | undefined, options: { by?: string } = {}): Promise<void> {
+    return guard(() => this.runtime.restoreProgram(slug, record, options.by ?? `plugin:${this.ctx.fiber.name}`))
+  }
+
+  /** Set the seed hash of a program record of an older format, which has none. The text stays. */
+  adoptSeed(slug: string, seed: string): Promise<void> {
+    return guard(() => this.runtime.adoptSeed(slug, seed))
+  }
+
+  /** Forget that safe mode turned the agent widget `slug` off in this Host start. Another off entry stays. */
+  clearOff(slug: string): void {
+    guard(() => { this.runtime.clearOff(slug) })
+  }
+
+  /** Whether `slug` is the slug of a built-in widget (`widget.builtin_slugs`), also when its row is off. */
+  builtInSlug(slug: string): Promise<boolean> {
+    return guard(() => this.runtime.builtInSlug(slug))
+  }
+
+  /** An install of `slug` starts: a load of other files of a quarantined row of the slug does not end the quarantine yet. */
+  holdLift(slug: string): void {
+    guard(() => { this.runtime.holdLift(slug) })
+  }
+
+  /** The install of `slug` ends. With `ok`, a quarantined row of the slug that loaded other files leaves the quarantine. */
+  settleLift(slug: string, ok: boolean): void {
+    guard(() => { this.runtime.settleLift(slug, ok) })
+  }
+}
+
+/** Run `fn` only outside widget code. Widget code that reaches {@link WidgetRecordsService} gets an error. */
+function guard<T>(fn: () => T): T {
+  const row = runningRow()
+  if (row !== undefined) throw new Error(`widgets: the widget row ${row} can not use the install records`)
+  return fn()
 }
 
 /** One open server-sent event stream. */
@@ -972,12 +1047,13 @@ export function apply(ctx: Context, config: Config): void {
     if (typeof text !== 'string' || text.trim() === '') throw new WidgetError('bad-request', 'the program text must be a non-empty string')
     await entry.seeded
     const table = (await ready).table('program')
-    const old = table.get(slug)
-    const rev = (old?.rev ?? 0) + 1
-    // widget_fv.install: an edit keeps the seed hash, so a reinstall of the same seed keeps the edit.
-    await table.put(slug, { rev, text, updatedAt: Date.now(), ...(old?.seed === undefined ? {} : { seed: old.seed }) })
-    logChange({ slug, kind: 'program', by, rev })
-    return { rev }
+    // widget_fv.install: an edit keeps the seed hash, so a reinstall of the same seed keeps the edit. The update reads
+    // the record at its slot, so a seed hash that lands at the same time stays.
+    const next = table.get(slug) === undefined
+      ? await table.put(slug, { rev: 1, text, updatedAt: Date.now() }).then(() => ({ rev: 1 }))
+      : await table.update(slug, (old) => ({ rev: old.rev + 1, text, updatedAt: Date.now(), ...(old.seed === undefined ? {} : { seed: old.seed }) }))
+    logChange({ slug, kind: 'program', by, rev: next.rev })
+    return { rev: next.rev }
   }
 
   async function programRecord(slug: string): Promise<ProgramRecord | undefined> {
@@ -989,6 +1065,7 @@ export function apply(ctx: Context, config: Config): void {
 
   async function restoreProgram(slug: string, record: ProgramRecord | undefined, by: string): Promise<void> {
     const table = (await ready).table('program')
+    await widgets.get(slug)?.seeded.catch(() => undefined)
     const now = table.get(slug)
     if (now === record) return
     if (record === undefined) await table.delete(slug)
@@ -1192,7 +1269,7 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   // The service methods report each failure as a WidgetError, so the caller sees one form.
-  new WidgetsService(ctx, {
+  const runtime: Runtime = {
     add: (registration, bundle, builtIn) => add(registration, bundle, builtIn),
     track: (row, root, slug) => { isolation.track(row, root, slug) },
     list,
@@ -1209,7 +1286,12 @@ export function apply(ctx: Context, config: Config): void {
     restoreProgram: (slug, record, by) => admit(() => restoreProgram(slug, record, by)),
     adoptSeed: (slug, seed) => admit(() => adoptSeed(slug, seed)),
     clearOff: (slug) => { if (off.get(slug)?.agent === true) off.delete(slug) },
+    builtInSlug: async (slug) => (await builtInSlugs(ctx)).has(slug),
+    holdLift: (slug) => { isolation.holdLift(slug) },
+    settleLift: (slug, ok) => { isolation.settleLift(slug, ok) },
     changes,
     cursor,
-  })
+  }
+  new WidgetsService(ctx, runtime)
+  new WidgetRecordsService(ctx, runtime)
 }

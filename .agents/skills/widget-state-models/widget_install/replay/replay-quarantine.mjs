@@ -1,11 +1,12 @@
 // quarantine.holds (widget_fv.install): v1 crashes the host when a marker says so (host only). The next start
 // quarantines it. A reinstall that fails in the host rolls back to the v1 folder, with the blamed hash: the quarantine
-// holds. Then an install of other files that load with success ends it.
+// holds. An install whose files load but do not register within the live wait of 5 s is rolled back too: the
+// quarantine holds. Then an install of other files that load with success ends it.
 import { createServer } from 'node:http'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Host, writeWidget, program, afterRegister, compose, short, freePort, checks } from './lib.mjs'
+import { Host, writeWidget, program, afterRegister, lateRegister, compose, short, freePort, checks } from './lib.mjs'
 const work = mkdtempSync(join(tmpdir(), 'widget-state-models-install-quarantine-'))
 const host = new Host(work)
 const { check, done } = checks('replay quarantine')
@@ -28,6 +29,11 @@ try {
   await host.start()
   const held = await widgetA()
   check('the next start quarantines v1', typeof held?.failed === 'string' && quarantined(), short(held))
+  const late = writeWidget(work, 'a-late', tpl, compose(program('SEED-LATE'), lateRegister))
+  const rl = await host.call('widget_install', { dir: late })
+  const afterLate = await widgetA()
+  check('an install that loads but registers after the live wait gives install-failed', rl.isError && rl.body?.error?.code === 'install-failed' && rl.body?.error?.diagnostics?.some((d) => d.includes('did not show')), short(rl.body?.error))
+  check('the quarantine holds after the live-wait timeout and its rollback', typeof afterLate?.failed === 'string' && quarantined(), short(afterLate))
   const bad = writeWidget(work, 'a-bad', tpl, compose(program('SEED-P2'), afterRegister("if ('setProgram' in ctx.widgets) throw new Error('host only failure')")))
   const r2 = await host.call('widget_install', { dir: bad })
   check('a reinstall that fails in the host gives install-failed', r2.isError && r2.body?.error?.code === 'install-failed', short(r2.body?.error?.code))

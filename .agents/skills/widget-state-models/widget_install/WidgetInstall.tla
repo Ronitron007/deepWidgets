@@ -1,13 +1,13 @@
 ---------------------------- MODULE WidgetInstall ----------------------------
 (***************************************************************************)
 (* The agent tools widget_install, widget_reload, and widget_remove of     *)
-(* deepWidgets at commit bec38c1e (spec widget_fv.install is in).         *)
+(* deepWidgets at commit SYNCSHA (spec widget_fv.install is in).         *)
 (*                                                                         *)
 (* Code: deepwidgets/mcp/src/creation.ts (C), deepwidgets/widgets/src/     *)
 (* index.ts (W), deepwidgets/widgets/src/isolation.ts (I),                 *)
 (* packages/boot/plugin-manager/src/index.ts (PM).                          *)
 (* Each await of WidgetInstaller.installNow / remove / reload is one step. *)
-(* WidgetInstaller.serial (C:440-444) runs one job at a time, so the model *)
+(* WidgetInstaller.serial (C:443-447) runs one job at a time, so the model *)
 (* has one job slot. Crashes, user calls, user program edits, and the user *)
 (* switch of the built-in sample row interleave with every job step.       *)
 (***************************************************************************)
@@ -24,7 +24,7 @@ BuiltIn == "sample"                     \* deepwidgets/widget-sample registers s
 Slugs   == AgentSlugs \cup {BuiltIn}    \* slugs that agent code can register
 
 (* The agent code of one install. Its seed program, whether it passes the   *)
-(* three gates (C:370-389), and what its apply does in the host.            *)
+(* three gates (C:373-392), and what its apply does in the host.            *)
 Codes == {"v1", "v2", "bad", "lint"}
 Seed(c) == CASE c = "v1" -> "p1" [] c = "v2" -> "p2" [] c = "bad" -> "p3" [] c = "lint" -> "p4"
 Seeds == {"p1", "p2", "p3", "p4"}
@@ -41,21 +41,22 @@ VARIABLES
   next,       \*                              <slug>.next
   prev,       \*                              <slug>.previous
   reg,        \* [Slugs -> {"none","live","failed","off"}]  the runtime entry of an agent registration of the slug
-  offMap,     \* [Slugs -> BOOLEAN]          W:589 `off`: safe mode refused the agent slug in this host start
+  offMap,     \* [Slugs -> BOOLEAN]          W:664 `off`: safe mode refused the agent slug in this host start
   sampleOn,   \* the built-in sample row is on (the user can switch it in the plugin manager)
   prog,       \* [Slugs -> None \cup Seeds \cup {"edit"}]  stored program (storage table `program`)
   state,      \* [Slugs -> {"none","init","used"}]         stored state (storage table `state`)
   everUsed,   \* ghost: a user call wrote the state of the slug
-  pseed,      \* [Slugs -> None \cup Seeds]  the seed hash in the program record (W:244-249); it lands
-              \* in the same put as prog. An edit keeps it (W:970-981). The older file .seeds/<slug>
-              \* (C:476-489) is not in the model: the model starts with no records.
-  lastInst,   \* ghost: seed of the code that last went live from the profile for the slug. A load that
-              \* throws, that safe mode refuses, or that the quarantine holds applies no seed, so it does
-              \* not count (spec widget_fv.install: a rolled-back install leaves the program as before).
+  pseed,      \* [Slugs -> None \cup Seeds]  the seed hash in the program record (W:286-291); it lands
+              \* in the same put as prog. An edit keeps it (W:1045-1057). The older file .seeds/<slug>
+              \* (C:479-492) is not in the model: the model starts with no records.
+  lastInst,   \* ghost: seed of the code that last went live for the slug. A load that throws, that safe
+              \* mode refuses, or that the quarantine holds does not count. The restore of a rollback puts
+              \* back the value from before the install (spec widget_fv.install: a rolled-back install
+              \* leaves the program as before).
   quar,       \* [Slugs -> BOOLEAN]  I: quarantine.json has an item for the row of the slug
   blamed,     \* [Slugs -> Locs]     where the files are whose hash the quarantine item names
   runBlamed,  \* ghost [Slugs -> BOOLEAN]: the running registration was loaded from the blamed files
-  safe,       \* this host start is in safe mode (W:587)
+  safe,       \* this host start is in safe mode (W:662)
   crashes, calls,
   job         \* the one running installer job
 
@@ -65,7 +66,8 @@ vars == <<inst, enabled, folder, next, prev, reg, offMap, sampleOn, prog, state,
 NoJob == [op |-> "none", s |-> "none", c |-> "none", pc |-> "idle", replaced |-> FALSE,
           prevSeed |-> "none", oldCode |-> "none", oldLive |-> FALSE,
           wrote |-> FALSE, edited |-> FALSE, app |-> "none", err |-> "", builtinHeld |-> FALSE, editedAtStart |-> FALSE,
-          snapP |-> "none", snapS |-> "none"]
+          snapP |-> "none", snapS |-> "none",
+          beforeP |-> "unset", beforeS |-> "unset", editAfter |-> FALSE, hold |-> FALSE, pend |-> FALSE, newLeft |-> FALSE, beforeL |-> "none"]
 
 TypeOK ==
   /\ inst \in [Slugs -> BOOLEAN]
@@ -106,13 +108,18 @@ Init ==
   /\ calls = 0
   /\ job = NoJob
 
-(* W:1151-1154 `list()`: live and failed entries, and the slugs that safe mode refused in this start. *)
+(* W:1228-1231 `list()`: live and failed entries, and the slugs that safe mode refused in this start. *)
 InList(s) == reg[s] # "none" \/ offMap[s] \/ (s = BuiltIn /\ sampleOn)
 
-(* C:562-565: slug-taken counts the widgets in list() that are not off: live and failed entries. *)
+(* C:563-565 (widget.builtin_slugs, W:115-138): the slug of a built-in widget is reserved, also *)
+(* while its row is off. Mutant offAllowed: only a live built-in takes its slug, as before the rule.   *)
+(* Mutant builtinRow also has no reservation: it is the row-id clash of aa7cd518.                     *)
+Reserved == Mutant \notin {"offAllowed", "builtinRow"}
+
+(* C:570-572: slug-taken counts the widgets in list() that are not off: live and failed entries. *)
 Taken(s) == reg[s] \in {"live", "failed"} \/ (s = BuiltIn /\ sampleOn)
 
-(* W:1068-1089 seed of an agent row: no record, or a record whose seed hash differs from the seed  *)
+(* W:1145-1166 seed of an agent row: no record, or a record whose seed hash differs from the seed  *)
 (* of the code that loads, gets the seed of the code. Text and hash land in one put. A record     *)
 (* with no hash stays.                                                                           *)
 (* Mutant seedFile: the code before widget_fv.install. The hash is in its own file (.seeds/<slug>), *)
@@ -123,29 +130,33 @@ NewSeed(s, c) ==
 LoadSeed(s, c) == IF Mutant = "seedFile" THEN pseed[s] ELSE Seed(c)
 
 (* A row of slug s loads code c (hmr reconcile in PM installBundle, or a host start).          *)
-(* I:218-223 held: a quarantine item holds the row while the folder still has the blamed files.  *)
-(* I:246-263 wrap: other files run. I:226-231 lift: the item goes only when their execute        *)
+(* I:228-233 held: a quarantine item holds the row while the folder still has the blamed files.  *)
+(* I:270-287 wrap: other files run. I:236-241 lift: the item goes only when their execute        *)
 (*   returns with no throw. A throw, and a safe-mode refusal, keep it.                            *)
-(* W:1092-1099 add: safe mode refuses an agent widget (it goes into `off`) before seed().        *)
-(* W:1068-1089 seed: seed() starts in add(), before apply can throw, so code that registers and  *)
+(* W:1169-1176 add: safe mode refuses an agent widget (it goes into `off`) before seed().        *)
+(* I:244-255, I:354-366 holdLift and settleLift: during the install job of the slug (job.hold), a *)
+(*   load with success only marks the item (job.pend). The item goes when the install succeeds.     *)
+(* W:1145-1166 seed: seed() starts in add(), before apply can throw, so code that registers and  *)
 (*   then throws still writes the program record.                                               *)
+Holding(s) == job.hold /\ job.s = s /\ Mutant # "liftAtLoad"
+
 Load(s, c) ==
   IF s = BuiltIn /\ Mutant # "builtinRow"
-    \* At aa7cd518: the Loader keeps one row per id. The agent row deepwidgets-widget-sample does not
-    \* replace the built-in row of that id; it never starts (replay-builtin.mjs at aa7cd518). Since
-    \* widget.agent_rows the agent row is deepwidgets-agent-sample, and it starts when the user turned the
-    \* built-in off. This branch does not model that yet (SKILL.md widget_state_models.rules, open point).
-    THEN [r |-> "none", off |-> offMap[s], p |-> prog[s], ps |-> pseed[s], st |-> state[s], q |-> quar[s], threw |-> FALSE]
+    \* Not reached by the code: widget.builtin_slugs refuses the slug of a built-in before a load
+    \* (CheckInstalled). Only the mutants offAllowed and builtinRow install the slug sample. This branch
+    \* is the behavior at aa7cd518: the agent row deepwidgets-widget-sample never started.
+    THEN [r |-> "none", off |-> offMap[s], p |-> prog[s], ps |-> pseed[s], st |-> state[s], q |-> quar[s], threw |-> FALSE, pend |-> FALSE]
   ELSE IF quar[s] /\ blamed[s] = "folder"
-    THEN [r |-> "failed", off |-> offMap[s], p |-> prog[s], ps |-> pseed[s], st |-> state[s], q |-> TRUE, threw |-> FALSE]
+    THEN [r |-> "failed", off |-> offMap[s], p |-> prog[s], ps |-> pseed[s], st |-> state[s], q |-> TRUE, threw |-> FALSE, pend |-> FALSE]
   ELSE IF safe
-    THEN [r |-> "off", off |-> TRUE, p |-> prog[s], ps |-> pseed[s], st |-> state[s], q |-> quar[s], threw |-> TRUE]
+    THEN [r |-> "off", off |-> TRUE, p |-> prog[s], ps |-> pseed[s], st |-> state[s], q |-> quar[s], threw |-> TRUE, pend |-> FALSE]
   ELSE [r |-> IF ApplyOk(c) THEN "live" ELSE "none",
         off |-> offMap[s],
         p |-> IF NewSeed(s, c) THEN Seed(c) ELSE prog[s],
         ps |-> IF NewSeed(s, c) THEN LoadSeed(s, c) ELSE pseed[s],
         st |-> IF state[s] = "none" \/ Mutant = "stateReset" THEN "init" ELSE state[s],
-        q |-> quar[s] /\ ~ApplyOk(c),
+        q |-> quar[s] /\ ~(ApplyOk(c) /\ ~Holding(s)),
+        pend |-> quar[s] /\ ApplyOk(c) /\ Holding(s),
         threw |-> ~ApplyOk(c)]
 
 (* Apply the result of Load to the variables of slug s. *)
@@ -169,7 +180,7 @@ End(ok, code) == job' = [job EXCEPT !.pc = IF ok THEN "ok" ELSE "err", !.err = c
 Fixed(vs) == UNCHANGED vs
 
 ---------------------------------------------------------------------------
-(* The agent calls a tool. The call waits in the serial queue (C:440-444). *)
+(* The agent calls a tool. The call waits in the serial queue (C:443-447). *)
 
 AgentInstall ==
   /\ job = NoJob /\ calls < MaxCalls
@@ -178,7 +189,8 @@ AgentInstall ==
        /\ job' = [op |-> "install", s |-> s, c |-> c, pc |-> "gates", replaced |-> FALSE,
                   prevSeed |-> lastInst[s], oldCode |-> IF inst[s] THEN folder[s] ELSE None, oldLive |-> reg[s] = "live",
                   wrote |-> FALSE, edited |-> FALSE, app |-> "none", err |-> "", builtinHeld |-> FALSE,
-                  editedAtStart |-> prog[s] = "edit", snapP |-> "none", snapS |-> "none"]
+                  editedAtStart |-> prog[s] = "edit", snapP |-> "none", snapS |-> "none",
+          beforeP |-> "unset", beforeS |-> "unset", editAfter |-> FALSE, hold |-> FALSE, pend |-> FALSE, newLeft |-> FALSE, beforeL |-> "none"]
   /\ calls' = calls + 1
   /\ UNCHANGED <<inst, enabled, folder, next, prev, reg, offMap, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, blamed, runBlamed, safe, crashes>>
@@ -189,7 +201,8 @@ AgentReload ==
        job' = [op |-> "reload", s |-> s, c |-> c, pc |-> "reloadCheck", replaced |-> FALSE,
                prevSeed |-> lastInst[s], oldCode |-> IF inst[s] THEN folder[s] ELSE None, oldLive |-> reg[s] = "live",
                wrote |-> FALSE, edited |-> FALSE, app |-> "none", err |-> "", builtinHeld |-> FALSE,
-               editedAtStart |-> prog[s] = "edit", snapP |-> "none", snapS |-> "none"]
+               editedAtStart |-> prog[s] = "edit", snapP |-> "none", snapS |-> "none",
+          beforeP |-> "unset", beforeS |-> "unset", editAfter |-> FALSE, hold |-> FALSE, pend |-> FALSE, newLeft |-> FALSE, beforeL |-> "none"]
   /\ calls' = calls + 1
   /\ UNCHANGED <<inst, enabled, folder, next, prev, reg, offMap, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, blamed, runBlamed, safe, crashes>>
@@ -200,38 +213,42 @@ AgentRemove ==
        job' = [op |-> "remove", s |-> s, c |-> "v1", pc |-> "removeCheck", replaced |-> FALSE,
                prevSeed |-> lastInst[s], oldCode |-> IF inst[s] THEN folder[s] ELSE None, oldLive |-> reg[s] = "live",
                wrote |-> FALSE, edited |-> FALSE, app |-> "none", err |-> "", builtinHeld |-> FALSE, editedAtStart |-> FALSE,
-               snapP |-> "none", snapS |-> "none"]
+               snapP |-> "none", snapS |-> "none",
+          beforeP |-> "unset", beforeS |-> "unset", editAfter |-> FALSE, hold |-> FALSE, pend |-> FALSE, newLeft |-> FALSE, beforeL |-> "none"]
   /\ calls' = calls + 1
   /\ UNCHANGED <<inst, enabled, folder, next, prev, reg, offMap, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, blamed, runBlamed, safe, crashes>>
 
 ---------------------------------------------------------------------------
-(* installNow (C:546-622), one await per step. *)
+(* installNow (C:549-657), one await per step. *)
 
 JS == job.s
 JC == job.c
 
-(* C:517-518 reload: meta() and installed(). *)
+(* C:520-521 reload: meta() and installed(). *)
 ReloadCheck ==
   /\ job.pc = "reloadCheck"
   /\ IF folder[JS] # None /\ inst[JS] THEN Goto("gates") ELSE End(FALSE, "not-installed")
   /\ UNCHANGED <<inst, enabled, folder, next, prev, reg, offMap, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, blamed, runBlamed, safe, crashes, calls>>
 
-(* C:547-552 runGates: a failed gate throws gate-failed before anything is written. *)
+(* C:550-555 runGates: a failed gate throws gate-failed before anything is written. *)
 Gates ==
   /\ job.pc = "gates"
   /\ IF GatePass(JC) \/ Mutant = "skipGate" THEN Goto("checkInstalled") ELSE End(FALSE, "gate-failed")
   /\ UNCHANGED <<inst, enabled, folder, next, prev, reg, offMap, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, blamed, runBlamed, safe, crashes, calls>>
 
-(* C:560-567 replaced = installed(slug); slug-taken when not replaced and a widget of the slug is in *)
-(* list() and not off. Then clearOff (W:1211 clears an agent entry only) and the migration of the  *)
-(* older .seeds file (C:476-489, not in the model).                                                *)
+(* C:566-574 replaced = installed(slug); slug-taken when not replaced and a widget of the slug is in *)
+(* list() and not off. Then clearOff (W:1288 clears an agent entry only) and the migration of the  *)
+(* older .seeds file (C:479-492, not in the model).                                                *)
 CheckInstalled ==
   /\ job.pc = "checkInstalled"
   /\ LET r == inst[JS] IN
-       IF ~r /\ Taken(JS)
+       IF JS = BuiltIn /\ Reserved
+         THEN /\ job' = [job EXCEPT !.replaced = r, !.pc = "err", !.err = "slug-taken", !.builtinHeld = TRUE]
+              /\ UNCHANGED offMap
+       ELSE IF ~r /\ Taken(JS)
          THEN /\ job' = [job EXCEPT !.replaced = r, !.pc = "err", !.err = "slug-taken",
                              !.builtinHeld = (JS = BuiltIn /\ sampleOn)]
               /\ UNCHANGED offMap
@@ -240,7 +257,7 @@ CheckInstalled ==
   /\ UNCHANGED <<inst, enabled, folder, next, prev, reg, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, blamed, runBlamed, safe, crashes, calls>>
 
-(* C:568-571 writeBundle(next). *)
+(* C:575-578 writeBundle(next). *)
 WriteNext ==
   /\ job.pc = "writeNext"
   /\ next' = [next EXCEPT ![JS] = JC]
@@ -248,7 +265,7 @@ WriteNext ==
   /\ UNCHANGED <<inst, enabled, folder, prev, reg, offMap, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, blamed, runBlamed, safe, crashes, calls>>
 
-(* C:573-581 removeBundle(name) of the old bundle. PM removeBundle (PM:1047-1079) first deselects *)
+(* C:580-588 removeBundle(name) of the old bundle. PM removeBundle (PM:1047-1079) first deselects *)
 (* the bundle and reloads (its rows stop), then runs `pnpm remove`. A failure of pnpm remove       *)
 (* leaves the bundle installed but deselected; a lock timeout or `not-removable` changes nothing.  *)
 RemoveOld ==
@@ -269,7 +286,7 @@ RemoveOld ==
   /\ UNCHANGED <<folder, prev, offMap, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, blamed, runBlamed, safe, crashes, calls>>
 
-(* C:583-584 rm(backup); rename(folder, backup). *)
+(* C:590-591 rm(backup); rename(folder, backup). *)
 Backup ==
   /\ job.pc = "backup"
   /\ prev' = [prev EXCEPT ![JS] = folder[JS]]
@@ -279,7 +296,7 @@ Backup ==
   /\ UNCHANGED <<runBlamed, inst, enabled, next, reg, offMap, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, safe, crashes, calls>>
 
-(* C:586 rm(folder) when nothing is installed. *)
+(* C:593 rm(folder) when nothing is installed. *)
 ClearFolder ==
   /\ job.pc = "clearFolder"
   /\ folder' = [folder EXCEPT ![JS] = None]
@@ -288,7 +305,7 @@ ClearFolder ==
   /\ UNCHANGED <<runBlamed, inst, enabled, next, prev, reg, offMap, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, safe, crashes, calls>>
 
-(* C:588 rename(next, folder). *)
+(* C:595 rename(next, folder). *)
 RenameNext ==
   /\ job.pc = "renameNext"
   /\ folder' = [folder EXCEPT ![JS] = next[JS]]
@@ -309,33 +326,43 @@ InstallBundle(s, c, nextPc) ==
      /\ Loaded(s, c)
      \* A row whose apply throws gives `failed at enable`, and the package stays (replay-newseed.mjs,
      \* replay-safe.mjs). A row that starts gives `applied`.
-     \* wrote: the load of this job changed the stored program (the seed rule of W:1068-1089).
+     \* wrote: the load of this job changed the stored program (the seed rule of W:1145-1166).
      /\ job' = [job EXCEPT !.app = IF Load(s, c).threw THEN "failed" ELSE "applied", !.pc = nextPc,
-                           !.wrote = job.wrote \/ Load(s, c).p # prog[s]]
+                           !.wrote = job.wrote \/ Load(s, c).p # prog[s],
+                           !.pend = job.pend \/ Load(s, c).pend]
   \/ /\ UNCHANGED <<runBlamed, inst, enabled, lastInst, reg, offMap, prog, pseed, state, quar>>
      /\ job' = [job EXCEPT !.app = "failed", !.pc = nextPc]
 
-(* C:591 before = programRecord(slug) (W:983-988): the slug is not live here, so no edit can change it. *)
+(* C:598-600 before = programRecord(slug) (W:1059-1064): the slug is not live here, so no edit can change it. *)
+(* Then holdLift(slug). beforeP and beforeS are the ghost of the record before the install, for the  *)
+(* rule RollbackKeepsRecord; snapP and snapS are what the code keeps for its restore.                *)
 Snapshot ==
   /\ job.pc = "snapshot"
-  /\ job' = [job EXCEPT !.snapP = prog[JS], !.snapS = pseed[JS], !.pc = "installNew"]
+  /\ job' = [job EXCEPT !.snapP = prog[JS], !.snapS = pseed[JS], !.pc = "installNew",
+                        !.beforeP = prog[JS], !.beforeS = pseed[JS], !.beforeL = lastInst[JS], !.hold = TRUE]
   /\ UNCHANGED <<inst, enabled, folder, next, prev, reg, offMap, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, blamed, runBlamed, safe, crashes, calls>>
 
-(* C:592 installBundle of the new bundle. *)
+(* C:622 installBundle of the new bundle. *)
 InstallNew ==
   /\ job.pc = "installNew"
   /\ InstallBundle(JS, JC, "waitLive")
   /\ UNCHANGED <<folder, next, prev, sampleOn, everUsed, blamed, safe, crashes, calls>>
 
-(* C:593 applied && waitLive(slug): the slug shows in list() within 5 s. *)
+(* C:623-624 applied && waitLive(slug): the slug shows in list() within 5 s. *)
+(* The wait can also time out when the widget registers late (replay-quarantine.mjs, a-late). On  *)
+(* success, settleLift(slug, true) ends a quarantine that a load of other files marked.            *)
 WaitLive ==
   /\ job.pc = "waitLive"
-  /\ Goto(IF job.app = "applied" /\ InList(JS) THEN "rmBackup" ELSE "undoCheck")
+  /\ \/ /\ job.app = "applied" /\ InList(JS)
+        /\ job' = [job EXCEPT !.pc = "rmBackup", !.hold = FALSE, !.pend = FALSE]
+        /\ quar' = [quar EXCEPT ![JS] = IF job.pend /\ blamed[JS] # "folder" THEN FALSE ELSE @]
+     \/ /\ Goto("undoCheck")
+        /\ UNCHANGED quar
   /\ UNCHANGED <<inst, enabled, folder, next, prev, reg, offMap, sampleOn, prog, state, everUsed,
-                 pseed, lastInst, quar, blamed, runBlamed, safe, crashes, calls>>
+                 pseed, lastInst, blamed, runBlamed, safe, crashes, calls>>
 
-(* C:594 rm(backup). *)
+(* C:625 rm(backup). *)
 RmBackup ==
   /\ job.pc = "rmBackup"
   /\ prev' = [prev EXCEPT ![JS] = None]
@@ -344,8 +371,8 @@ RmBackup ==
   /\ UNCHANGED <<runBlamed, inst, enabled, folder, next, reg, offMap, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, safe, crashes, calls>>
 
-(* C:597-601 after = programRecord(slug); a record with no seed hash takes the hash of this seed    *)
-(* (W:999-1003 re-checks in one update). The load set a new seed already (W:1068-1089).              *)
+(* C:628-631 after = programRecord(slug); a record with no seed hash takes the hash of this seed    *)
+(* (W:1076-1080 re-checks in one update). The load set a new seed already (W:1145-1166).              *)
 Adopt ==
   /\ job.pc = "adopt"
   /\ IF Mutant = "seedFile"
@@ -370,14 +397,14 @@ WriteSeed ==
   /\ UNCHANGED <<inst, enabled, folder, next, prev, reg, offMap, sampleOn, prog, state, everUsed,
                  lastInst, quar, blamed, runBlamed, safe, crashes, calls>>
 
-(* C:606 if installed(slug). *)
+(* C:637 if installed(slug). *)
 UndoCheck ==
   /\ job.pc = "undoCheck"
   /\ Goto(IF inst[JS] THEN "undoRemove" ELSE "rmFolder")
   /\ UNCHANGED <<inst, enabled, folder, next, prev, reg, offMap, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, blamed, runBlamed, safe, crashes, calls>>
 
-(* C:607-608 removeBundle of the failed bundle; its result is only reported. *)
+(* C:638-639 removeBundle of the failed bundle; its result is only reported. *)
 UndoRemove ==
   /\ job.pc = "undoRemove"
   /\ \/ /\ inst' = [inst EXCEPT ![JS] = FALSE]
@@ -391,7 +418,7 @@ UndoRemove ==
   /\ UNCHANGED <<folder, next, prev, offMap, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, blamed, runBlamed, safe, crashes, calls>>
 
-(* C:610-611 clearOff(slug); rm(folder). *)
+(* C:641-642 clearOff(slug); rm(folder). *)
 RmFolder ==
   /\ job.pc = "rmFolder"
   /\ folder' = [folder EXCEPT ![JS] = None]
@@ -401,17 +428,25 @@ RmFolder ==
   /\ UNCHANGED <<runBlamed, inst, enabled, next, prev, reg, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, safe, crashes, calls>>
 
-(* C:613 restoreProgram(slug, before): the program record and its seed hash as they were before the *)
-(* load (W:990-997; no record deletes it).                                                          *)
+(* C:645-648 restoreProgram(slug, before): the program record and its seed hash as they were before the *)
+(* load (W:1066-1074; no record deletes it).                                                          *)
+(* The restore is skipped when the failed bundle could not be removed and still runs (C:645-648): its *)
+(* record is the record of the code that runs. Then settleLift(slug, false): the hold ends, and a     *)
+(* marked quarantine stays. Mutant noRestore: no restore at all.                                    *)
 RestoreProgram ==
   /\ job.pc = "restoreProgram"
-  /\ prog' = [prog EXCEPT ![JS] = job.snapP]
-  /\ pseed' = [pseed EXCEPT ![JS] = job.snapS]
-  /\ IF job.replaced THEN Goto("restoreRename") ELSE End(FALSE, "install-failed")
+  /\ LET restore == Mutant # "noRestore" /\ reg[JS] # "live" IN
+       /\ prog' = IF restore THEN [prog EXCEPT ![JS] = job.snapP] ELSE prog
+       /\ pseed' = IF restore THEN [pseed EXCEPT ![JS] = job.snapS] ELSE pseed
+  \* Ghost: the rolled-back load does not count as the last seed that went live.
+  /\ lastInst' = IF reg[JS] # "live" THEN [lastInst EXCEPT ![JS] = job.beforeL] ELSE lastInst
+  /\ job' = [job EXCEPT !.hold = FALSE, !.pend = FALSE, !.newLeft = reg[JS] = "live",
+                        !.pc = IF job.replaced THEN "restoreRename" ELSE "err",
+                        !.err = IF job.replaced THEN job.err ELSE "install-failed"]
   /\ UNCHANGED <<runBlamed, inst, enabled, folder, next, prev, reg, offMap, sampleOn, state, everUsed,
-                 lastInst, quar, blamed, safe, crashes, calls>>
+                 quar, blamed, safe, crashes, calls>>
 
-(* C:615 rename(backup, folder). *)
+(* C:650 rename(backup, folder). *)
 RestoreRename ==
   /\ job.pc = "restoreRename"
   /\ folder' = [folder EXCEPT ![JS] = prev[JS]]
@@ -421,7 +456,7 @@ RestoreRename ==
   /\ UNCHANGED <<runBlamed, inst, enabled, next, reg, offMap, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, safe, crashes, calls>>
 
-(* C:616-621 installBundle(folder) of the old bundle, then throw install-failed. *)
+(* C:651-656 installBundle(folder) of the old bundle, then throw install-failed. *)
 RestoreInstall ==
   /\ job.pc = "restoreInstall"
   /\ InstallBundle(JS, folder[JS], "restoreDone")
@@ -434,7 +469,7 @@ RestoreDone ==
                  pseed, lastInst, quar, blamed, runBlamed, safe, crashes, calls>>
 
 ---------------------------------------------------------------------------
-(* remove (C:524-544). *)
+(* remove (C:527-547). *)
 
 RemoveCheck ==
   /\ job.pc = "removeCheck"
@@ -457,7 +492,7 @@ RemoveBundle ==
   /\ UNCHANGED <<folder, next, prev, offMap, sampleOn, prog, state, everUsed,
                  pseed, lastInst, quar, blamed, runBlamed, safe, crashes, calls>>
 
-(* C:540-541 rm(folder); clearOff(slug). *)
+(* C:543-544 rm(folder); clearOff(slug). *)
 RemoveFolder ==
   /\ job.pc = "removeFolder"
   /\ folder' = [folder EXCEPT ![JS] = None]
@@ -477,7 +512,7 @@ Return ==
 ---------------------------------------------------------------------------
 (* The user and the host. *)
 
-(* A widget_call mutation writes the state (W:896-927). *)
+(* A widget_call mutation writes the state (W:971-1002). *)
 UserCall ==
   /\ \E s \in Slugs :
        /\ reg[s] = "live" \/ (s = BuiltIn /\ sampleOn /\ ~inst[BuiltIn])
@@ -486,13 +521,13 @@ UserCall ==
   /\ UNCHANGED <<inst, enabled, folder, next, prev, reg, offMap, sampleOn, prog,
                  pseed, lastInst, quar, blamed, runBlamed, safe, crashes, calls, job>>
 
-(* A plugin or the widget edits the stored program: ctx.widgets.setProgram (W:970-981). The edit *)
+(* A plugin or the widget edits the stored program: ctx.widgets.setProgram (W:1045-1057). The edit *)
 (* keeps the seed hash of the record.                                                            *)
 UserEdit ==
   /\ \E s \in AgentSlugs :
        /\ reg[s] = "live"
        /\ prog' = [prog EXCEPT ![s] = "edit"]
-       /\ job' = IF job # NoJob /\ job.s = s THEN [job EXCEPT !.edited = TRUE] ELSE job
+       /\ job' = IF job # NoJob /\ job.s = s THEN [job EXCEPT !.edited = TRUE, !.editAfter = job.beforeP # "unset"] ELSE job
   /\ UNCHANGED <<inst, enabled, folder, next, prev, reg, offMap, sampleOn, state, everUsed,
                  pseed, lastInst, quar, blamed, runBlamed, safe, crashes, calls>>
 
@@ -506,7 +541,7 @@ ToggleSample ==
 (* code is blamed on its row: the quarantine names the hash of the installed folder. An         *)
 (* unblamed crash can put the next start in safe mode. The running job dies with the host.      *)
 (* At the start, each installed and selected agent bundle loads from its folder, as Load does:  *)
-(* a quarantine item ends only when other files load with success (I:226-231, I:246-263).       *)
+(* a quarantine item ends only when other files load with success (I:236-241, I:270-287).       *)
 Crash ==
   /\ crashes < MaxCrashes
   /\ \E b \in {None} \cup {s \in AgentSlugs : reg[s] = "live"}, sm \in BOOLEAN :
@@ -548,29 +583,29 @@ Spec == Init /\ [][Next]_vars
 ---------------------------------------------------------------------------
 (* The rules. *)
 
-(* gates.never_host: "Code that fails a gate never reaches the host." spec widget_phase2.creation.gates; C:5-6, C:549-552. *)
+(* gates.never_host: "Code that fails a gate never reaches the host." spec widget_phase2.creation.gates; C:5-6, C:552-555. *)
 GatesGuardHost ==
   \A s \in Slugs : folder[s] # "lint" /\ prev[s] # "lint" /\ next[s] # "lint"
 
 (* replace.keeps_old: "A failed reinstall keeps the old version live." C:8-9 "removes the old bundle first and *)
-(* puts it back when the new one fails"; C:578 "the old bundle stays"; tools/widgets-create.mjs rollback check. *)
+(* puts it back when the new one fails"; C:585 "the old bundle stays"; tools/widgets-create.mjs rollback check. *)
 FailedReplaceKeepsOld ==
   (job.pc = "err" /\ job.replaced) =>
     /\ inst[job.s] /\ folder[job.s] = job.oldCode
     /\ enabled[job.s]
     /\ (job.oldLive => reg[job.s] = "live")
 
-(* state.kept: "The state of a slug survives install, replace, reload, and remove." spec creation.tools; C:9-10; W:333. *)
+(* state.kept: "The state of a slug survives install, replace, reload, and remove." spec creation.tools; C:9-10; W:378. *)
 StateKept == \A s \in Slugs : everUsed[s] => state[s] = "used"
 
 (* program.new_seed: "After an install with a new seed program, the stored program is the new seed."  *)
-(* spec widget_fv.install; W:1068-1089. New: differs from the seed of the code that last went live.  *)
+(* spec widget_fv.install; W:1145-1166. New: differs from the seed of the code that last went live.  *)
 NewSeedSetsProgram ==
   (job.pc = "ok" /\ job.op # "remove" /\ job.s \in AgentSlugs /\ Seed(job.c) # job.prevSeed) =>
     (prog[job.s] \in {Seed(job.c), None} \/ job.edited)
 
 (* program.same_seed: "After an install with the same seed, an edited stored program stays." spec       *)
-(* widget_fv.install; W:1068-1089, W:970-981; the load of the job is the writer (InstallBundle `wrote`); *)
+(* widget_fv.install; W:1145-1166, W:1045-1057; the load of the job is the writer (InstallBundle `wrote`); *)
 (* tools/widgets-create.mjs "a reinstall of the same seed program leaves the stored program alone".     *)
 SameSeedKeepsProgram ==
   (job.pc = "ok" /\ job.op # "remove" /\ job.s \in AgentSlugs /\ Seed(job.c) = job.prevSeed /\ job.editedAtStart)
@@ -578,7 +613,7 @@ SameSeedKeepsProgram ==
 
 (* builtin.untouched: "A built-in widget is never replaced or removed by an agent tool." spec creation.rows: *)
 (* "an agent bundle cannot use the row id of a built-in widget". At aa7cd518 the agent bundle of slug      *)
-(* sample had the row id deepwidgets-widget-sample. Since widget.agent_rows, bundleName (C:161) gives       *)
+(* sample had the row id deepwidgets-widget-sample. Since widget.agent_rows, bundleName (C:164) gives       *)
 (* deepwidgets-agent-sample. The BuiltIn branch of Load still describes aa7cd518 (SKILL.md, open point).    *)
 BuiltInUntouched == reg[BuiltIn] = "none"   \* no agent registration of the built-in slug ever runs
 
@@ -589,15 +624,31 @@ OneBundlePerSlug ==
                    \/ (x = "agent" /\ reg[s] \in {"live", "failed"})
                    \/ (x = "builtin" /\ s = BuiltIn /\ sampleOn)}) <= 1
 
-(* slug.taken_only_builtin: slug-taken only when a live widget that is not an agent bundle has the slug. *)
-(* spec widget_phase2.creation.rows and widget_fv.install; C:562-565.                                  *)
+(* slug.taken_only_builtin: slug-taken only for the slug of a built-in widget (widget.builtin_slugs),  *)
+(* or when a live widget that is not an agent bundle has the slug.                                      *)
+(* spec widget_phase2.creation.rows and widget_fv.install; C:570-572.                                  *)
 SlugTakenOnlyForBuiltIn ==
   (job.pc = "err" /\ job.err = "slug-taken") => job.builtinHeld
 
 (* quarantine.holds: "A quarantined widget comes back only when the hash of its files changes."       *)
-(* spec widget_phase2.isolation.supervisor and widget_fv.install; I:1-19. The blamed files are not   *)
+(* spec widget_phase2.isolation.supervisor and widget_fv.install; I:1-20. The blamed files are not   *)
 (* live while installed.                                                                              *)
 QuarantineHolds ==
   \A s \in AgentSlugs : ~(reg[s] = "live" /\ runBlamed[s])
+
+(* rollback.keeps_record: "A rolled-back install leaves the stored program and its seed hash as they   *)
+(* were before the install." spec widget_fv.install; C:598-600, C:645-648. A user edit after the snapshot of  *)
+(* the job is a newer write, so it is out of the rule. So is a failed bundle that could not be removed  *)
+(* and still runs (newLeft): it is not rolled back. FailedReplaceKeepsOld covers that path. The rule   *)
+(* holds once the record is put back: at the end of a failed first install, and before the old bundle *)
+(* of a replace loads again. That load follows the seed rule of any load, as a host start does.       *)
+RollbackKeepsRecord ==
+  (\/ job.pc \in {"restoreRename", "restoreInstall"}
+   \/ (job.pc = "err" /\ ~job.replaced)) /\ job.beforeP # "unset" /\ ~job.editAfter /\ ~job.newLeft =>
+    (prog[job.s] = job.beforeP /\ pseed[job.s] = job.beforeS)
+
+(* builtin.reserved: "The slug of a built-in widget is reserved. widget_install gives slug-taken for   *)
+(* that slug, also when the built-in widget is off." spec widget_fv.install (widget.builtin_slugs).  *)
+BuiltInSlugReserved == ~inst[BuiltIn]
 
 =============================================================================

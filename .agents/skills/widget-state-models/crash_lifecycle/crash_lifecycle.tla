@@ -1,9 +1,9 @@
 --------------------------- MODULE crash_lifecycle ---------------------------
 (***************************************************************************)
-(* crash_lifecycle: the outermost state machine of deepWidgets at bec38c1e. *)
+(* crash_lifecycle: the outermost state machine of deepWidgets at SYNCSHA. *)
 (* Host process + crash.json/provisional.json + quarantine.json + the       *)
 (* watchdog thread + the Electron-main supervisor (HostCrashPolicy).        *)
-(* Code refs (path:line at bec38c1e):                                       *)
+(* Code refs (path:line at SYNCSHA):                                       *)
 (*   SUP  = apps/desktop/src/deepwidgets-supervisor.ts                      *)
 (*   POL  = apps/desktop/src/deepwidgets-crash-policy.ts                    *)
 (*   ISO  = deepwidgets/widgets/src/isolation.ts                            *)
@@ -52,7 +52,7 @@ VARIABLES
   beat,       \* WD:123 the main thread bumped the heartbeat since the last poll
   stall,      \* WDW:165 poll steps since the last beat
   provAt,     \* WDW:143 provisionalAt !== undefined
-  registered, \* ISO:322 track(): agent rows whose package folder the Host knows
+  registered, \* ISO:346 track(): agent rows whose package folder the Host knows
   loaded,     \* per row: "absent" | "live" | "held" (quarantined) | "off" (safe mode)
   crash,      \* $DSH_HOME/deepwidgets/crash.json (+ ghost death/running of its Host)
   prov,       \* $DSH_HOME/deepwidgets/provisional.json (+ ghost death/running)
@@ -70,11 +70,11 @@ mainVars == <<run, slot, beat, stall, provAt, registered, loaded>>
 supVars == <<sup, armed, safeMode, timer, policy, launches, unbl, lastCount, last>>
 
 Alive == host.phase \in {"spawned", "booting", "ready"}
-Started == host.phase \in {"booting", "ready"}  \* the isolation ran (ISO:183)
+Started == host.phase \in {"booting", "ready"}  \* the isolation ran (ISO:193)
 
-\* A record as ISO:291-302 (claimer) and WDW:108-122 (watchdog) write it.
+\* A record as ISO:315-326 (claimer) and WDW:108-122 (watchdog) write it.
 \* hash is -1 (null) when the Host does not know the row's package folder:
-\* root comes only from track() (ISO:289-290, WD:113,141).
+\* root comes only from track() (ISO:313-314, WD:113,141).
 Record(row) == [kind |-> "rec", pid |-> host.pid, row |-> row,
                 hash |-> IF row # None /\ (row \in registered \/ row = Sample) THEN hash[row] ELSE -1,
                 trueHash |-> IF row = None THEN -1 ELSE hash[row],
@@ -103,25 +103,25 @@ Init ==
   /\ ghostQ = [w \in Widgets |-> -1]
 
 (***************************************************************************)
-(* Host boot: the widgets runtime row creates the isolation (ISO:183-231).   *)
+(* Host boot: the widgets runtime row creates the isolation (ISO:193-241).   *)
 (***************************************************************************)
 IsolationStart ==
   /\ host.phase = "spawned"
   /\ LET c == crash
-         applyC == c # NoRec /\ ~c.applied                                \* ISO:201-202
+         applyC == c # NoRec /\ ~c.applied                                \* ISO:211-212
          q1 == IF applyC /\ c.row # None /\ Mutant # "no_quarantine" THEN [quar EXCEPT ![c.row] = QEntry(c, "crash")] ELSE quar
-         c1 == IF applyC THEN [c EXCEPT !.applied = TRUE] ELSE c          \* ISO:199
+         c1 == IF applyC THEN [c EXCEPT !.applied = TRUE] ELSE c          \* ISO:209
          p == prov
-         applyP == p # NoRec /\ ~p.applied /\ p.pid # host.pid           \* ISO:208-209
-         sameHost == c # NoRec /\ c.pid = p.pid                           \* ISO:210
+         applyP == p # NoRec /\ ~p.applied /\ p.pid # host.pid           \* ISO:218-219
+         sameHost == c # NoRec /\ c.pid = p.pid                           \* ISO:220
          q2 == IF applyP /\ ~sameHost /\ p.row # None THEN [q1 EXCEPT ![p.row] = QEntry(p, "prov")] ELSE q1
-         p1 == IF applyP THEN [p EXCEPT !.applied = TRUE] ELSE p          \* ISO:199,210
-         \* ISO:218-223 held(): files with a changed hash run, only when root and hash are known
+         p1 == IF applyP THEN [p EXCEPT !.applied = TRUE] ELSE p          \* ISO:209,220
+         \* ISO:228-233 held(): files with a changed hash run, only when root and hash are known
          lifted(w) == q2[w] # NoQ /\ q2[w].hash # -1 /\ q2[w].hash # hash[w]
-         \* ISO:246-251 a held row loads as failed; IDX:1094 safe mode turns agent rows off
+         \* ISO:270-275 a held row loads as failed; IDX:1171 safe mode turns agent rows off
          status(w) == IF q2[w] # NoQ /\ ~lifted(w) THEN "held"
                       ELSE IF host.safe /\ w \in Agents THEN "off" ELSE "live"
-         \* ISO:226-231, ISO:252-262 lift(): the item goes only when the other files load with success.
+         \* ISO:236-241, ISO:276-287 lift(): the item goes only when the other files load with success.
          \* A safe-mode refusal throws, so the item stays (widget_fv.install).
          q3 == [w \in Widgets |-> IF lifted(w) /\ status(w) = "live" THEN NoQ ELSE q2[w]]
          newQ(w) == IF applyP /\ ~sameHost /\ p.row = w THEN p.trueHash
@@ -144,7 +144,7 @@ HostReady ==
 (***************************************************************************)
 (* Main thread.                                                            *)
 (***************************************************************************)
-\* Widget code starts: inside runAs (slot set: ISO:97, WD:40-48) or as an async
+\* Widget code starts: inside runAs (slot set: ISO:103, WD:40-48) or as an async
 \* continuation that keeps the blame store but not the slot (WD:11-12).
 RunWidget(w, slotted) ==
   /\ Started /\ run = None /\ loaded[w] = "live"
@@ -152,7 +152,7 @@ RunWidget(w, slotted) ==
   /\ UNCHANGED <<supVars, host, nextPid, beat, stall, provAt, registered, loaded,
                  crash, prov, quar, hash, ghostQ>>
 
-\* The agent widget registers a slug: track() gives the Host its package folder (ISO:322-328).
+\* The agent widget registers a slug: track() gives the Host its package folder (ISO:346-352).
 Register(w) ==
   /\ Started /\ run = w /\ w \notin registered
   /\ registered' = registered \cup {w}
@@ -221,7 +221,7 @@ WatchdogKill ==
   /\ Die("wdkill")
   /\ UNCHANGED <<supVars, nextPid, registered, loaded, quar, hash, ghostQ>>
 
-\* ISO:283-310 claimer: uncaught exception or unhandled rejection; the store
+\* ISO:307-334 claimer: uncaught exception or unhandled rejection; the store
 \* names the row whose code runs (sync or async); crash.json; exit(1).
 Throw ==
   /\ Started
@@ -361,7 +361,7 @@ Spec == Init /\ [][Next]_vars
 BlamedCrashNeverCounts == last.blamed => ~last.added
 
 \* SafeModeAfterTwo (SPEC:40; POL:13-14): 2 unblamed crashes in the window start safe mode,
-\* and the next Host starts in that mode (main.ts:549, IDX:587).
+\* and the next Host starts in that mode (main.ts:549, IDX:662).
 SafeModeAfterTwo ==
   /\ (sup = "run" /\ last # NoDecision) => (safeMode <=> lastCount >= 2)
   /\ (Alive /\ sup = "run") => (host.safe <=> safeMode)
@@ -370,10 +370,10 @@ GiveUpAtFour == (lastCount >= 4) <=> (sup = "gaveUp")
 \* NoRestartAfterGiveUp (SUP:186-192): the supervisor never restarts the Host after the give-up.
 NoRestartAfterGiveUp == sup = "gaveUp" => (host = NoHost /\ timer = -1)
 
-\* QuarantinedNeverRuns (SPEC:36-38; ISO:8-11): a quarantined agent widget never runs until its hash changes.
+\* QuarantinedNeverRuns (SPEC:36-38; ISO:8-12): a quarantined agent widget never runs until its hash changes.
 QuarantinedNeverRuns ==
   \A w \in Agents : (run = w \/ loaded[w] = "live") => ~(ghostQ[w] # -1 /\ ghostQ[w] = hash[w])
-\* HashChangeLifts (SPEC:38; ISO:214-223): after a hash change, it can run again (it is not held).
+\* HashChangeLifts (SPEC:38; ISO:224-233): after a hash change, it can run again (it is not held).
 HashChangeLifts ==
   \A w \in Agents : (Started /\ loaded[w] = "held") => ghostQ[w] = hash[w]
 
@@ -385,7 +385,7 @@ SampleLiveInSafeMode == (Started /\ host.safe) => loaded[Sample] = "live"
 \* RecordOnlyBlamesItsHost (SUP:52-55,65-66; ISO:8): a record blames only the crash of the Host that wrote it.
 RecordOnlyBlamesItsHost == last.blamed => (last.pid # 0 /\ last.srcPid = last.pid)
 
-\* ProvisionalOnlyOnAbort (SUP:81-86; ISO:203-207): a provisional record blames only after an abort.
+\* ProvisionalOnlyOnAbort (SUP:81-86; ISO:213-217): a provisional record blames only after an abort.
 ProvisionalOnlyOnAbort ==
   /\ last.src = "prov" => last.death = "abort"
   /\ \A w \in Widgets : quar[w].src = "prov" => quar[w].death = "abort"

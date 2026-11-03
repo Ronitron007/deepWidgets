@@ -6,11 +6,15 @@
  * asserts the rule of `widget_fv.install`:
  * - newseed: a first install that throws in the host is rolled back with its program record, and the next new seed is stored;
  * - sameseed: a host crash after the new bundle is live does not make a reinstall of the same code overwrite an edit;
- * - quarantine: a failed reinstall and its rollback keep the quarantine, and files with another hash that load end it;
+ * - rollback: a reinstall that throws after it registers leaves the user edit and the seed hash of the old version;
+ * - quarantine: a failed reinstall, a live-wait timeout, and their rollbacks keep the quarantine, and files with another
+ *   hash that install with success end it;
  * - safe: in safe mode, remove and install clear the off entry of an agent slug, and only a live widget that is not an
- *   agent bundle gives slug-taken.
+ *   agent bundle gives slug-taken;
+ * - reserved: the slug of a built-in widget gives slug-taken, also while the built-in is off;
+ * - guard: widget code can not use the install records.
  *
- * Usage: node tools/widgets-install-replay.mjs [newseed|sameseed|quarantine|safe ...]. With no name, it runs all four.
+ * Usage: node tools/widgets-install-replay.mjs [newseed|sameseed|rollback|quarantine|safe|reserved|guard ...]. With no name, it runs all of them.
  * Prints `widgets-install-replay: pass` and exits 0 only when each replay passes.
  * Needs `corepack pnpm run build:artifacts` first. It does not use port 47615.
  */
@@ -20,7 +24,7 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const REPLAYS = join(ROOT, '.agents/skills/widget-state-models/widget_install/replay')
-const ALL = ['newseed', 'sameseed', 'quarantine', 'safe']
+const ALL = ['newseed', 'sameseed', 'rollback', 'quarantine', 'safe', 'reserved', 'guard']
 
 const names = process.argv.slice(2)
 const unknown = names.filter((name) => !ALL.includes(name))

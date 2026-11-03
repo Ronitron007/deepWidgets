@@ -32,9 +32,15 @@ export const Config: Schema<Config> = Schema.object({
   tickMs: Schema.natural().default(0),
 })
 
+/**
+ * The slugs that this built-in bundle registers. The widget runtime reads them to reserve them, also while the row
+ * is off (`widget.builtin_slugs`).
+ */
+export const widgetSlugs = ['sample'] as const
+
 export function apply(ctx: Context, config: Config): void {
   ctx.widgets.register({
-    slug: 'sample',
+    slug: widgetSlugs[0],
     title: 'Sample',
     program: PROGRAM,
     initialState: { count: 0 } satisfies SampleState,

@@ -8,7 +8,8 @@
  * it matches the stack against the package folder of each widget row. It writes `$DSH_HOME/deepwidgets/crash.json`
  * with a synchronous write and exits the host at once. The next host reads the record and does not run the blamed
  * row while its package files have the blamed hash. The quarantine ends only when files with a different hash load
- * with success (`widget_fv.install`): a failed load and the rollback to the blamed files keep it.
+ * with success (`widget_fv.install`): a failed load and the rollback to the blamed files keep it. During a
+ * `widget_install` of the slug, it ends only when the whole install succeeds.
  *
  * The watchdog (`widget_phase2.isolation.watchdog`, `watchdog.ts`) writes the same record when the main thread stalls,
  * and a provisional record at a quarter of its threshold. The next host applies both through the same quarantine.
@@ -88,6 +89,11 @@ export function widgetRow(fiber: Fiber): string | undefined {
 export function agentRow(fiber: Fiber): boolean {
   const id = ownerEntry(fiber)?.options.id
   return typeof id === 'string' && AGENT_ROW.test(id)
+}
+
+/** The widget row whose code runs now, or undefined outside widget code. */
+export function runningRow(): string | undefined {
+  return blameStore.getStore()
 }
 
 /**
@@ -174,6 +180,10 @@ export interface Isolation {
   track(row: string, root: string | undefined, slug: string): void
   /** The quarantined rows of this start. */
   quarantined(): Quarantine[]
+  /** widget_fv.install: an install of `slug` starts. A row of the slug that loads other files keeps its quarantine. */
+  holdLift(slug: string): void
+  /** widget_fv.install: the install of `slug` ends. With `ok`, the rows of the slug that loaded other files leave the quarantine. */
+  settleLift(slug: string, ok: boolean): void
 }
 
 /**
@@ -230,6 +240,20 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
     ctx.logger.info(`widgets: the row ${row} left the quarantine: files with another hash loaded with success`)
   }
 
+  // widget_fv.install: the slugs with a running install, and the rows that loaded other files during one.
+  const installing = new Set<string>()
+  const pending = new Set<string>()
+  /** Whether the quarantine item of `row` is for `slug`: by its slugs, or by the agent row id of the slug. */
+  const ofSlug = (row: string, item: Quarantine, slug: string): boolean =>
+    item.slugs.includes(slug) || row === `deepwidgets-agent-${slug}` || row.endsWith(`:deepwidgets-agent-${slug}`)
+  /** Files of a quarantined `row` with another hash loaded with success. Lift now, or after the install of its slug. */
+  function loaded(row: string): void {
+    const item = quarantine.get(row)
+    if (item === undefined) return
+    if ([...installing].some((slug) => ofSlug(row, item, slug))) pending.add(row)
+    else lift(row)
+  }
+
   // ---- the store around the plugin body of each widget fiber ----
   // Cordis has no documented hook around a plugin body. The fiber runner `execute` runs the body on each load,
   // so the runtime wraps it (vendor/cordis/src/fiber.ts). A held row loads with no effect but the failed slugs.
@@ -254,11 +278,11 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
       if (!quarantine.has(row)) return effect
       if (effect !== null && typeof effect === 'object' && 'then' in effect && typeof effect.then === 'function') {
         return (effect as PromiseLike<unknown>).then((value) => {
-          lift(row)
+          loaded(row)
           return value
         })
       }
-      lift(row)
+      loaded(row)
       return effect
     }
   }
@@ -327,5 +351,18 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
       watchdog.track(row, item.root, [...item.slugs])
     },
     quarantined: () => [...quarantine.values()],
+    holdLift(slug) {
+      installing.add(slug)
+    },
+    settleLift(slug, ok) {
+      installing.delete(slug)
+      for (const row of [...pending]) {
+        const item = quarantine.get(row)
+        if (item !== undefined && !ofSlug(row, item, slug)) continue
+        pending.delete(row)
+        // The files that loaded must still be in place: the blamed hash never leaves the quarantine.
+        if (ok && item !== undefined && (item.root === null || item.hash === null || packageHash(item.root) !== item.hash)) lift(row)
+      }
+    },
   }
 }
