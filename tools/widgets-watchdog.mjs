@@ -9,7 +9,12 @@
  * - stall: a 900 ms stall in a widget action writes the provisional record, which goes when the heartbeat comes back.
  * - spin: a loop in a widget action kills the host within 2.5 s. The crash record blames the widget, and the next
  *   host shows the widget as failed while `sample` stays live.
- * - oom: a stall, then an out-of-memory abort. Only the provisional record blames it, and the next host applies it.
+ * - oom: a stall, then fast allocation. The out-of-memory abort (provisional record) and the stall kill (crash record)
+ *   both blame the widget. The case checks the result: the host died, a record blames the widget, and the next host
+ *   has the widget quarantined.
+ * Environment: WIDGETS_WATCHDOG_CASES (comma list, such as `oom`) runs only those cases after the install.
+ * WIDGETS_WATCHDOG_OOM_HEAP_MB sets --max-old-space-size of the oom host (default 768). A large value, such as 6144,
+ * forces the stall-kill path.
  * Prints `widgets-watchdog: pass` and exits 0 only when every check passes.
  * Needs `corepack pnpm run build:artifacts` first.
  */
@@ -36,6 +41,17 @@ const WIDGET = 'deepwidgets-widget-watchdog'
 const KILL_WITHIN_MS = 2_500
 /** True when the Loader row id `row` (with the ids of its parent rows) ends in the row id `id`. */
 const isRow = (row, id) => typeof row === 'string' && (row === id || row.endsWith(`:${id}`))
+/** The cases to run. All cases when WIDGETS_WATCHDOG_CASES is not set. */
+const CASES = process.env.WIDGETS_WATCHDOG_CASES?.split(',').map((name) => name.trim()).filter((name) => name !== '')
+const runs = (name) => CASES === undefined || CASES.length === 0 || CASES.includes(name)
+const CASE_NAMES = ['parse', 'suspend', 'stall', 'spin', 'oom']
+const unknownCases = (CASES ?? []).filter((name) => !CASE_NAMES.includes(name))
+if (unknownCases.length > 0) {
+  console.log(`widgets-watchdog: fail: unknown case in WIDGETS_WATCHDOG_CASES: ${unknownCases.join(', ')} (known: ${CASE_NAMES.join(', ')})`)
+  process.exit(1)
+}
+/** The heap limit of the oom host, in MB. */
+const OOM_HEAP_MB = process.env.WIDGETS_WATCHDOG_OOM_HEAP_MB ?? '768'
 
 function check(name, ok, detail = '') {
   results.push({ name, ok: Boolean(ok) })
@@ -152,7 +168,9 @@ async function installBundle(inspectPort, folder) {
         if (this.length !== 1) throw new Error("Loader instances " + this.length);
         const manager = this[0].ctx?.get?.("pluginManager");
         if (manager === undefined) throw new Error("no pluginManager on the Loader ctx");
-        return await manager.installBundle(spec);
+        // The inspector call can inherit the hmr transaction store of host work in flight; leave it, as hmr.watchConfig does.
+        const hmr = this[0].ctx?.get?.("hmr");
+        return await (hmr === undefined ? manager.installBundle(spec) : hmr.executing.exit(() => manager.installBundle(spec)));
       }`,
     })
     return reply.result.value
@@ -200,131 +218,164 @@ async function main() {
   }
 
   // parse: one long synchronous step of healthy host code.
-  clearState()
-  host = await startHost(port, inspectPort)
-  try {
-    await live(host)
-    const prepared = await host.post('/api/watchdoghost/prepare', { mb: 150 })
-    check('parse: the host built a 150 MB text', prepared.status === 200 && prepared.body?.mb >= 150, JSON.stringify(prepared.body))
-    const parsed = await host.post('/api/watchdoghost/parse', {})
-    await sleep(2_500)
-    const crash = readState('crash.json')
-    check('parse: a 150 MB JSON.parse does not kill the host', parsed.status === 200 && alive(host) && crash?.pid !== host.child.pid,
-      JSON.stringify({ parse: parsed.body, alive: alive(host), crash: crash === undefined ? null : { pid: crash.pid, event: crash.event } }))
-    check('parse: host code writes no provisional record', readState('provisional.json') === undefined)
-  } finally {
-    await host.stop()
+  if (runs('parse')) {
+    clearState()
+    host = await startHost(port, inspectPort)
+    try {
+      await live(host)
+      const prepared = await host.post('/api/watchdoghost/prepare', { mb: 150 })
+      check('parse: the host built a 150 MB text', prepared.status === 200 && prepared.body?.mb >= 150, JSON.stringify(prepared.body))
+      const parsed = await host.post('/api/watchdoghost/parse', {})
+      await sleep(2_500)
+      const crash = readState('crash.json')
+      check('parse: a 150 MB JSON.parse does not kill the host', parsed.status === 200 && alive(host) && crash?.pid !== host.child.pid,
+        JSON.stringify({ parse: parsed.body, alive: alive(host), crash: crash === undefined ? null : { pid: crash.pid, event: crash.event } }))
+      check('parse: host code writes no provisional record', readState('provisional.json') === undefined)
+    } finally {
+      await host.stop()
+    }
   }
 
   // suspend: the whole process does not run, so no stall is proven. The watchdog must not kill.
-  clearState()
-  host = await startHost(port, inspectPort)
-  try {
-    await live(host)
-    const pid = host.child.pid
-    const probe = await host.post('/api/widgets/watchdog/call', { action: 'work', args: { n: 5_000_000 } })
-    const perMs = 5_000_000 / Math.max(1, probe.body?.result?.ms ?? 1)
-    // About 1 s of work: 0.3 s before the stop, and about 0.7 s after the SIGCONT.
-    const n = Math.round(perMs * 1_000)
-    const cycles = []
-    for (let cycle = 1; cycle <= 10 && alive(host); cycle += 1) {
-      const busy = cycle % 2 === 0
-      const call = busy ? host.post('/api/widgets/watchdog/call', { action: 'work', args: { n } }) : undefined
-      if (busy) await sleep(300)
-      process.kill(pid, 'SIGSTOP')
-      await sleep(4_000)
-      process.kill(pid, 'SIGCONT')
-      const answer = await call
-      await sleep(1_000)
-      cycles.push({ cycle, busy, alive: alive(host), status: answer?.status })
+  if (runs('suspend')) {
+    clearState()
+    host = await startHost(port, inspectPort)
+    try {
+      await live(host)
+      const pid = host.child.pid
+      const probe = await host.post('/api/widgets/watchdog/call', { action: 'work', args: { n: 5_000_000 } })
+      const perMs = 5_000_000 / Math.max(1, probe.body?.result?.ms ?? 1)
+      // About 1 s of work: 0.3 s before the stop, and about 0.7 s after the SIGCONT.
+      const n = Math.round(perMs * 1_000)
+      const cycles = []
+      for (let cycle = 1; cycle <= 10 && alive(host); cycle += 1) {
+        const busy = cycle % 2 === 0
+        const call = busy ? host.post('/api/widgets/watchdog/call', { action: 'work', args: { n } }) : undefined
+        if (busy) await sleep(300)
+        process.kill(pid, 'SIGSTOP')
+        await sleep(4_000)
+        process.kill(pid, 'SIGCONT')
+        const answer = await call
+        await sleep(1_000)
+        cycles.push({ cycle, busy, alive: alive(host), status: answer?.status })
+      }
+      await sleep(2_500)
+      const crash = readState('crash.json')
+      check('suspend: 10 cycles of SIGSTOP for 4 s, then SIGCONT, do not kill the host',
+        cycles.length === 10 && cycles.every((item) => item.alive && (!item.busy || item.status === 200)) && alive(host) && crash?.pid !== pid,
+        JSON.stringify({ workMs: probe.body?.result?.ms, cycles, crash: crash === undefined ? null : { pid: crash.pid, message: crash.error?.message } }))
+      check('suspend: no provisional record is left', readState('provisional.json') === undefined)
+    } finally {
+      await host.stop()
     }
-    await sleep(2_500)
-    const crash = readState('crash.json')
-    check('suspend: 10 cycles of SIGSTOP for 4 s, then SIGCONT, do not kill the host',
-      cycles.length === 10 && cycles.every((item) => item.alive && (!item.busy || item.status === 200)) && alive(host) && crash?.pid !== pid,
-      JSON.stringify({ workMs: probe.body?.result?.ms, cycles, crash: crash === undefined ? null : { pid: crash.pid, message: crash.error?.message } }))
-    check('suspend: no provisional record is left', readState('provisional.json') === undefined)
-  } finally {
-    await host.stop()
   }
 
   // stall: shorter than the threshold. The provisional record comes, then goes.
-  clearState()
-  host = await startHost(port, inspectPort)
-  try {
-    await live(host)
-    const call = host.post('/api/widgets/watchdog/call', { action: 'stall', args: { ms: 900 } })
-    let seen
-    const end = Date.now() + 5_000
-    while (Date.now() < end && seen === undefined) {
-      const record = readState('provisional.json')
-      if (record?.pid === host.child.pid) seen = record
-      else await sleep(20)
+  if (runs('stall')) {
+    clearState()
+    host = await startHost(port, inspectPort)
+    try {
+      await live(host)
+      const call = host.post('/api/widgets/watchdog/call', { action: 'stall', args: { ms: 900 } })
+      let seen
+      const end = Date.now() + 5_000
+      while (Date.now() < end && seen === undefined) {
+        const record = readState('provisional.json')
+        if (record?.pid === host.child.pid) seen = record
+        else await sleep(20)
+      }
+      const answer = await call
+      await sleep(500)
+      check('stall: the provisional record blames the widget', isRow(seen?.row, WIDGET) && seen?.event === 'provisional-stall' && seen?.slugs?.includes('watchdog'),
+        JSON.stringify({ row: seen?.row, method: seen?.method, event: seen?.event }))
+      check('stall: the record goes when the heartbeat comes back, and the host lives',
+        answer.status === 200 && alive(host) && readState('provisional.json') === undefined && readState('crash.json') === undefined, JSON.stringify(answer.body))
+    } finally {
+      await host.stop()
     }
-    const answer = await call
-    await sleep(500)
-    check('stall: the provisional record blames the widget', isRow(seen?.row, WIDGET) && seen?.event === 'provisional-stall' && seen?.slugs?.includes('watchdog'),
-      JSON.stringify({ row: seen?.row, method: seen?.method, event: seen?.event }))
-    check('stall: the record goes when the heartbeat comes back, and the host lives',
-      answer.status === 200 && alive(host) && readState('provisional.json') === undefined && readState('crash.json') === undefined, JSON.stringify(answer.body))
-  } finally {
-    await host.stop()
   }
 
   // spin: a loop in an action.
-  clearState()
-  host = await startHost(port, inspectPort)
-  try {
-    await live(host)
-    const sent = Date.now()
-    void host.post('/api/widgets/watchdog/call', { action: 'spin' }).catch(() => undefined)
-    const exit = await Promise.race([host.exited, sleep(20_000).then(() => null)])
-    const record = readState('crash.json')
-    const detail = JSON.stringify({ exit: exit === null ? 'alive after 20 s' : exit.signal ?? exit.code, ms: exit === null ? null : exit.at - sent, row: record?.row, method: record?.method, event: record?.event, message: record?.error?.message })
-    check(`spin: the host dies within ${String(KILL_WITHIN_MS)} ms of the call`, exit !== null && exit.signal === 'SIGKILL' && exit.at >= sent && exit.at - sent <= KILL_WITHIN_MS, detail)
-    check('spin: the crash record blames the widget', isRow(record?.row, WIDGET) && record?.event === 'stall' && record?.pid === host.child.pid
-      && record?.applied === false && typeof record?.hash === 'string' && record?.slugs?.includes('watchdog'), detail)
-    check('spin: no provisional record is left', readState('provisional.json') === undefined)
-  } finally {
-    await host.stop()
-  }
-  host = await startHost(port, inspectPort)
-  try {
-    const failed = await waitFor(() => widgetIn(host, 'watchdog', (widget) => typeof widget.failed === 'string' && widget.failed.includes('stall')), 20_000)
-    const list = await host.getJson('/api/widgets')
-    check('spin: the next host lists the widget as failed with the reason', failed, JSON.stringify(list.body?.widgets?.find((w) => w.slug === 'watchdog')))
-    const call = await host.post('/api/widgets/watchdog/call', { action: 'stall', args: { ms: 1 } })
-    check('spin: a call gives 503 widget-failed', call.status === 503 && call.body?.error?.code === 'widget-failed', JSON.stringify(call))
-    const add = await host.post('/api/widgets/sample/call', { action: 'add', args: { by: 1 } })
-    check('spin: sample stays live', add.status === 200 && await widgetIn(host, 'sample', (widget) => widget.failed === undefined), JSON.stringify(add))
-    check('spin: the record is applied', readState('crash.json')?.applied === true)
-  } finally {
-    await host.stop()
+  if (runs('spin')) {
+    clearState()
+    host = await startHost(port, inspectPort)
+    try {
+      await live(host)
+      const sent = Date.now()
+      void host.post('/api/widgets/watchdog/call', { action: 'spin' }).catch(() => undefined)
+      const exit = await Promise.race([host.exited, sleep(20_000).then(() => null)])
+      const record = readState('crash.json')
+      const detail = JSON.stringify({ exit: exit === null ? 'alive after 20 s' : exit.signal ?? exit.code, ms: exit === null ? null : exit.at - sent, row: record?.row, method: record?.method, event: record?.event, message: record?.error?.message })
+      check(`spin: the host dies within ${String(KILL_WITHIN_MS)} ms of the call`, exit !== null && exit.signal === 'SIGKILL' && exit.at >= sent && exit.at - sent <= KILL_WITHIN_MS, detail)
+      check('spin: the crash record blames the widget', isRow(record?.row, WIDGET) && record?.event === 'stall' && record?.pid === host.child.pid
+        && record?.applied === false && typeof record?.hash === 'string' && record?.slugs?.includes('watchdog'), detail)
+      check('spin: no provisional record is left', readState('provisional.json') === undefined)
+    } finally {
+      await host.stop()
+    }
+    host = await startHost(port, inspectPort)
+    try {
+      const failed = await waitFor(() => widgetIn(host, 'watchdog', (widget) => typeof widget.failed === 'string' && widget.failed.includes('stall')), 20_000)
+      const list = await host.getJson('/api/widgets')
+      check('spin: the next host lists the widget as failed with the reason', failed, JSON.stringify(list.body?.widgets?.find((w) => w.slug === 'watchdog')))
+      const call = await host.post('/api/widgets/watchdog/call', { action: 'stall', args: { ms: 1 } })
+      check('spin: a call gives 503 widget-failed', call.status === 503 && call.body?.error?.code === 'widget-failed', JSON.stringify(call))
+      const add = await host.post('/api/widgets/sample/call', { action: 'add', args: { by: 1 } })
+      check('spin: sample stays live', add.status === 200 && await widgetIn(host, 'sample', (widget) => widget.failed === undefined), JSON.stringify(add))
+      check('spin: the record is applied', readState('crash.json')?.applied === true)
+    } finally {
+      await host.stop()
+    }
   }
 
-  // oom: a stall, then an out-of-memory abort. The abort runs no JavaScript, so only the provisional record blames it.
-  clearState()
-  host = await startHost(port, inspectPort, ['--max-old-space-size=768'])
-  try {
-    await live(host)
-    void host.post('/api/widgets/watchdog/call', { action: 'alloc' }).catch(() => undefined)
-    const exit = await Promise.race([host.exited, sleep(30_000).then(() => null)])
-    const provisional = readState('provisional.json')
-    const crash = readState('crash.json')
-    const detail = JSON.stringify({ exit: exit === null ? 'alive after 30 s' : exit.signal ?? exit.code, row: provisional?.row, event: provisional?.event, crash: crash?.event ?? null })
-    check('oom: the host aborts before the watchdog kill', exit !== null && exit.signal !== 'SIGKILL' && crash === undefined, detail)
-    check('oom: the provisional record of the dead host blames the widget', isRow(provisional?.row, WIDGET) && provisional?.pid === host.child.pid && provisional?.applied === false, detail)
-  } finally {
-    await host.stop()
-  }
-  host = await startHost(port, inspectPort)
-  try {
-    const failed = await waitFor(() => widgetIn(host, 'watchdog', (widget) => typeof widget.failed === 'string' && widget.failed.includes('provisional-stall')), 20_000)
-    const list = await host.getJson('/api/widgets')
-    check('oom: the next host lists the widget as failed', failed, JSON.stringify(list.body?.widgets?.find((w) => w.slug === 'watchdog')))
-    check('oom: the provisional record is applied', readState('provisional.json')?.applied === true)
-  } finally {
-    await host.stop()
+  // oom: a stall, then fast allocation. Two paths end the host, and both are correct (spec widget_fv.watchdog_check):
+  // - the out-of-memory abort. It runs no JavaScript, so only the provisional record blames the widget.
+  // - the stall kill at the threshold, when the allocation is slow (a busy machine or a large heap). The crash record
+  //   blames the widget.
+  // The case checks the result: the host died, a record of the dead host blames the widget, and the next host has
+  // the widget quarantined.
+  if (runs('oom')) {
+    clearState()
+    host = await startHost(port, inspectPort, [`--max-old-space-size=${OOM_HEAP_MB}`])
+    /** The file of the record that blames the widget, or undefined. */
+    let blamed
+    try {
+      await live(host)
+      const pid = host.child.pid
+      void host.post('/api/widgets/watchdog/call', { action: 'alloc' }).catch(() => undefined)
+      const exit = await Promise.race([host.exited, sleep(30_000).then(() => null)])
+      const provisional = readState('provisional.json')
+      const crash = readState('crash.json')
+      const crashBlames = isRow(crash?.row, WIDGET) && crash?.event === 'stall' && crash?.pid === pid && crash?.applied === false
+      const provisionalBlames = isRow(provisional?.row, WIDGET) && provisional?.event === 'provisional-stall' && provisional?.pid === pid && provisional?.applied === false
+      blamed = crashBlames ? 'crash.json' : provisionalBlames ? 'provisional.json' : undefined
+      const detail = JSON.stringify({
+        exit: exit === null ? 'alive after 30 s' : exit.signal ?? exit.code,
+        // The path from the observed end: the stall kill gives SIGKILL and a crash record, the out-of-memory abort
+        // gives SIGABRT and a provisional record. Any other end is `unknown`.
+        path: exit?.signal === 'SIGKILL' && crash !== undefined ? 'stall-kill'
+          : exit?.signal === 'SIGABRT' && provisional !== undefined ? 'out-of-memory'
+            : 'unknown',
+        heapMb: OOM_HEAP_MB,
+        crash: crash === undefined ? null : { row: crash.row, event: crash.event },
+        provisional: provisional === undefined ? null : { row: provisional.row, event: provisional.event },
+      })
+      check('oom: the host dies', exit !== null, detail)
+      check('oom: a provisional record or a crash record of the dead host blames the widget', blamed !== undefined, detail)
+    } finally {
+      await host.stop()
+    }
+    host = await startHost(port, inspectPort)
+    try {
+      const failed = await waitFor(() => widgetIn(host, 'watchdog', (widget) => typeof widget.failed === 'string' && widget.failed.includes('stall')), 20_000)
+      const list = await host.getJson('/api/widgets')
+      check('oom: the next host lists the widget as failed', failed, JSON.stringify(list.body?.widgets?.find((w) => w.slug === 'watchdog')))
+      const quarantine = readState('quarantine.json')
+      check('oom: the next host has the widget in the quarantine', Array.isArray(quarantine) && quarantine.some((item) => isRow(item?.row, WIDGET)), JSON.stringify(quarantine))
+      check('oom: the record that blames the widget is applied', blamed !== undefined && readState(blamed)?.applied === true, String(blamed))
+    } finally {
+      await host.stop()
+    }
   }
 }
 
