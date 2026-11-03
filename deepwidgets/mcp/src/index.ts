@@ -55,6 +55,7 @@ const NEXT_STEP: Record<ToolErrorCode, string> = {
   'invalid-args': 'Fix args to match the action args schema from widget_describe, then retry.',
   'handler-error': 'The action threw. Do not retry unchanged. Tell the user the message.',
   'timeout': 'The action ran past its limit and was aborted. Its later writes were refused. Read the state with widget_describe before you retry with the same requestId.',
+  'timeout-after-write': 'The action wrote, then ran past its limit. Its write landed at the rev in the error, and its later writes were refused. A retry with the same requestId gives this answer again. Read the state with widget_describe before you start a new operation.',
   'busy': 'Other writes on this widget held the queue. This call did not run. Retry shortly.',
   'idempotency-conflict': 'This requestId was used for a different call. Use a new requestId for a new operation.',
   'conflict': 'The slug already has a live registration. Pick another slug.',
@@ -76,6 +77,8 @@ interface ToolError {
   code: ToolErrorCode
   message: string
   nextStep: string
+  /** The state revision after the call, for `timeout-after-write`. */
+  rev?: number
   /** The creation gate that refused the code. */
   gate?: GateName
   diagnostics?: string[]
@@ -131,7 +134,7 @@ type TokenRow = z.infer<typeof tokenRowSchema>
 const hashToken = (token: string): string => createHash('sha256').update(token).digest('hex')
 
 /** True for an error of the widget runtime. The check is structural: the runtime class is not imported as a value. */
-function isWidgetError(error: unknown): error is Error & { code: WidgetErrorCode } {
+function isWidgetError(error: unknown): error is Error & { code: WidgetErrorCode, rev?: number | undefined } {
   if (!(error instanceof Error) || error.name !== 'WidgetError') return false
   const code = (error as { code?: unknown }).code
   return typeof code === 'string' && Object.hasOwn(NEXT_STEP, code)
@@ -167,8 +170,9 @@ function toolOk(body: Record<string, unknown>): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(body) }], structuredContent: body }
 }
 
-function toolError(code: ToolErrorCode, message: string, extra: { gate?: GateName | undefined, diagnostics?: string[] } = {}): CallToolResult {
+function toolError(code: ToolErrorCode, message: string, extra: { rev?: number | undefined, gate?: GateName | undefined, diagnostics?: string[] } = {}): CallToolResult {
   const error: ToolError = { code, message, nextStep: NEXT_STEP[code] }
+  if (extra.rev !== undefined) error.rev = extra.rev
   if (extra.gate !== undefined) error.gate = extra.gate
   if (extra.diagnostics !== undefined) error.diagnostics = extra.diagnostics
   return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error }) }], structuredContent: { error } }
@@ -339,7 +343,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     try {
       return toolOk(await run())
     } catch (error) {
-      if (isWidgetError(error)) return toolError(error.code, error.message)
+      if (isWidgetError(error)) return toolError(error.code, error.message, { rev: error.rev })
       if (error instanceof CreationError) return toolError(error.code, error.message, { gate: error.gate, diagnostics: error.diagnostics })
       ctx.logger.warn('mcp: a tool failed', error)
       return toolError('internal-error', error instanceof Error ? error.message : String(error))
@@ -396,6 +400,8 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       inputSchema: lenient(callInput),
     }, tool(callInput, async ({ slug, action, args, requestId }) => {
       const outcome = await widgets.call(slug, action, args ?? {}, { caller: agentId, ...(requestId === undefined ? {} : { requestId }) })
+      // widget_fv.action: a replay whose answer was lost says so, with the rev of its write.
+      if (outcome.resultLost === true) return { ...outcome, nextStep: 'The call wrote before a host restart, and its answer was lost. Read the state with widget_describe. Do not send this requestId again for a new operation.' }
       return { ...outcome }
     }))
 

@@ -105,6 +105,8 @@ export const WIDGET_ERROR_STATUS = {
   'invalid-args': 422,
   'handler-error': 500,
   'timeout': 504,
+  // widget_fv.action: the timeout fired after a write of the call landed. The error has the new rev.
+  'timeout-after-write': 504,
   'busy': 503,
   'idempotency-conflict': 409,
   'conflict': 409,
@@ -123,12 +125,15 @@ export class WidgetError extends Error {
   readonly status: number
   /** True when the failed call had already written the state. */
   wrote = false
+  /** The state revision after the call, for `timeout-after-write`. */
+  rev: number | undefined
 
-  constructor(code: WidgetErrorCode, message: string) {
+  constructor(code: WidgetErrorCode, message: string, rev?: number) {
     super(message)
     this.name = 'WidgetError'
     this.code = code
     this.status = WIDGET_ERROR_STATUS[code]
+    this.rev = rev
   }
 }
 
@@ -195,6 +200,11 @@ export interface CallOutcome {
   result: unknown
   rev: number
   replayed?: true
+  /**
+   * widget_fv.action: the call wrote, and its host stopped before its answer was stored.
+   * The retry does not run again, and `result` is null because the answer is not known.
+   */
+  resultLost?: true
 }
 
 /** Options of `call()`. */
@@ -216,14 +226,24 @@ export interface WidgetChange {
   rev?: number
 }
 
-const stateSchema = z.object({ rev: z.number().int().nonnegative(), data: z.unknown() }).strict()
+/**
+ * widget_fv.action: the request record of a mutation that wrote. It lands in the same write as
+ * the state, so a crash can not separate them. The storage domain has no write that spans two tables.
+ */
+const writeMarkSchema = z.object({ hash: z.string(), at: z.number(), rev: z.number() }).strict()
+const stateSchema = z.object({
+  rev: z.number().int().nonnegative(),
+  data: z.unknown(),
+  /** The write marks of this slug by request key. A mark older than `requestTtlMs` is void. */
+  requests: z.record(z.string(), writeMarkSchema).optional(),
+}).strict()
 const programSchema = z.object({ rev: z.number().int().nonnegative(), text: z.string(), updatedAt: z.number() }).strict()
 const requestSchema = z.object({
   hash: z.string(),
   at: z.number(),
   outcome: z.union([
     z.object({ ok: z.literal(true), result: z.unknown(), rev: z.number() }).strict(),
-    z.object({ ok: z.literal(false), code: z.enum(Object.keys(WIDGET_ERROR_STATUS) as [WidgetErrorCode, ...WidgetErrorCode[]]), message: z.string() }).strict(),
+    z.object({ ok: z.literal(false), code: z.enum(Object.keys(WIDGET_ERROR_STATUS) as [WidgetErrorCode, ...WidgetErrorCode[]]), message: z.string(), rev: z.number().optional() }).strict(),
   ]),
 }).strict()
 
@@ -240,6 +260,7 @@ export const widgetsDomain = defineDomain({
 
 type WidgetsDomain = Domain<typeof widgetsDomain>
 type StoredRequest = z.infer<typeof requestSchema>
+type WriteMark = z.infer<typeof writeMarkSchema>
 
 /** A checked definition, as the runtime keeps it. */
 interface Registration {
@@ -423,6 +444,15 @@ interface Run {
   /** True for a query: it cannot write. */
   readonly query: boolean
   wrote: boolean
+  /**
+   * True after a write of the run passed the abort check at its storage slot (widget_fv.action).
+   * From then on the timeout waits for the started writes and gives `timeout-after-write`.
+   */
+  committed: boolean
+  /** The writes of the run that started. The queue slot frees only after each one settles. */
+  readonly writes: Set<Promise<unknown>>
+  /** The request key of an idempotent call. Each write of the run stores its mark in the state record. */
+  readonly request?: { readonly key: string, readonly hash: string }
   /** True after the job left its queue slot. */
   settled: boolean
 }
@@ -437,7 +467,9 @@ const json = (status: number, body: unknown): Response => Response.json(body, { 
 const sseFrame = (message: unknown): Uint8Array => encoder.encode(`data: ${JSON.stringify(message)}\n\n`)
 
 function failure(error: unknown): Response {
-  if (error instanceof WidgetError) return json(error.status, { ok: false, error: { code: error.code, message: error.message } })
+  if (error instanceof WidgetError) {
+    return json(error.status, { ok: false, error: { code: error.code, message: error.message, ...(error.rev === undefined ? {} : { rev: error.rev }) } })
+  }
   return json(500, { ok: false, error: { code: 'handler-error', message: errorText(error) } })
 }
 
@@ -543,8 +575,10 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => async () => {
     stopping = true
     for (const open of [...events]) open.close()
-    // A job waits in the queue for at most its timeout and then runs for at most its timeout.
-    // The bound only guards against a defect: each admitted promise settles before it.
+    // A job waits in the queue for at most its timeout. It runs for at most its timeout, plus the
+    // time its started writes take to settle (widget_fv.action). A rename in progress on the disk
+    // can not be stopped, so a slow disk can keep the drain past the bound by one write. The domain
+    // close below still waits for that write on the domain write chain.
     const bound = 2 * longestTimeoutMs + 1_000
     let timer: ReturnType<typeof setTimeout> | undefined
     const drained = await Promise.race([
@@ -641,8 +675,41 @@ export function apply(ctx: Context, config: Config): void {
     })
   }
 
-  /** One durable state write. A write of a call that timed out is refused. */
-  async function write(entry: Entry, fn: (state: unknown) => unknown, run: Run): Promise<unknown> {
+  /** The write marks that are not older than `requestTtlMs`. */
+  const liveMarks = (marks: Record<string, WriteMark> | undefined, now: number): Record<string, WriteMark> =>
+    Object.fromEntries(Object.entries(marks ?? {}).filter(([, mark]) => now - mark.at <= requestTtlMs))
+
+  /** The live write mark of a request key, from the state record of any slug. */
+  function markOf(key: string): WriteMark | undefined {
+    const now = Date.now()
+    for (const [, record] of opened().table('state').entries()) {
+      const mark = record.requests?.[key]
+      if (mark !== undefined && now - mark.at <= requestTtlMs) return mark
+    }
+    return undefined
+  }
+
+  /** Wait until each started write of the run settled. A write that starts during the wait is waited for too. */
+  async function settleWrites(run: Run): Promise<void> {
+    for (let count = -1; count !== run.writes.size;) {
+      count = run.writes.size
+      await Promise.allSettled(run.writes)
+    }
+  }
+
+  /**
+   * One durable state write. A write of a call that timed out, or of a call that ended, is refused.
+   * The run keeps the write, so its queue slot frees only after the write settles (widget_fv.action).
+   */
+  function write(entry: Entry, fn: (state: unknown) => unknown, run: Run): Promise<unknown> {
+    if (run.signal?.aborted === true) return Promise.reject(new WidgetError('timeout', 'a write after the timeout was refused'))
+    if (run.settled) return Promise.reject(new WidgetError('handler-error', 'a write after the call ended was refused'))
+    const pending = writeNow(entry, fn, run)
+    run.writes.add(pending)
+    return pending
+  }
+
+  async function writeNow(entry: Entry, fn: (state: unknown) => unknown, run: Run): Promise<unknown> {
     await entry.seeded
     const table = (await ready).table('state')
     if (run.signal?.aborted === true) throw new WidgetError('timeout', 'a write after the timeout was refused')
@@ -652,7 +719,15 @@ export function apply(ctx: Context, config: Config): void {
       if (run.signal?.aborted === true) throw new WidgetError('timeout', 'a write after the timeout was refused')
       data = fn(current.data)
       if (data instanceof Promise) throw new TypeError('widgets: the update function must be synchronous')
-      return { rev: current.rev + 1, data }
+      // widget_fv.action: the commit point. The run timer reads `committed` on the same thread,
+      // so a write that passes here lands, and its call gives `timeout-after-write`, not `timeout`.
+      run.committed = true
+      const rev = current.rev + 1
+      const now = Date.now()
+      const requests = liveMarks(current.requests, now)
+      // The request record lands in this write, with the state (widget_fv.action).
+      if (run.request !== undefined) requests[run.request.key] = { hash: run.request.hash, at: now, rev }
+      return Object.keys(requests).length === 0 ? { rev, data } : { rev, data, requests }
     })
     run.wrote = true
     logChange({ slug: entry.slug, kind: 'state', by: run.by, ...(run.action === undefined ? {} : { action: run.action }), rev: stored.rev })
@@ -663,6 +738,9 @@ export function apply(ctx: Context, config: Config): void {
    * update() from a timer, a plugin, or a handler that calls `ctx.widgets.update`.
    * A write from a call that timed out is refused, whatever its slug. A write from a running
    * mutation of the same slug uses the slot of that mutation. Each other write waits in the queue.
+   * By design, a write from the async context of a call that already answered (for example, a
+   * timer that the handler started) is a new write, not a write of that call: it gets its own run
+   * and waits in the queue (widget_fv.action).
    */
   function update(slug: string, fn: (state: unknown) => unknown, by: string): Promise<unknown> {
     const entry = liveEntry(slug)
@@ -672,12 +750,17 @@ export function apply(ctx: Context, config: Config): void {
       if (current.run.query) return Promise.reject(new WidgetError('handler-error', `the query ${String(current.run.action)} cannot write`))
       return write(entry, fn, current.run)
     }
-    const run: Run = { signal: undefined, by, action: undefined, query: false, wrote: false, settled: false }
+    const run: Run = { signal: undefined, by, action: undefined, query: false, wrote: false, committed: false, writes: new Set(), settled: false }
     return enqueue(entry, timeoutOf(entry), run, () => write(entry, fn, run))
   }
 
   // ---- calls ----
-  /** Run one handler with its timeout. At the timeout, abort `w.signal` and reject with `timeout`. */
+  /**
+   * Run one handler with its timeout (widget_fv.action). At the timeout, abort `w.signal`, so each
+   * later write of the call is refused. A call with no committed write rejects with `timeout` at once.
+   * A call with a committed write waits only for its started writes to settle. Then it rejects with
+   * `timeout-after-write` and the new rev. It does not wait for the handler.
+   */
   async function execute(entry: Entry, action: WidgetAction<unknown>, args: unknown, run: Run & { signal: AbortSignal }, abort: () => void): Promise<unknown> {
     const timeoutMs = timeoutOf(entry, action)
     const scope: WidgetScope<unknown> = {
@@ -688,16 +771,36 @@ export function apply(ctx: Context, config: Config): void {
       },
       signal: run.signal,
     }
+    const late = `${entry.slug}.${action.name} took longer than ${String(timeoutMs)} ms`
     let timer: ReturnType<typeof setTimeout> | undefined
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         abort()
-        reject(new WidgetError('timeout', `${entry.slug}.${action.name} took longer than ${String(timeoutMs)} ms`))
+        if (!run.committed) {
+          reject(new WidgetError('timeout', late))
+          return
+        }
+        void settleWrites(run).then(() => {
+          // A committed write whose storage write failed wrote nothing: that call gives `timeout`.
+          if (!run.wrote) reject(new WidgetError('timeout', late))
+          else reject(new WidgetError('timeout-after-write', `${late}; its write landed at rev ${String(stateOf(entry.slug)?.rev ?? 0)}, and its later writes are refused`, stateOf(entry.slug)?.rev ?? 0))
+        })
       }, timeoutMs)
     })
+    // widget_phase2.isolation.blame: the handler runs in the blame store of its widget row.
+    // After the timeout fired, the handler outcome does not count: the timeout answer wins.
+    const handled = Promise.resolve().then(() => runAs(entry.registration.row, () => action.handler(args, scope))).then(
+      (value) => (run.signal.aborted ? timeout : value),
+      (error: unknown) => {
+        if (run.signal.aborted) return timeout
+        // widget_fv.action: a WidgetError from the handler, such as the error of a nested
+        // ctx.widgets.call, is not an answer of this call. Its code and rev do not pass through.
+        if (error instanceof WidgetError) throw new WidgetError('handler-error', `${error.code}: ${error.message}`)
+        throw error instanceof Error ? error : new Error(String(error))
+      },
+    )
     try {
-      // widget_phase2.isolation.blame: the handler runs in the blame store of its widget row.
-      return await Promise.race([Promise.resolve().then(() => runAs(entry.registration.row, () => action.handler(args, scope))), timeout])
+      return await Promise.race([handled, timeout])
     } catch (error) {
       if (error instanceof WidgetError) throw error
       ctx.logger.warn(`widgets: ${entry.slug}.${action.name} threw`, error)
@@ -707,19 +810,32 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
-  function runAction(entry: Entry, action: WidgetAction<unknown>, args: unknown, caller: string): Promise<CallOutcome> {
+  function runAction(entry: Entry, action: WidgetAction<unknown>, args: unknown, caller: string, request?: Run['request']): Promise<CallOutcome> {
     const controller = new AbortController()
-    const run = { signal: controller.signal, by: caller, action: action.name, query: action.kind === 'query', wrote: false, settled: false }
+    const run = {
+      signal: controller.signal, by: caller, action: action.name, query: action.kind === 'query',
+      wrote: false, committed: false, writes: new Set<Promise<unknown>>(), ...(request === undefined ? {} : { request }), settled: false,
+    }
     const job = async (): Promise<CallOutcome> => {
+      let ended: { ok: true, result: unknown } | { ok: false, error: unknown }
       try {
-        const result = await execute(entry, action, args, run, () => { controller.abort() })
-        return { result: result ?? null, rev: stateOf(entry.slug)?.rev ?? 0 }
+        ended = { ok: true, result: await execute(entry, action, args, run, () => { controller.abort() }) }
       } catch (error) {
-        if (error instanceof WidgetError) error.wrote = run.wrote
-        throw error
-      } finally {
-        run.settled = true
+        ended = { ok: false, error }
       }
+      // widget_fv.action: the slot frees only after each write of the run settles.
+      // A handler can start a write and not await it, so wait until no new write starts.
+      await settleWrites(run)
+      run.settled = true
+      if (!ended.ok) {
+        if (ended.error instanceof WidgetError) {
+          ended.error.wrote = run.wrote
+          // A failed call that wrote gives the rev of its own slug, and its request record keeps it.
+          if (run.wrote) ended.error.rev ??= stateOf(entry.slug)?.rev ?? 0
+        }
+        throw ended.error
+      }
+      return { result: ended.result ?? null, rev: stateOf(entry.slug)?.rev ?? 0 }
     }
     // A query does not wait in the queue, but it runs in the async context of its run too.
     if (action.kind === 'query') return slot.run({ slug: entry.slug, run }, job)
@@ -750,7 +866,7 @@ export function apply(ctx: Context, config: Config): void {
       if (pending.hash !== hash) throw new WidgetError('idempotency-conflict', `the requestId ${requestId} was used for a different call`)
       return { ...(await pending.promise), replayed: true }
     }
-    const promise = runOnce(entry, action, parsed, caller, requestId, key, hash)
+    const promise = runOnce(entry, action, parsed, caller, requestId, { key, hash })
     inflight.set(key, { hash, promise })
     try {
       return await promise
@@ -760,24 +876,32 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   /** The stored outcome of an earlier run of the key, or one new run whose outcome is stored. */
-  async function runOnce(entry: Entry, action: WidgetAction<unknown>, parsed: unknown, caller: string, requestId: string, key: string, hash: string): Promise<CallOutcome> {
+  async function runOnce(entry: Entry, action: WidgetAction<unknown>, parsed: unknown, caller: string, requestId: string, request: { key: string, hash: string }): Promise<CallOutcome> {
+    const { key, hash } = request
     await entry.seeded
     const requests = (await ready).table('requests')
     const stored = requests.get(key)
     if (stored !== undefined && Date.now() - stored.at <= requestTtlMs) {
       if (stored.hash !== hash) throw new WidgetError('idempotency-conflict', `the requestId ${requestId} was used for a different call`)
       if (stored.outcome.ok) return { result: stored.outcome.result, rev: stored.outcome.rev, replayed: true }
-      throw new WidgetError(stored.outcome.code, stored.outcome.message)
+      throw new WidgetError(stored.outcome.code, stored.outcome.message, stored.outcome.rev)
+    }
+    // widget_fv.action: a write mark with no outcome record. The call wrote, and its host stopped
+    // before the outcome was stored. The call does not run again. Its result is not known.
+    const mark = markOf(key)
+    if (mark !== undefined) {
+      if (mark.hash !== hash) throw new WidgetError('idempotency-conflict', `the requestId ${requestId} was used for a different call`)
+      return { result: null, rev: mark.rev, replayed: true, resultLost: true }
     }
     try {
-      const outcome = await runAction(entry, action, parsed, caller)
+      const outcome = await runAction(entry, action, parsed, caller, request)
       await remember(requests, key, { hash, at: Date.now(), outcome: { ok: true, result: outcome.result, rev: outcome.rev } })
       return outcome
     } catch (error) {
       // A call that wrote before it failed is kept, so a retry does not write again.
       // A call that wrote nothing (busy, or a timeout before any write) may run again.
       if (error instanceof WidgetError && error.wrote) {
-        await remember(requests, key, { hash, at: Date.now(), outcome: { ok: false, code: error.code, message: error.message } })
+        await remember(requests, key, { hash, at: Date.now(), outcome: { ok: false, code: error.code, message: error.message, ...(error.rev === undefined ? {} : { rev: error.rev }) } })
       }
       throw error
     }
@@ -836,7 +960,7 @@ export function apply(ctx: Context, config: Config): void {
             const { action, args, requestId } = body as { action: string, args?: unknown, requestId?: unknown }
             if (requestId !== undefined && typeof requestId !== 'string') throw new WidgetError('bad-request', 'requestId must be a string')
             const out = await call(slug, action, args, { caller: 'user', ...(requestId === undefined ? {} : { requestId }) })
-            return json(200, { ok: true, result: out.result, rev: out.rev, ...(out.replayed ? { replayed: true } : {}) })
+            return json(200, { ok: true, result: out.result, rev: out.rev, ...(out.replayed ? { replayed: true } : {}), ...(out.resultLost ? { resultLost: true } : {}) })
           } catch (error) {
             return failure(error)
           }
@@ -865,8 +989,15 @@ export function apply(ctx: Context, config: Config): void {
     if (store.table('program').get(registration.slug) === undefined) {
       await store.table('program').put(registration.slug, { rev: 1, text: registration.program, updatedAt: Date.now() })
     }
-    if (store.table('state').get(registration.slug) === undefined) {
+    const state = store.table('state').get(registration.slug)
+    if (state === undefined) {
       await store.table('state').put(registration.slug, { rev: 0, data: registration.initialState ?? null })
+    } else if (state.requests !== undefined) {
+      // widget_fv.action: drop the expired write marks of an idle slug when it starts. The rev stays.
+      const requests = liveMarks(state.requests, Date.now())
+      if (Object.keys(requests).length !== Object.keys(state.requests).length) {
+        await store.table('state').put(registration.slug, Object.keys(requests).length === 0 ? { rev: state.rev, data: state.data } : { rev: state.rev, data: state.data, requests })
+      }
     }
   }
 
@@ -981,7 +1112,8 @@ export function apply(ctx: Context, config: Config): void {
     describe,
     get: (slug) => {
       liveEntry(slug)
-      return stateOf(slug) ?? { rev: 0, data: widgets.get(slug)?.registration.initialState ?? null }
+      const state = stateOf(slug)
+      return state === undefined ? { rev: 0, data: widgets.get(slug)?.registration.initialState ?? null } : { rev: state.rev, data: state.data }
     },
     call: (slug, action, args, options) => admit(() => call(slug, action, args, options)),
     update: (slug, fn, by) => admit(() => update(slug, fn, by)),
