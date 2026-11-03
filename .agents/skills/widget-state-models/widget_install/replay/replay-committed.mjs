@@ -2,8 +2,9 @@
 // second name, which is then the committed name. A reinstall v3 is interrupted after its bundle registered as the
 // standby and before the commit (a conditional breakpoint kills the host). Both names are then installed.
 // - At the next start, the committed v2 owns the slug, and v3 waits as its standby.
-// - In a safe-mode start, no row has an entry. An install keeps the committed v2, and it removes the leftover v3 first.
-// - At the next normal start, v2 is live with its state.
+// - In a safe-mode start, no row has a live entry. An install stops and removes nothing (widget_fv.replace: an install
+//   removes a bundle only when the version that stays is live in this Host start).
+// - At the next normal start, v2 is live with its state, and an install keeps v2 and removes the leftover v3 first.
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -55,13 +56,15 @@ try {
   await host.start({ DEEPWIDGETS_SAFE_MODE: '1' })
   const r4 = await host.call('widget_install', { dir: v4 })
   check('in safe mode, the install fails', r4.isError && r4.body?.error?.code === 'install-failed', short(r4.body?.error?.code))
-  check('in safe mode, the install keeps the committed v2 and removes the leftover v3', JSON.stringify(agentDeps(host.home, 'a')) === JSON.stringify([B]), short(agentDeps(host.home, 'a')))
+  check('in safe mode, the install removes nothing', JSON.stringify(agentDeps(host.home, 'a')) === JSON.stringify([A, B]), short(agentDeps(host.home, 'a')))
   await host.stop()
 
   await host.start()
   const ins3 = await host.inspector()
   const last = await rowsOf(ins3)
   check('at the next normal start, v2 is live with its state', last?.live === B && await count() === 5, short({ last, count: await count() }))
+  const r5 = await host.call('widget_install', { dir: v4 })
+  check('then an install keeps v2, removes the leftover v3, and moves the slug to the first name', !r5.isError && JSON.stringify(agentDeps(host.home, 'a')) === JSON.stringify([A]) && await count() === 5, short(r5.body?.error ?? agentDeps(host.home, 'a')))
   ins3.close()
 } catch (error) {
   check('the replay runs to its end', false, error instanceof Error ? error.stack : String(error))

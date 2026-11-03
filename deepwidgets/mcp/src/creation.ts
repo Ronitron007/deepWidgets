@@ -620,17 +620,18 @@ export class WidgetInstaller {
     await this.migrateSeed(slug)
     await mkdir(this.root, { recursive: true })
     // widget_fv.replace: one installed name is the old version. A host crash during a replace can leave more names
-    // installed. The committed name stays: the name of the last install that completed. With no committed name among
-    // them, the name of the entry of the slug (live, or failed in the quarantine) stays. Else the installer can not
-    // tell which version is the good one, and it stops. The other names go first. Each of them is at most a standby,
-    // so its removal starts no code and writes no seed.
+    // installed. An install removes a bundle only when the version that stays registered with success in this Host
+    // start: the name of the live entry of the slug stays. This can be the committed name, or the other name after a
+    // fallback, when the committed row failed at the start. With no live entry, the install stops and removes nothing.
+    // The other names go first. Each of them is at most a standby, so its removal starts no code and writes no seed.
     if (previous.length > 1) {
-      const committed = this.services.records.committed(slug)
-      const keep = committed !== undefined && previous.includes(committed) ? committed : this.registeredName(slug, previous, ['live', 'failed'])
+      const keep = this.registeredName(slug, previous, ['live'])
       if (keep === undefined) {
-        throw new CreationError('install-failed', `the bundles ${previous.join(', ')} of ${slug} are installed, and none is committed or live; nothing was installed`)
+        throw new CreationError('install-failed', `the bundles ${previous.join(', ')} of ${slug} are installed, and none is live in this Host start; nothing was removed or installed`)
       }
       for (const leftover of previous.filter((item) => item !== keep)) await this.removeFirst(slug, leftover, keep)
+      // The kept version is the committed one now: a committed name that was removed does not stay in the record.
+      if (this.services.records.committed(slug) !== keep) this.services.records.commit(slug, keep)
       previous = [keep]
     }
     const old = previous[0]

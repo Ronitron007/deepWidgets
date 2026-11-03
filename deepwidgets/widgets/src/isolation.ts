@@ -182,6 +182,8 @@ export function callerRoot(): string | undefined {
 export interface IsolationHost {
   /** Show each slug as failed with the reason. The returned disposer removes them. `fiber` is the fiber of the row. */
   hold(slugs: string[], row: string, reason: string, fiber?: Fiber): () => Promise<void>
+  /** widget_fv.replace: the plugin body of the widget row `row` threw. */
+  failed(row: string): void
 }
 
 /** The isolation of one runtime instance. */
@@ -297,14 +299,23 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
         ctx.logger.warn(`widgets: the row ${row} is quarantined: ${item.reason}`)
         return host.hold(item.slugs, row, item.reason, this)
       }
-      const effect = runAs(row, () => execute.call(this))
+      let effect: unknown
+      try {
+        effect = runAs(row, () => execute.call(this))
+      } catch (error) {
+        host.failed(row)
+        throw error
+      }
+      const promised = effect !== null && typeof effect === 'object' && 'then' in effect && typeof effect.then === 'function'
       // A throw leaves before the lift. An async body lifts when its promise resolves.
-      if (!quarantine.has(row) && installing.size === 0) return effect
-      if (effect !== null && typeof effect === 'object' && 'then' in effect && typeof effect.then === 'function') {
+      if (!quarantine.has(row) && installing.size === 0) {
+        return promised ? (effect as PromiseLike<unknown>).then(undefined, (error: unknown) => { host.failed(row); throw error }) : effect
+      }
+      if (promised) {
         return (effect as PromiseLike<unknown>).then((value) => {
           loaded(row)
           return value
-        })
+        }, (error: unknown) => { host.failed(row); throw error })
       }
       loaded(row)
       return effect
