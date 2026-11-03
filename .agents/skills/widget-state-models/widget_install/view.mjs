@@ -7,9 +7,9 @@ const phase = (j) => {
     case 'gates': case 'reloadCheck': case 'checkInstalled': return `${j.op} ${j.s}: checking`
     case 'writeNext': case 'clearFolder': case 'renameNext': case 'backup': return `${j.op} ${j.s}: moving folders`
     case 'removeOld': return `${j.op} ${j.s}: removing the old bundle`
-    case 'installNew': case 'waitLive': return `${j.op} ${j.s}: new bundle going in`
-    case 'rmBackup': case 'readSeed': case 'setProgram': case 'writeSeed': return `${j.op} ${j.s}: new bundle in, seed step`
-    case 'undoCheck': case 'undoRemove': case 'rmFolder': case 'restoreRename': case 'restoreInstall': case 'restoreDone': return `${j.op} ${j.s}: rolling back`
+    case 'snapshot': case 'installNew': case 'waitLive': return `${j.op} ${j.s}: new bundle going in`
+    case 'rmBackup': case 'adopt': case 'writeSeed': return `${j.op} ${j.s}: new bundle in, seed step`
+    case 'undoCheck': case 'undoRemove': case 'rmFolder': case 'restoreProgram': case 'restoreRename': case 'restoreInstall': case 'restoreDone': return `${j.op} ${j.s}: rolling back`
     case 'removeCheck': case 'removeBundle': case 'removeFolder': return `remove ${j.s}: removing`
     case 'ok': return `${j.op} ${j.s} answered ok`
     case 'err': return `${j.op} ${j.s} answered ${j.err}`
@@ -21,7 +21,7 @@ const slot = (v, s) => {
   if (v.inst[s]) parts.push(`${s}: ${code[v.folder[s]] ?? v.folder[s]} installed${v.enabled[s] ? '' : ' but deselected'}, ${regText[v.reg[s]]}`)
   else parts.push(`${s}: no agent bundle${v.reg[s] !== 'none' ? `, ${regText[v.reg[s]]}` : ''}`)
   if (v.prog[s] !== 'none' && s !== 'sample') parts.push(`program ${v.prog[s]}`)
-  if (v.seedRec[s] !== 'none' && s !== 'sample') parts.push(`seed record ${v.seedRec[s]}`)
+  if (v.pseed[s] !== 'none' && s !== 'sample') parts.push(`seed hash ${v.pseed[s]}`)
   if (v.quar[s]) parts.push('quarantine item')
   return parts.join(', ')
 }
@@ -49,15 +49,16 @@ export const step = (action, from, to) => {
     case 'Backup': return 'the old folder moves to <slug>.previous'
     case 'ClearFolder': return 'the old folder is deleted'
     case 'RenameNext': return 'the new folder moves into place'
-    case 'InstallNew': return !to.inst[j.s] ? 'the plugin manager does not install it' : `the plugin manager installs it (${to.job.app})`
+    case 'Snapshot': return 'the installer reads the program record before the load'
+    case 'InstallNew': return !to.inst[j.s] ? 'the plugin manager does not install it' : `the plugin manager installs it (${to.job.app})${to.prog[j.s] !== from.prog[j.s] ? '; the load stores its seed' : ''}`
     case 'WaitLive': return to.job.pc === 'rmBackup' ? 'the slug shows in widget_list' : 'the slug does not show, or the result is not applied'
     case 'RmBackup': return 'the backup is deleted'
-    case 'ReadSeed': return 'the installer reads the seed record'
-    case 'SetProgram': return to.job.pc === 'err' ? 'setProgram throws: the widget is not live' : 'the stored program is set to the new seed'
-    case 'WriteSeed': return 'the seed record is written'
+    case 'Adopt': return to.prog[j.s] !== from.prog[j.s] ? 'the old installer sets the stored program to the new seed' : to.pseed[j.s] !== from.pseed[j.s] ? 'the record with no seed hash takes the hash of this seed' : 'the installer reads the program record'
+    case 'WriteSeed': return 'the old installer writes the seed file last'
     case 'UndoCheck': return 'the installer checks for the failed bundle'
     case 'UndoRemove': return to.inst[j.s] ? 'removing the failed bundle fails' : 'the failed bundle is removed'
     case 'RmFolder': return 'the new folder is deleted'
+    case 'RestoreProgram': return 'the program record before the load is put back'
     case 'RestoreRename': return 'the backup moves back into place'
     case 'RestoreInstall': return to.inst[j.s] ? `the old bundle is installed again (${to.job.app})` : 'installing the old bundle again fails'
     case 'RestoreDone': return 'the call fails with install-failed'

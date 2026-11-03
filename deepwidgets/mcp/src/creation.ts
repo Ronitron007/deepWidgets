@@ -12,7 +12,7 @@
  */
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -39,10 +39,10 @@ const MAX_DIAGNOSTICS = 20
 const LIVE_WAIT_MS = 5_000
 const META_FILE = 'deepwidgets-widget.json'
 /**
- * The folder under the widget root that keeps the hash of the last applied seed program of each
- * slug. It is outside the bundle folders, so `widget_remove` keeps it, as it keeps the stored program.
+ * The folder under the widget root where an older install kept the hash of the last applied seed program of each
+ * slug. widget_fv.install moved the hash into the program record. An install moves the file of its slug once.
  */
-const SEEDS_DIR = '.seeds'
+const LEGACY_SEEDS_DIR = '.seeds'
 /** The source files that the loop rule reads: each kind that esbuild bundles. */
 const SOURCE_FILE = /\.(?:[cm]?[jt]s|[jt]sx)$/
 
@@ -150,6 +150,7 @@ function tools(): Toolchain {
 }
 
 const elapsed = (started: number): number => Math.round(performance.now() - started)
+/** The hash of a seed program. It is the same hash as `seedHash` of `@deepwidgets/widgets`. */
 const hashText = (text: string): string => createHash('sha256').update(text).digest('hex')
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error)
 
@@ -468,18 +469,23 @@ export class WidgetInstaller {
     return await real(local[1]) === await real(this.folderOf(slug))
   }
 
-  private seedFile(slug: string): string {
-    return join(this.root, SEEDS_DIR, slug)
-  }
-
-  /** The hash of the last applied seed program of `slug`, or undefined when no install applied one. */
-  private async lastSeed(slug: string): Promise<string | undefined> {
+  /**
+   * widget_fv.install: move the hash of the older file `.seeds/<slug>` into the program record of `slug`, once.
+   * A record that has a hash keeps it. The file goes after the move.
+   */
+  private async migrateSeed(slug: string): Promise<void> {
+    const file = join(this.root, LEGACY_SEEDS_DIR, slug)
+    let legacy: string
     try {
-      return (await readFile(this.seedFile(slug), 'utf8')).trim()
+      legacy = (await readFile(file, 'utf8')).trim()
     } catch {
-      // No record: no install of this slug applied a seed yet.
-      return undefined
+      // No file: an install of this version wrote the hash into the program record, or no install applied a seed.
+      return
     }
+    if (legacy !== '') await this.services.widgets.adoptSeed(slug, legacy)
+    await rm(file, { force: true })
+    // The folder goes with its last file. Another slug can still have a file in it.
+    await rmdir(join(this.root, LEGACY_SEEDS_DIR)).catch(() => undefined)
   }
 
   private async meta(slug: string): Promise<WidgetMeta | undefined> {
@@ -532,6 +538,7 @@ export class WidgetInstaller {
         application = result.application
       }
       await rm(this.folderOf(slug), { recursive: true, force: true })
+      this.services.widgets.clearOff(slug)
       return { slug, application }
     })
   }
@@ -552,9 +559,12 @@ export class WidgetInstaller {
     // An older install named the bundle with the row id of a built-in widget. This install removes it.
     const previous = await this.installedNames(slug)
     const replaced = previous.length > 0
-    if (!replaced && this.services.widgets.list().some((item) => item.slug === slug)) {
+    // widget_fv.install: a widget that safe mode turned off is not live, so it does not take the slug.
+    if (!replaced && this.services.widgets.list().some((item) => item.slug === slug && item.off === undefined)) {
       throw new CreationError('slug-taken', `a widget that is not an agent bundle has the slug ${JSON.stringify(slug)}`)
     }
+    this.services.widgets.clearOff(slug)
+    await this.migrateSeed(slug)
     await mkdir(this.root, { recursive: true })
     const next = `${folder}.next`
     const backup = `${folder}.previous`
@@ -577,22 +587,17 @@ export class WidgetInstaller {
     }
     await rename(next, folder)
 
+    // widget_fv.install: the program record before the load. The slug is not live here, so no edit can change it.
+    const before = await this.services.widgets.programRecord(slug)
     const result = await this.services.pluginManager.installBundle(folder)
     if (result.application === 'applied' && await this.waitLive(slug)) {
       await rm(backup, { recursive: true, force: true })
-      let programUpdated = false
-      const seed = hashText(widget.program)
-      const last = await this.lastSeed(slug)
-      // The stored program wins over the seed, and it stays across a remove. A new seed in the code is
-      // the newer intent. With no record, the runtime stores the seed when it has no program yet.
-      if (last !== undefined && last !== seed) {
-        await this.services.widgets.setProgram(slug, widget.program, { by: 'widget_install' })
-        programUpdated = true
-      }
-      if (last !== seed) {
-        await mkdir(join(this.root, SEEDS_DIR), { recursive: true })
-        await writeFile(this.seedFile(slug), `${seed}\n`)
-      }
+      // The stored program wins over the seed, and it stays across a remove. A new seed in the code is the newer
+      // intent: the load set it, in the same write as its hash (`seed` in the widgets runtime).
+      const after = await this.services.widgets.programRecord(slug)
+      // A record of an older format with no hash: the stored program stays, and it takes the hash of this seed.
+      if (after !== undefined && after.seed === undefined) await this.services.widgets.adoptSeed(slug, hashText(widget.program))
+      const programUpdated = before?.seed !== undefined && after?.seed !== before.seed
       return { slug, replaced, application: result.application, programUpdated, gates: outcome.gates, warnings }
     }
 
@@ -602,7 +607,10 @@ export class WidgetInstaller {
       const undo = await this.services.pluginManager.removeBundle(name)
       if (undo.application !== 'applied') diagnostics.push(`the failed bundle was not removed: ${resultDiagnostics(undo).join('; ')}`)
     }
+    this.services.widgets.clearOff(slug)
     await rm(folder, { recursive: true, force: true })
+    // widget_fv.install: the failed load can have written the program record. Put back the record and its seed hash.
+    await this.services.widgets.restoreProgram(slug, before, { by: 'widget_install' })
     if (replaced) {
       await rename(backup, folder)
       const restore = await this.services.pluginManager.installBundle(folder)

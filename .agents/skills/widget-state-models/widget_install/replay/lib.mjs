@@ -116,3 +116,20 @@ export const afterRegister = (code) => (text) => {
 export const imports = (line) => (text) => `${line}\n${text}`
 export const compose = (...fs) => (x) => fs.reduce((v, f) => f(v), x)
 export const short = (v) => JSON.stringify(v)?.slice(0, 700)
+
+/** The checks of one replay. `done` prints the verdict and exits 0 only when each check passed. */
+export function checks(label) {
+  const results = []
+  return {
+    check(name, ok, detail = '') {
+      results.push(Boolean(ok))
+      console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail === '' ? '' : `: ${String(detail).slice(0, 600)}`}`)
+    },
+    done(work) {
+      const failed = results.filter((ok) => !ok).length
+      const pass = failed === 0 && results.length > 0
+      console.log(`${label}: ${pass ? 'pass' : `fail: ${String(failed)} of ${String(results.length)} checks failed`} (work ${work})`)
+      process.exitCode = pass ? 0 : 1
+    },
+  }
+}
