@@ -1,7 +1,8 @@
 /**
  * Blame at exit and quarantine (`widget_phase2.isolation.blame` in `docs/specs/widget-phase2.md`).
  *
- * The runtime runs the plugin body of each widget row (a Loader row with an id `deepwidgets-widget-*`) and each
+ * The runtime runs the plugin body of each widget row (a Loader row with an id `deepwidgets-widget-*`, or
+ * `deepwidgets-agent-*` for an agent bundle, `widget_phase2.creation.rows`) and each
  * action handler inside an AsyncLocalStorage store that names the row. Timers, promises, and listeners that the
  * widget code creates there keep the store. On a fatal error, the claimer reads the store; when the store is empty,
  * it matches the stack against the package folder of each widget row. It writes `$DSH_HOME/deepwidgets/crash.json`
@@ -28,7 +29,7 @@ import { inSlot, startWatchdog } from './watchdog.ts'
 export { packageHash, type BlameMethod, type CrashRecord } from './records.ts'
 
 /** The Loader row ids that the runtime treats as widget code. */
-const WIDGET_ROW = /^deepwidgets-widget-/
+const WIDGET_ROW = /^deepwidgets-(?:widget|agent)-/
 /** The key under which the DSH fail-loud release finds the fatal hooks (`apps/cli/src/profile-boot.ts`). */
 const FATAL_HOOKS = Symbol.for('deepwidgets.fatal.hooks')
 /** One quarantined widget row in `$DSH_HOME/deepwidgets/quarantine.json`. */

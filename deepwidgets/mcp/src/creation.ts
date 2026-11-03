@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto'
 import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, isAbsolute, join, relative } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { BundleInfo, ChangeResult } from '@deepseek-ai/dsh-plugin-manager/types'
 import { endlessLoops } from './loop-check.ts'
@@ -153,8 +153,14 @@ const elapsed = (started: number): number => Math.round(performance.now() - star
 const hashText = (text: string): string => createHash('sha256').update(text).digest('hex')
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error)
 
-/** The package name of the bundle of `slug`, which is also its row id. */
-export const bundleName = (slug: string): string => `deepwidgets-widget-${slug}`
+/**
+ * The package name of the bundle of `slug`, which is also its row id (`widget_phase2.creation.rows`).
+ * A built-in widget row is `deepwidgets-widget-<name>`, so an agent bundle cannot take its row id.
+ */
+export const bundleName = (slug: string): string => `deepwidgets-agent-${slug}`
+
+/** The package name and row id that an older install gave the agent bundle of `slug`. An install of the slug removes it. */
+export const legacyBundleName = (slug: string): string => `deepwidgets-widget-${slug}`
 
 /** The template files, with the slug and title filled in. */
 export async function templateFiles(slug: string, title: string): Promise<{ path: string, text: string }[]> {
@@ -440,9 +446,26 @@ export class WidgetInstaller {
     return join(this.root, slug)
   }
 
-  private async installed(slug: string): Promise<boolean> {
-    const name = bundleName(slug)
-    return (await this.services.pluginManager.listBundles()).some((bundle) => bundle.name === name && bundle.installed)
+  /**
+   * The installed agent bundles of `slug`: the current name, and the older name when the profile dependency of that
+   * name is the agent folder of the slug. Another bundle with the older name is not an agent bundle and stays.
+   * A built-in widget is not installed in the profile, so its row never shows here.
+   */
+  private async installedNames(slug: string): Promise<string[]> {
+    const installed = new Map((await this.services.pluginManager.listBundles()).filter((bundle) => bundle.installed).map((bundle) => [bundle.name, bundle]))
+    const names = installed.has(bundleName(slug)) ? [bundleName(slug)] : []
+    const legacy = installed.get(legacyBundleName(slug))
+    if (legacy !== undefined && await this.isAgentFolder(legacy.source, slug)) names.push(legacyBundleName(slug))
+    return names
+  }
+
+  /** Whether the dependency spec `source` (`link:<path>` or `file:<path>`) is the agent folder of `slug`. */
+  private async isAgentFolder(source: string | undefined, slug: string): Promise<boolean> {
+    const local = source === undefined ? null : /^(?:file|link):(.+)$/s.exec(source)
+    if (local?.[1] === undefined) return false
+    // The profile can record the folder behind a link (on macOS /var is /private/var), so the real paths are compared.
+    const real = (path: string): Promise<string> => realpath(path).catch(() => resolve(path))
+    return await real(local[1]) === await real(this.folderOf(slug))
   }
 
   private seedFile(slug: string): string {
@@ -486,7 +509,7 @@ export class WidgetInstaller {
   reload(slug: string): Promise<InstallOutcome> {
     return this.serial(async () => {
       const meta = await this.meta(slug)
-      if (meta === undefined || !await this.installed(slug)) throw new CreationError('not-installed', `no agent widget bundle has the slug ${JSON.stringify(slug)}`)
+      if (meta === undefined || (await this.installedNames(slug)).length === 0) throw new CreationError('not-installed', `no agent widget bundle has the slug ${JSON.stringify(slug)}`)
       return this.installNow(meta.source, slug)
     })
   }
@@ -495,11 +518,21 @@ export class WidgetInstaller {
   remove(slug: string): Promise<{ slug: string, application: ChangeResult['application'] }> {
     return this.serial(async () => {
       const meta = await this.meta(slug)
-      if (meta === undefined || !await this.installed(slug)) throw new CreationError('not-installed', `no agent widget bundle has the slug ${JSON.stringify(slug)}`)
-      const result = await this.services.pluginManager.removeBundle(bundleName(slug))
-      if (result.application !== 'applied') throw new CreationError('install-failed', `the plugin manager did not remove ${bundleName(slug)}`, { diagnostics: resultDiagnostics(result) })
+      const names = meta === undefined ? [] : await this.installedNames(slug)
+      if (names.length === 0) throw new CreationError('not-installed', `no agent widget bundle has the slug ${JSON.stringify(slug)}`)
+      let application: ChangeResult['application'] = 'applied'
+      const removed: string[] = []
+      for (const name of names) {
+        const result = await this.services.pluginManager.removeBundle(name)
+        if (result.application !== 'applied') {
+          const done = removed.length === 0 ? '' : `; ${removed.join(', ')} was removed`
+          throw new CreationError('install-failed', `the plugin manager did not remove ${name}${done}`, { diagnostics: resultDiagnostics(result) })
+        }
+        removed.push(name)
+        application = result.application
+      }
       await rm(this.folderOf(slug), { recursive: true, force: true })
-      return { slug, application: result.application }
+      return { slug, application }
     })
   }
 
@@ -516,7 +549,9 @@ export class WidgetInstaller {
     const warnings = outcome.gates.flatMap((gate) => gate.warnings)
     const folder = this.folderOf(slug)
     const name = bundleName(slug)
-    const replaced = await this.installed(slug)
+    // An older install named the bundle with the row id of a built-in widget. This install removes it.
+    const previous = await this.installedNames(slug)
+    const replaced = previous.length > 0
     if (!replaced && this.services.widgets.list().some((item) => item.slug === slug)) {
       throw new CreationError('slug-taken', `a widget that is not an agent bundle has the slug ${JSON.stringify(slug)}`)
     }
@@ -525,10 +560,15 @@ export class WidgetInstaller {
     const backup = `${folder}.previous`
     await writeBundle(next, widget, code, dir)
     if (replaced) {
-      const removal = await this.services.pluginManager.removeBundle(name)
-      if (removal.application !== 'applied') {
-        await rm(next, { recursive: true, force: true })
-        throw new CreationError('install-failed', `the plugin manager did not remove the old bundle ${name}; the old bundle stays`, { diagnostics: resultDiagnostics(removal) })
+      const removed: string[] = []
+      for (const old of previous) {
+        const removal = await this.services.pluginManager.removeBundle(old)
+        if (removal.application !== 'applied') {
+          await rm(next, { recursive: true, force: true })
+          const state = removed.length === 0 ? 'the old bundle stays' : `${removed.join(', ')} was removed, and ${old} stays`
+          throw new CreationError('install-failed', `the plugin manager did not remove the old bundle ${old}; ${state}`, { diagnostics: resultDiagnostics(removal) })
+        }
+        removed.push(old)
       }
       await rm(backup, { recursive: true, force: true })
       await rename(folder, backup)
@@ -558,7 +598,7 @@ export class WidgetInstaller {
 
     const diagnostics = resultDiagnostics(result)
     if (result.application === 'applied') diagnostics.push(`the widget ${slug} did not show in widget_list within ${String(LIVE_WAIT_MS)} ms`)
-    if (await this.installed(slug)) {
+    if ((await this.installedNames(slug)).includes(name)) {
       const undo = await this.services.pluginManager.removeBundle(name)
       if (undo.application !== 'applied') diagnostics.push(`the failed bundle was not removed: ${resultDiagnostics(undo).join('; ')}`)
     }
