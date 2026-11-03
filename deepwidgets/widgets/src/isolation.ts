@@ -85,9 +85,14 @@ export function widgetRow(fiber: Fiber): string | undefined {
   return entry === undefined ? undefined : widgetRowOfEntry(entry)
 }
 
+/** The row id of the Loader entry id `row`, without the ids of its groups in front. */
+export function rowId(row: string): string {
+  return row.slice(row.lastIndexOf(':') + 1)
+}
+
 /** Whether the Loader row id `row` (an entry id, which can have the ids of its groups in front) is the row of an agent bundle. */
 export function isAgentRow(row: string): boolean {
-  return AGENT_ROW.test(row.slice(row.lastIndexOf(':') + 1))
+  return AGENT_ROW.test(rowId(row))
 }
 
 /** Whether the row that owns `fiber` is the row of an agent bundle, `deepwidgets-agent-<slug>`. */
@@ -175,8 +180,8 @@ export function callerRoot(): string | undefined {
 
 /** What the runtime gives the isolation: how to show a held widget. */
 export interface IsolationHost {
-  /** Show each slug as failed with the reason. The returned disposer removes them. */
-  hold(slugs: string[], row: string, reason: string): () => Promise<void>
+  /** Show each slug as failed with the reason. The returned disposer removes them. `fiber` is the fiber of the row. */
+  hold(slugs: string[], row: string, reason: string, fiber?: Fiber): () => Promise<void>
 }
 
 /** The isolation of one runtime instance. */
@@ -290,7 +295,7 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
       const item = held(row)
       if (item !== undefined) {
         ctx.logger.warn(`widgets: the row ${row} is quarantined: ${item.reason}`)
-        return host.hold(item.slugs, row, item.reason)
+        return host.hold(item.slugs, row, item.reason, this)
       }
       const effect = runAs(row, () => execute.call(this))
       // A throw leaves before the lift. An async body lifts when its promise resolves.

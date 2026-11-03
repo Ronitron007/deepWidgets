@@ -151,7 +151,7 @@ async function inHost(body, arg = null) {
 }
 
 /** The Loader row ids of the bundles of `slug`: the agent row and the built-in (or older agent) row. */
-const rowsOf = (slug) => inHost('return [...loader.entries()].map((entry) => entry.options.id).filter((id) => id === `deepwidgets-agent-${arg}` || id === `deepwidgets-widget-${arg}`).sort()', slug)
+const rowsOf = (slug) => inHost('return [...loader.entries()].map((entry) => entry.options.id).filter((id) => id === `deepwidgets-agent-${arg}` || id === `deepwidgets-agent-${arg}.b` || id === `deepwidgets-widget-${arg}`).sort()', slug)
 
 /**
  * Install the local bundle folder `folder` with the plugin manager of the host. It runs outside the hmr transaction
@@ -383,7 +383,8 @@ const LEGACY = 'create-legacy'
 /**
  * A profile with an agent bundle of the older row id deepwidgets-widget-<slug>. The check makes it from an install
  * of the slug: it keeps a copy of the bundle folder, removes the bundle, renames the copy, and installs it with the
- * plugin manager. Then a reinstall of the slug leaves one row, deepwidgets-agent-<slug>, and the state.
+ * plugin manager. Then a reinstall of the slug leaves one row, and the state. The older bundle uses the folder of the
+ * current name, so the new version goes under the second name deepwidgets-agent-<slug>.b (widget_fv.replace).
  */
 async function legacyPart(call, slugs) {
   const source = writeWidget(LEGACY, [{ path: 'src/index.ts', text: readFileSync(join(work, 'agent', SLUG, 'src', 'index.ts'), 'utf8').replaceAll(`'${SLUG}'`, `'${LEGACY}'`) }])
@@ -415,8 +416,8 @@ async function legacyPart(call, slugs) {
   const again = await call('widget_install', { dir: source })
   const rows = await rowsOf(LEGACY)
   const kept = await call('widget_call', { slug: LEGACY, action: 'get' })
-  const dependencies = Object.keys(JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')).dependencies ?? {}).filter((name) => name.endsWith(`-${LEGACY}`))
-  check('a reinstall over the older row id leaves one row, deepwidgets-agent-<slug>', !again.isError && again.body?.replaced === true && JSON.stringify(rows) === JSON.stringify([`deepwidgets-agent-${LEGACY}`]) && JSON.stringify(dependencies) === JSON.stringify([`deepwidgets-agent-${LEGACY}`]),
+  const dependencies = Object.keys(JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')).dependencies ?? {}).filter((name) => name.endsWith(`-${LEGACY}`) || name.endsWith(`-${LEGACY}.b`))
+  check('a reinstall over the older row id leaves one row, deepwidgets-agent-<slug>.b', !again.isError && again.body?.replaced === true && JSON.stringify(rows) === JSON.stringify([`deepwidgets-agent-${LEGACY}.b`]) && JSON.stringify(dependencies) === JSON.stringify([`deepwidgets-agent-${LEGACY}.b`]),
     `install=${JSON.stringify(again.body?.error ?? again.body?.replaced)} rows=${JSON.stringify(rows)} dependencies=${JSON.stringify(dependencies)}`)
   check('a reinstall over the older row id keeps the state', kept.body?.result?.count === 5, JSON.stringify(kept.body))
 }

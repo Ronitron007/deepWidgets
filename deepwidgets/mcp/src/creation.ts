@@ -580,17 +580,19 @@ export class WidgetInstaller {
       await rm(this.folderOf(slug), { recursive: true, force: true })
       await rm(this.folderOfName(slug, secondBundleName(slug)), { recursive: true, force: true })
       this.services.records.clearOff(slug)
+      this.services.records.commit(slug, undefined)
       return { slug, application }
     })
   }
 
-  /** Remove the bundle `name` of `slug` before the install. It failed: nothing changed, and the install stops. */
-  private async removeFirst(slug: string, name: string, why: string): Promise<void> {
+  /** Remove the leftover bundle `name` of `slug` before the install. `keep` stays. When it fails, the install stops. */
+  private async removeFirst(slug: string, name: string, keep: string): Promise<void> {
     const removal = await this.services.pluginManager.removeBundle(name)
     if (removal.application !== 'applied') {
-      throw new CreationError('install-failed', `the plugin manager did not remove ${why} ${name}; nothing was installed`, { diagnostics: resultDiagnostics(removal) })
+      throw new CreationError('install-failed', `the plugin manager did not remove the leftover bundle ${name}; ${keep} stays, and nothing was installed`, { diagnostics: resultDiagnostics(removal) })
     }
-    if (name !== legacyBundleName(slug)) await rm(this.folderOfName(slug, name), { recursive: true, force: true })
+    // The older name and the current name share a folder.
+    if (this.folderOfName(slug, name) !== this.folderOfName(slug, keep)) await rm(this.folderOfName(slug, name), { recursive: true, force: true })
   }
 
   private async installNow(dir: string, expected: string | undefined): Promise<InstallOutcome> {
@@ -617,24 +619,24 @@ export class WidgetInstaller {
     this.services.records.clearOff(slug)
     await this.migrateSeed(slug)
     await mkdir(this.root, { recursive: true })
-    // widget_fv.replace: a host crash during a replace can leave both agent names installed. The name of the entry of
-    // the slug (live, or failed in the quarantine) stays, and the other one goes first, so a free name is left for the
-    // new version. The other one is at most a standby, so its removal starts no code and writes no seed.
-    const both = [bundleName(slug), secondBundleName(slug)]
-    if (both.every((name) => previous.includes(name))) {
-      const keep = this.registeredName(slug, both, ['live', 'failed']) ?? bundleName(slug)
-      const leftover = both.find((name) => name !== keep) ?? secondBundleName(slug)
-      await this.removeFirst(slug, leftover, 'the leftover bundle')
-      previous = previous.filter((name) => name !== leftover)
-    }
-    // An older install named the bundle with the row id of a built-in widget, in the folder of the current name. Its
-    // row is not an agent row, so the new version can not wait for it: it goes first, as before widget_fv.replace.
-    if (previous.includes(legacyBundleName(slug))) {
-      await this.removeFirst(slug, legacyBundleName(slug), 'the bundle with the older name')
-      previous = previous.filter((name) => name !== legacyBundleName(slug))
+    // widget_fv.replace: one installed name is the old version. A host crash during a replace can leave more names
+    // installed. The committed name stays: the name of the last install that completed. With no committed name among
+    // them, the name of the entry of the slug (live, or failed in the quarantine) stays. Else the installer can not
+    // tell which version is the good one, and it stops. The other names go first. Each of them is at most a standby,
+    // so its removal starts no code and writes no seed.
+    if (previous.length > 1) {
+      const committed = this.services.records.committed(slug)
+      const keep = committed !== undefined && previous.includes(committed) ? committed : this.registeredName(slug, previous, ['live', 'failed'])
+      if (keep === undefined) {
+        throw new CreationError('install-failed', `the bundles ${previous.join(', ')} of ${slug} are installed, and none is committed or live; nothing was installed`)
+      }
+      for (const leftover of previous.filter((item) => item !== keep)) await this.removeFirst(slug, leftover, keep)
+      previous = [keep]
     }
     const old = previous[0]
-    const name = old === bundleName(slug) ? secondBundleName(slug) : bundleName(slug)
+    // The new version goes under the agent name whose folder is not the folder of the old one. The older name
+    // `deepwidgets-widget-<slug>` uses the folder of the current name.
+    const name = old === undefined || old === secondBundleName(slug) ? bundleName(slug) : secondBundleName(slug)
     const folder = this.folderOfName(slug, name)
     await writeBundle(folder, name, widget, code, dir)
 
@@ -668,11 +670,15 @@ export class WidgetInstaller {
     warnings: string[]
   }): Promise<InstallOutcome> {
     const { slug, widget, folder, name, old, replaced, before } = job
+    const was = this.services.records.committed(slug)
     const result = await this.services.pluginManager.installBundle(folder)
     const diagnostics = resultDiagnostics(result)
     let registered = result.application === 'applied' && await this.waitFor(() => this.registeredName(slug, [name], ['live', 'standby']) !== undefined)
     if (result.application === 'applied' && !registered) diagnostics.push(`the widget ${slug} of ${name} did not register within ${String(LIVE_WAIT_MS)} ms`)
     const warnings = [...job.warnings]
+    // widget_fv.replace: the commit point. The new version registered, so from here a Host start loads it as the owner
+    // of the slug, and the old version as its standby. A failure below puts back the committed name from before.
+    if (registered) this.services.records.commit(slug, name)
     if (registered && old !== undefined) {
       const removal = await this.services.pluginManager.removeBundle(old)
       if (removal.application === 'applied') {
@@ -697,6 +703,7 @@ export class WidgetInstaller {
       return { slug, replaced, application: result.application, programUpdated, gates: job.gates, warnings }
     }
     if (registered) diagnostics.push(`the widget ${slug} did not show in widget_list within ${String(LIVE_WAIT_MS)} ms`)
+    if (this.services.records.committed(slug) !== was) this.services.records.commit(slug, was)
 
     if ((await this.installedNames(slug)).includes(name)) {
       const undo = await this.services.pluginManager.removeBundle(name)

@@ -16,9 +16,12 @@
  * - guard: widget code can not use the install records;
  * - replace: a failed reinstall keeps the old version live, with its state and its program, and a good reinstall moves
  *   the slug to the other agent package name;
- * - putback: a failed reinstall keeps the old version live also when the old code can not start again.
+ * - putback: a failed reinstall keeps the old version live also when the old code can not start again;
+ * - legacy: a failed reinstall over a bundle with the older row id keeps that bundle live;
+ * - committed: after an interrupted replace, the committed version owns the slug at the next start, and an install in
+ *   safe mode keeps it.
  *
- * Usage: node tools/widgets-install-replay.mjs [newseed|sameseed|rollback|quarantine|safe|reserved|guard|replace|putback ...]. With no name, it runs all of them.
+ * Usage: node tools/widgets-install-replay.mjs [newseed|sameseed|rollback|quarantine|safe|reserved|guard|replace|putback|legacy|committed ...]. With no name, it runs all of them.
  * Prints `widgets-install-replay: pass` and exits 0 only when each replay passes.
  * Needs `corepack pnpm run build:artifacts` first. It does not use port 47615.
  */
@@ -28,7 +31,7 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const REPLAYS = join(ROOT, '.agents/skills/widget-state-models/widget_install/replay')
-const ALL = ['newseed', 'sameseed', 'rollback', 'quarantine', 'safe', 'reserved', 'guard', 'replace', 'putback']
+const ALL = ['newseed', 'sameseed', 'rollback', 'quarantine', 'safe', 'reserved', 'guard', 'replace', 'putback', 'legacy', 'committed']
 
 const names = process.argv.slice(2)
 const unknown = names.filter((name) => !ALL.includes(name))
