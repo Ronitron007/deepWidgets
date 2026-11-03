@@ -34,6 +34,8 @@ These rules add to `widget_phase2.creation`.
 
 - A quarantine ends only when files with a different hash register with success. Files with the blamed hash never run. A failed install and its rollback do not end a quarantine.
 
+- The slug of a built-in widget is reserved (`widget.builtin_slugs`). `widget_install` gives `slug-taken` for that slug, also when the built-in widget is off. This rule replaces the last sentence of the next rule for built-in slugs.
+
 - Safe mode turns an agent widget off for one host start. `widget_install` and `widget_remove` of an agent slug clear its off entry. Only a live widget that is not an agent bundle makes `widget_install` give `slug-taken`.
 
 The replay found these breaks at these lines:
