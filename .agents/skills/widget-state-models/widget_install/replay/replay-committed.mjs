@@ -56,6 +56,8 @@ try {
   await host.start({ DEEPWIDGETS_SAFE_MODE: '1' })
   const r4 = await host.call('widget_install', { dir: v4 })
   check('in safe mode, the install fails', r4.isError && r4.body?.error?.code === 'install-failed', short(r4.body?.error?.code))
+  const step = r4.body?.error?.nextStep ?? ''
+  check('its nextStep says to call widget_remove for the slug, which keeps the state, then widget_install', step.includes('widget_remove') && step.includes('keeps the state') && step.includes('widget_install'), short(step))
   check('in safe mode, the install removes nothing', JSON.stringify(agentDeps(host.home, 'a')) === JSON.stringify([A, B]), short(agentDeps(host.home, 'a')))
   await host.stop()
 

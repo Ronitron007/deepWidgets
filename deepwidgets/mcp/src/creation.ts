@@ -78,13 +78,16 @@ export class CreationError extends Error {
   readonly code: CreationErrorCode
   readonly gate: GateName | undefined
   readonly diagnostics: string[]
+  /** A next step for this case, in place of the default next step of the code. */
+  readonly nextStep: string | undefined
 
-  constructor(code: CreationErrorCode, message: string, options: { gate?: GateName, diagnostics?: string[] } = {}) {
+  constructor(code: CreationErrorCode, message: string, options: { gate?: GateName, diagnostics?: string[], nextStep?: string } = {}) {
     super(message)
     this.name = 'CreationError'
     this.code = code
     this.gate = options.gate
     this.diagnostics = options.diagnostics ?? []
+    this.nextStep = options.nextStep
   }
 }
 
@@ -627,7 +630,9 @@ export class WidgetInstaller {
     if (previous.length > 1) {
       const keep = this.registeredName(slug, previous, ['live'])
       if (keep === undefined) {
-        throw new CreationError('install-failed', `the bundles ${previous.join(', ')} of ${slug} are installed, and none is live in this Host start; nothing was removed or installed`)
+        throw new CreationError('install-failed', `the bundles ${previous.join(', ')} of ${slug} are installed, and none is live in this Host start; nothing was removed or installed`, {
+          nextStep: `No installed version of ${slug} can start. Call widget_remove with the slug ${slug}: it removes both bundles and keeps the state. Then call widget_install again.`,
+        })
       }
       for (const leftover of previous.filter((item) => item !== keep)) await this.removeFirst(slug, leftover, keep)
       // The kept version is the committed one now: a committed name that was removed does not stay in the record.
