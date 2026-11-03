@@ -68,6 +68,7 @@ The operator made these decisions. They outrank every other document.
 | `widget.dev_gates` | A widget under development stays in the one host. No dev host and no dev worker. Before each install, `widget_install` runs three gates: a compile with esbuild, a lint with a type check (oxlint, type-aware), and a test run in a throwaway process. Code that fails a gate never reaches the host. A crash blamed on a widget turns off only that widget, and it does not count toward safe mode or the give-up. A quarantined widget comes back when its code changes. The watchdog writes a provisional crash record during a long stall, so an out-of-memory abort is blamed too. Evidence: `standing.checked.dev_gates`. |
 | `widget.agent_code_v1` | In v1, agent code in the host has no guard: no approval, no lint, and no sandbox. Later iterations add the items in `standing.later`. |
 | `widget.builtin_slugs` | The slug of a built-in widget, such as `sample`, is reserved. `widget_install` gives `slug-taken` for that slug, also when the built-in widget is off. Decided on 2026-11-03. |
+| `widget.mcp_consent` | In the MVP, the only security work is the MCP endpoint. An agent gets access only after the operator approves it in the app, through a channel that no other local process can forge. Each approved agent can do everything. This decision replaces `widget.agent_identity`. Decided on 2026-11-03. Spec: `docs/specs/mcp-consent.md`. |
 
 ## The design `standing.design`
 
