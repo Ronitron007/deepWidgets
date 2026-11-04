@@ -26,15 +26,16 @@ const CRASH_HOLDS = ['TypeOK', 'BlamedCrashNeverCounts', 'SafeModeAfterTwo', 'Gi
   'QuarantinedNeverRuns', 'RecordOnlyBlamesItsHost', 'ProvisionalGoneAfterBeat', 'NoDeadlock']
 const CRASH_BREAKS = ['SampleNeverQuarantined', 'HashChangeLifts', 'ProvisionalOnlyOnAbort', 'InnocentNeverQuarantined',
   'SampleLiveInSafeMode']
-const ACTION_HOLDS = ['TypeOK', 'ReplaySameResult', 'ReplayFlag', 'ConflictOnOtherArgs', 'FIFO', 'QueryNoQueue',
-  'BusyNeverRuns', 'NoAdmitAfterStop', 'DrainBeforeClose', 'RevCountsWrites', 'NoDeadlock']
+const ACTION_HOLDS = ['TypeOK', 'AtMostOnce', 'ReplaySameResult', 'ReplayFlag', 'ConflictOnOtherArgs', 'NoLateWrite', 'OneAtATime', 'FIFO',
+  'QueryNoQueue', 'BusyNeverRuns', 'NoAdmitAfterStop', 'DrainBeforeClose', 'RevCountsWrites', 'NoDeadlock']
 const INSTALL_HOLDS = ['TypeOK', 'GatesGuardHost', 'FailedReplaceKeepsOld', 'NeverRemoveLastGood', 'CommittedNotStandby', 'StateKept', 'BuiltInUntouched', 'OneBundlePerSlug', 'NewSeedSetsProgram',
   'SameSeedKeepsProgram', 'SlugTakenOnlyForBuiltIn', 'QuarantineHolds', 'RollbackKeepsRecord', 'BuiltInSlugReserved', 'NoDeadlock']
 
 const actionMutants = {
   any_turn: 'FIFO', dup_no_flag: 'ReplayFlag', no_cancel: 'BusyNeverRuns', no_drain: 'DrainBeforeClose',
   no_hash_check: 'ConflictOnOtherArgs', no_stop_check: 'NoAdmitAfterStop', query_queued: 'QueryNoQueue',
-  stale_rev: 'RevCountsWrites', replay_live_rev: 'ReplaySameResult',
+  rev_on_refuse: 'RevCountsWrites', replay_live_rev: 'ReplaySameResult', slot_at_timeout: 'OneAtATime',
+  no_slot_abort_check: 'NoLateWrite', no_mark: 'AtMostOnce',
 }
 const crashMutants = {
   no_blame_skip: 'BlamedCrashNeverCounts', safe_off_by_one: 'SafeModeAfterTwo', give_up_late: 'GiveUpAtFour',
@@ -67,8 +68,8 @@ const MODELS = {
   action_contract: {
     spec: 'ActionContract.tla',
     runs: {
-      main: { config: 'cfg/chart.cfg', breaks: ['NoLateWrite', 'OneAtATime', 'AtMostOnce'], holds: ACTION_HOLDS },
-      norestart: { config: 'cfg/norestart.cfg', breaks: ['AtMostOnce'], holds: ['NoDeadlock'] },
+      main: { config: 'cfg/chart.cfg', breaks: [], holds: ACTION_HOLDS },
+      norestart: { config: 'cfg/norestart.cfg', breaks: [], holds: ['AtMostOnce', 'NoDeadlock'] },
       'queue-hold': { config: 'cfg/queue-hold.cfg', breaks: [], holds: ACTION_HOLDS },
       'idem-hold': { config: 'cfg/idem-hold.cfg', breaks: [], holds: ACTION_HOLDS },
     },
