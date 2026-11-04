@@ -14,7 +14,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type { HostObservable, SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { PanelInfo } from './service.ts'
-// deepwidgets-trim: trim.startup shows only hello and the shell.overlay seat. AppFrame needs ui-session, a part of the DSH workspace screen.
+// deepwidgets-trim: trim.startup shows only hello and the shell.overlay seat.
+// AppFrame needs ui-session, a part of the DSH workspace screen.
 // import { AppFrame } from './AppFrame.tsx'
 // import type { AppFrameInjected } from './AppFrame.tsx'
 import { createElement } from 'react'
