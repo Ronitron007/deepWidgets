@@ -25,9 +25,9 @@ Each model has its own sync commit. At its sync commit, a model describes the co
 
 | Model | Sync commit | Note |
 |---|---|---|
-| `crash_lifecycle` | `ff12c440` | The unit `widget.install_records` changed `held`, and added `lift`, `holdLift`, and `settleLift` in `isolation.ts`. The model has no install, so a load with success lifts the quarantine. The other covered lines only moved. |
-| `widget_install` | `e9fe5bc3` | The fix of `widget_fv.replace` (unit `widget.install_replace`), on top of the fix of `widget_fv.install` and `widget.builtin_slugs`. Each agent slug has two package names. A replace installs the new version under the free name, the new registration waits as the standby of the old entry, the new name is committed, and the old bundle goes last. At a Host start, the row of the committed name owns the slug. Review round 1 added the committed name and the bundle with the older row id. Review round 2 added the fallback and the rule that an install never removes the last good version. The `BuiltIn` branch of `Step` is the behavior at `aa7cd518`. The code does not reach it, because the slug of a built-in widget is reserved. Only the mutants `offAllowed` and `builtinRow` reach it. |
-| `action_contract` | `aa7cd518` | Not in sync. [Ronitron007/deepWidgets#75](https://github.com/Ronitron007/deepWidgets/pull/75) fixed `widget_fv.action` and changed the covered lines. Its model of the fixed code is not in this skill. |
+| `crash_lifecycle` | `c254b9df` | The unit `widget.install_records` changed `held`, and added `lift`, `holdLift`, and `settleLift` in `isolation.ts`. The model has no install, so a load with success lifts the quarantine. The unit `widget.install_replace` added the second package name, `host.failed`, and the fallback in `isolation.ts` and `index.ts`. The model has no install and one package name, so these changes do not change its steps. The other covered lines only moved. |
+| `widget_install` | `c254b9df` | The fix of `widget_fv.replace` (unit `widget.install_replace`), on top of the fix of `widget_fv.install` and `widget.builtin_slugs`. Each agent slug has two package names. A replace installs the new version under the free name, the new registration waits as the standby of the old entry, the new name is committed, and the old bundle goes last. At a Host start, the row of the committed name owns the slug. Review round 1 added the committed name and the bundle with the older row id. Review round 2 added the fallback and the rule that an install never removes the last good version. The `BuiltIn` branch of `Step` is the behavior at `aa7cd518`. The code does not reach it, because the slug of a built-in widget is reserved. Only the mutants `offAllowed` and `builtinRow` reach it. The last commit of #82 (`afa46cca`) added only a `nextStep` text to an error in `creation.ts`. The covered lines moved by 3 to 5 lines. |
+| `action_contract` | `c254b9df` | The fix of `widget_fv.action` ([Ronitron007/deepWidgets#75](https://github.com/Ronitron007/deepWidgets/pull/75), unit `widget.action_settle`). The model comes from the model of the fixed code that the #75 implementer wrote. A write commits when it passes the abort check at its storage slot. The run timer reads that flag: a call that was committed gives `timeout-after-write` with the rev after its started writes settle, and else `timeout`. The slot frees only after the started writes settle. A write after the timeout is refused. The state record holds the write mark of a keyed call, in the same write. A retry that finds only the mark gives `replayed: true` and `resultLost: true`. The mutant `slot_at_timeout` is the timeout of the code before #75. |
 
 The first check ran at `38df710e`.
 
@@ -53,10 +53,10 @@ Each model covers these files and functions. The line ranges are at the sync com
 |---|---|
 | `apps/desktop/src/deepwidgets-supervisor.ts` | `discardProvisionalRecord` 36-44, `hostPidOf` 47-50, `blamedRow` 58-63, `abortedExit` 76-79, `blamedByRecords` 87-98, `DesktopHostSupervisor` 108-193 (`ready` 142-145, `failed` 152-184, `dispose` 187-192) |
 | `apps/desktop/src/deepwidgets-crash-policy.ts` | `HostCrashPolicy` 27-52 (`crash` 38-51), and the constants 8-16 |
-| `deepwidgets/widgets/src/isolation.ts` | the quarantine contract 1-20, `runAs` 103-105, `createIsolation` 193-368 (the record apply at boot 196-222, `held` 228-233, `lift` 236-241, the install hold 244-255, `wrap` 264-288, `claim` 307-334, `track` 346-352, `holdLift` and `settleLift` 354-366) |
+| `deepwidgets/widgets/src/isolation.ts` | the quarantine contract 1-20, `runAs` 113-115, `createIsolation` 205-403 (the record apply at boot 208-234, `held` 240-245, `lift` 248-253, the install hold and `loaded` 256-281, `wrap` 290-323, `claim` 342-369, `track` 381-387, `holdLift` and `settleLift` 389-401) |
 | `deepwidgets/widgets/src/watchdog.ts` | `inSlot` 40-49, `startWatchdog` 92-146 (the heartbeat 123, `track` 139-144) |
 | `deepwidgets/widgets/src/watchdog-worker.ts` | `recordOf` 108-122, `removeProvisional` 125-130, the poll loop 145-200 |
-| `deepwidgets/widgets/src/index.ts` | `SAFE_MODE_ENV` and `BUILT_IN_WIDGET_FOLDERS` 39-47, safe mode in `apply` 662, `add` 1169-1208 |
+| `deepwidgets/widgets/src/index.ts` | `SAFE_MODE_ENV` and `BUILT_IN_WIDGET_FOLDERS` 41-49, safe mode in `apply` 707, `add` 1214-1239 (the safe-mode check 1216-1221) |
 | `apps/desktop/src/host-process.ts` | `DesktopHostProcess.start` 210-280 (the `fatal` event 254, the exit failure 274-275), `fail` 379-391 |
 | `apps/desktop/src/main.ts` | the safe-mode environment 549, `supervisor.ready` and `supervisor.failed` 630-631 |
 | `apps/desktop-host/src/index.ts` | the IPC `fatal` message of a failed boot 154-166 |
@@ -65,14 +65,14 @@ Each model covers these files and functions. The line ranges are at the sync com
 
 | File | Functions and lines |
 |---|---|
-| `deepwidgets/widgets/src/index.ts` | in `apply` 501-992: `admit` 525-532, `guarded` 539-541, the drain effect 543-558, `opened` 607-610, `enqueue` 621-642, `write` 645-660, `update` 667-677, `execute` 681-708, `runAction` 710-727, `call` 729-760, `runOnce` 763-784, `remember` 787-792, the service methods 984-987 |
+| `deepwidgets/widgets/src/index.ts` | the write mark in the state record `writeMarkSchema` and `stateSchema` 276-285, `Run` 610-629, in `apply` 704-1491: the requests prune at open 715-721, `admit` 728-735, `guarded` 742-744, the drain effect 746-763, `opened` 812-815, `enqueue` 826-847, `liveMarks` and `markOf` 850-861, `settleWrites` 864-869, `write` and `writeNow` 875-906, `update` 916-926, `execute` 935-982, `runAction` 984-1014, `call` 1016-1047, `runOnce` 1050-1079, `remember` 1082-1087, the mark prune at a slug start 1204-1210, the service methods 1473-1474 |
 | `packages/storage/storage-domain/src/domain.ts` | `DomainImpl.close` 251-254, `runClose` 256-264, the write chain `enqueue` 283-300, `KvTableImpl.put` 340-346, `update` 375-389 |
 
 ### `widget_install`
 
 | File | Functions and lines |
 |---|---|
-| `deepwidgets/mcp/src/creation.ts` | `bundleName` and `secondBundleName` 166-173, `runGates` 382-401, `writeBundle` 412-428, `WidgetInstaller` 442-725 (`serial` 450-454, `folderOfName` 462-464, `installedNames` 471-477, `registeredName` 492-502, `migrateSeed` 506-519, `meta` 522-532, `waitFor` and `waitLive` 535-546, `install` 549-551, `reload` 554-562, `remove` 564-587, `removeFirst` 589-596, `installNow` 598-656, `loadNew` 662-724) |
+| `deepwidgets/mcp/src/creation.ts` | `bundleName` and `secondBundleName` 169-176, `runGates` 385-404, `writeBundle` 415-431, `WidgetInstaller` 445-730 (`serial` 453-457, `folderOfName` 465-467, `installedNames` 474-480, `registeredName` 495-505, `migrateSeed` 509-522, `meta` 525-535, `waitFor` and `waitLive` 538-549, `install` 552-554, `reload` 557-565, `remove` 567-590, `removeFirst` 592-599, `installNow` 601-661, `loadNew` 667-729) |
 | `deepwidgets/widgets/src/index.ts` | `builtInSlugs` 115-138, `programSchema` 286-291, `RegisteredRows` 345-354, `buildRegistration`, `WidgetsService` (`register`), `WidgetRecordsService` 513-579 and `guard` 582-586, safe mode in `apply`, `call`, `setProgram` 1090-1102, `programRecord` 1104-1109, `restoreProgram` 1111-1119, `adoptSeed` 1121-1125, `seed` 1190-1211, `add` 1214-1242, the committed name and the fallback (`readCommits`, `rebuildCommits`, `ownerName`, `fallBack`, `release`, `rowFailed`, `commit`) 1243-1316, the standby `wait` and `promote` 1318-1345, `start` 1349-1384, `rowsOf` 1386-1399, `list` 1418-1421, `hold` and `failed` 1453-1460, the runtime of `widgetRecords` |
 | `deepwidgets/widgets/src/isolation.ts` | the quarantine contract 1-20, `rowId` and `isAgentRow` 89-96, `agentRow` 99-102, `runningRow` 105-107, `held` 240-246, `lift` 248-254, the install hold and `loaded` 256-287, `wrap` 290-322, `holdLift` and `settleLift` 389-401 |
 | `deepwidgets/widget-sample/src/index.ts` | `widgetSlugs` |
@@ -112,9 +112,9 @@ Each model covers these files and functions. The line ranges are at the sync com
 | `NoAdmitAfterStop` | The runtime admits no call after the stop starts. | holds | |
 | `DrainBeforeClose` | Each admitted call ends before the storage domain closes. | holds | |
 | `RevCountsWrites` | The state revision counts the state writes. | holds | |
-| `NoLateWrite` | A call that gives `timeout` writes nothing. | breaks | `widget_fv.action` |
-| `OneAtATime` | Two writes of one slug never overlap. | breaks | `widget_fv.action` |
-| `AtMostOnce` | A retried call with one request ID writes once, also after a host restart. | breaks | `widget_fv.action` |
+| `NoLateWrite` | A call that gives `timeout` writes nothing, and no write of a call lands after the call gave its answer. | holds | `widget_fv.action` |
+| `OneAtATime` | Two writes of one slug never overlap. | holds | `widget_fv.action` |
+| `AtMostOnce` | A retried call with one request ID writes once, also after a host restart. | holds | `widget_fv.action` |
 
 ### `widget_install` rules
 
@@ -215,7 +215,7 @@ Use `action_contract` or `widget_install` in place of `crash_lifecycle` for the 
 
 To see the runs of a model, run `node .agents/skills/widget-state-models/check.mjs crash_lifecycle`. Each config path is relative to the model folder, for example `crash_lifecycle/cfg/mut/keep_prov.cfg`. To run one config by hand, give `/statechart` the spec, the config, and the `view.mjs` of the model folder. Put the result in `<out folder>/<run name>`. Then run `check.mjs` with the model and the out folder, without `run`, to compare.
 
-On an idle Mac, the main runs take about 2 minutes for `crash_lifecycle` and 4 minutes for `action_contract`. The run `idem-hold` takes the most time. When other jobs load the machine, the runs can take three times as long.
+On an idle Mac, the main runs take about 2 minutes for `crash_lifecycle` and 5 minutes for `action_contract`. The run `idem-hold` takes the most time (281 seconds on 2026-11-04). With `--mutants`, `action_contract` took 475 seconds on 2026-11-04. When other jobs load the machine, the runs can take three times as long.
 
 `widget_install` has a default set and a full set of runs:
 
@@ -234,12 +234,12 @@ To use the mutant runs too, add `--mutants` to a `check.mjs` command. The mutant
 | Model | Mutant | Rule that must break |
 |---|---|---|
 | `crash_lifecycle` | `no_blame_skip`, `safe_off_by_one`, `give_up_late`, `no_dispose`, `no_quarantine`, `no_pid_check`, `keep_prov` | `BlamedCrashNeverCounts`, `SafeModeAfterTwo`, `GiveUpAtFour`, `NoRestartAfterGiveUp`, `QuarantinedNeverRuns`, `RecordOnlyBlamesItsHost`, `ProvisionalGoneAfterBeat` |
-| `action_contract` | `any_turn`, `dup_no_flag`, `no_cancel`, `no_drain`, `no_hash_check`, `no_stop_check`, `query_queued`, `stale_rev`, `replay_live_rev` | `FIFO`, `ReplayFlag`, `BusyNeverRuns`, `DrainBeforeClose`, `ConflictOnOtherArgs`, `NoAdmitAfterStop`, `QueryNoQueue`, `RevCountsWrites`, `ReplaySameResult` |
+| `action_contract` | `any_turn`, `dup_no_flag`, `no_cancel`, `no_drain`, `no_hash_check`, `no_stop_check`, `query_queued`, `rev_on_refuse`, `replay_live_rev`, `slot_at_timeout`, `no_slot_abort_check`, `no_mark` | `FIFO`, `ReplayFlag`, `BusyNeverRuns`, `DrainBeforeClose`, `ConflictOnOtherArgs`, `NoAdmitAfterStop`, `QueryNoQueue`, `RevCountsWrites`, `ReplaySameResult`, `OneAtATime`, `NoLateWrite`, `AtMostOnce` |
 | `widget_install` | `skipGate`, `stateReset`, `builtinRow`, `seedFile`, `noRestore`, `oneName`, `offAllowed`, `removeFirst`, `noLiveCheck`, `noDefer` | `GatesGuardHost`, `StateKept`, `BuiltInUntouched` and `OneBundlePerSlug`, `SameSeedKeepsProgram`, `RollbackKeepsRecord`, `QuarantineHolds`, `BuiltInSlugReserved`, `FailedReplaceKeepsOld`, `NeverRemoveLastGood`, `CommittedNotStandby` |
 
 In `widget_install`, the mutant `removeFirst` removes the old bundle before the new one is written, as the code did before `widget_fv.replace`. The mutant `noLiveCheck` keeps the committed name when it is installed, without the check that it is live in this Host start (the code of review round 1). The mutant `noDefer` lets the row that loads first take the slug. The mutant `oneName` makes the quarantine know only the first package name of a slug. The mutant `liftAtLoad` of `widget.install_records` is gone: after `widget_fv.replace`, a replace never brings the blamed files back, so the rule holds with it.
 
-In `action_contract`, each mutant also has a control run `-none` with the same bounds. The control run must hold.
+In `action_contract`, each mutant also has a control run `-none` with the same bounds. The control run must hold. The mutant `slot_at_timeout` frees the slot at the timeout and gives `timeout` at once, as the code did before #75. The mutant `no_slot_abort_check` removes the abort check at the storage slot. The mutant `no_mark` writes no write mark in the state record. The mutant `rev_on_refuse` adds one to the rev when a write is refused at its slot. The mutant `stale_rev` has no run now: the slot keeps one write at a time, so a write can not read a stale rev in this model, and its rule holds with it.
 
 ## Read a result `widget_state_models.read`
 
@@ -268,10 +268,10 @@ corepack pnpm run build:artifacts
 | Model | Command | Paths that it replays |
 |---|---|---|
 | `crash_lifecycle` | `node_modules/.bin/vitest run --root .agents/skills/widget-state-models/crash_lifecycle/replay` | `InnocentNeverQuarantined`, `ProvisionalOnlyOnAbort` (two paths), `HashChangeLifts` and its control, `SampleNeverQuarantined` with `SampleLiveInSafeMode` |
-| `action_contract` | `node .agents/skills/widget-state-models/action_contract/replay.mjs <crash\|late\|overlap\|natural>` | `crash`: `AtMostOnce` after a restart. `late`: `NoLateWrite`, and `AtMostOnce` with no restart. `overlap`: `OneAtATime`. `natural`: `NoLateWrite` with no patched disk, in 400 calls near the timeout. |
+| `action_contract` | `node tools/widgets-action-replay.mjs` (set `WIDGETS_ACTION_REPLAY` to a comma list of names to run only those) | `crash`: `AtMostOnce` after a restart, with `resultLost`. `late`: `NoLateWrite`, the answer `timeout-after-write`, and `AtMostOnce` with no restart. `overlap`: `OneAtATime`. `natural`: `NoLateWrite` with no patched disk, in 400 calls near the timeout. `hang`: a write of a hung handler after its answer is refused, and the slot frees. `nested`: a nested `timeout-after-write` is `handler-error` for the outer call (not in the model). |
 | `widget_install` | `node .agents/skills/widget-state-models/widget_install/replay/replay-<name>.mjs` | `newseed`: `NewSeedSetsProgram`. `sameseed`: `SameSeedKeepsProgram`. `quarantine`: `QuarantineHolds`. `replace`: `FailedReplaceKeepsOld`, and the turns of the two package names. `putback`: `FailedReplaceKeepsOld` on the path of the finding at `38df710e`, where the old code can not start again, and a new version that throws after it registers. `legacy`: `FailedReplaceKeepsOld` over a bundle with the older row id (not in the model). `committed`: `CommittedNotStandby` after an interrupted replace, and an install in a safe-mode start that removes nothing. `fallback`: `NeverRemoveLastGood`. The host dies after the commit, the committed version throws at the next start, the other version takes the slug, and a failed install keeps it live. `builtin`: `BuiltInUntouched` and `OneBundlePerSlug`. `safe`: `SlugTakenOnlyForBuiltIn`, in a safe-mode host start. `rollback`: `RollbackKeepsRecord`. `quarantine` also has the live-wait timeout. `reserved`: `BuiltInSlugReserved`. `guard`: widget code can not use the service `widgetRecords` (not in a model). `node tools/widgets-install-replay.mjs` runs `newseed`, `sameseed`, `rollback`, `quarantine`, `safe`, `reserved`, `guard`, `replace`, `putback`, `legacy`, `committed`, and `fallback`. |
 
-The `crash_lifecycle` replays assert the bad behavior that the code has at the sync commit. Thus a fix of `widget_fv.crash` makes them fail. The `action_contract` replays print `CONFIRMED` when the bug occurs. The `widget_install` replays `newseed`, `sameseed`, `rollback`, `quarantine`, `safe`, `reserved`, and `guard` assert the fix of `widget_fv.install`. The replays `replace`, `putback`, `legacy`, `committed`, and `fallback` assert the fix of `widget_fv.replace`. Each prints `PASS` or `FAIL` for each check, and exits with 0 only when each check passes. The replay `builtin` prints the facts of each step.
+The `crash_lifecycle` replays assert the bad behavior that the code has at the sync commit. Thus a fix of `widget_fv.crash` makes them fail. The `action_contract` replay asserts the fix of `widget_fv.action`. It prints `PASS` or `FAIL` for each check, and exits with 0 only when each check passes. The `widget_install` replays `newseed`, `sameseed`, `rollback`, `quarantine`, `safe`, `reserved`, and `guard` assert the fix of `widget_fv.install`. The replays `replace`, `putback`, `legacy`, `committed`, and `fallback` assert the fix of `widget_fv.replace`. Each prints `PASS` or `FAIL` for each check, and exits with 0 only when each check passes. The replay `builtin` prints the facts of each step.
 
 When a fix lands, change the replay of its rule so that it asserts the correct behavior.
 
@@ -301,6 +301,6 @@ The models leave out these items:
 
 - `crash_lifecycle`: real time. A tick is a quarter of the watchdog threshold. The model has one agent widget and the built-in `sample`.
 
-- `action_contract`: one slug and one request key. The storage write is one step for each await of the domain chain.
+- `action_contract`: one slug and one request key. The storage write is one step for each await of the domain chain. A handler has one state write. A handler that timed out can try a second write, which is refused. The handler does not throw. The drain bound of the dispose is not in the model. The model lets the run timer fire after the handler returned while its write is not settled. The code clears the timer then, so the model has more paths than the code.
 
 - `widget_install`: one agent slug in most runs, and two slugs in the run `two-slugs`. Each agent slug has the two package names A and B. The run `two-slugs` has no `DeselectFails` and two calls: the one-slug runs check those paths. The plugin manager is one step for each await of `installBundle` and `removeBundle`. A crash blames the live row or the row of the standby. The default set has one crash. A single crash can interrupt a replace and start the Host in safe mode. At a start, the code of one row can throw before it registers, also when it went live before (`failsNow`).
