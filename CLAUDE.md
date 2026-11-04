@@ -4,13 +4,13 @@ This file is the head node for every agent in this repository. Read it before an
 
 ## What this repository is `head.what`
 
-deepWidgets is an unofficial fork of DeepSeek Harness (DSH). The fork is one squashed copy of DSH commit `22ddee3`. `UPSTREAM.md` gives the source commit and the license.
+deepWidgets is an unofficial fork of DeepSeek Harness (DSH). The fork started as one squashed copy of DSH commit `22ddee3`. On 2026-11-02, [Ronitron007/deepWidgets#73](https://github.com/Ronitron007/deepWidgets/pull/73) merged DSH `master` `ce7073d5` into the fork through the vendor branch `rohan/dsh-upstream`. That upstream commit has Cordis `4.0.0-rc.11`. `docs/plans/upstream-sync.md` tells how a sync works. `UPSTREAM.md` gives the upstream commits and the license.
 
 The goal is a floating desktop widget whose plugins run on Cordis. DSH already has a Cordis host process, a Cordis client in the renderer, and an Electron desktop app. Thus deepWidgets starts from DSH and turns off the parts that it does not use.
 
 ## Why most code does not run `head.why`
 
-Most code in this repository is DSH code that deepWidgets does not need. The repository has 387 workspace packages. At boot, the desktop app composes 200 plugin rows. The floating widget needs only a small part of them.
+Most code in this repository is DSH code that deepWidgets does not need. The repository has 387 workspace packages. At boot, the desktop app composes 201 plugin rows. The floating widget needs only a small part of them.
 
 The operator keeps the unused code on purpose. It shows how DSH writes Cordis plugins, and the operator reads it. Do not delete it to make the repository smaller.
 
@@ -28,20 +28,20 @@ Code without a comment can still be off. A plugin row is off when a patch layer 
 
 ## Status `head.status`
 
-| Item | State on 2026-11-02 |
+| Item | State on 2026-11-04 |
 |---|---|
-| Rows that deepWidgets turns off | `deepwidgets/trim/cordis.patch.yml` turns off 160 of the 200 rows. The rows `hmr` and `timer` are on again for the widget system (`widget_rows`). Some kept rows stay pending, because the agent rows are off. |
+| Rows that deepWidgets turns off | `deepwidgets/trim/cordis.patch.yml` turns off 161 of the 201 rows. The rows `hmr` and `timer` are on again for the widget system (`widget_rows`). Some kept rows stay pending, because the agent rows are off. |
 | Our packages | `deepwidgets/probe` and `deepwidgets/trace` (TypeScript). `deepwidgets/trim`: the trim patch, the row lists, and the test bundle `fixtures/widget-rows-install`. The widget MVP (spec `widget_mvp`) adds these packages: `deepwidgets/widgets` (the runtime, service `widgets`), `deepwidgets/widget-sample` (the `sample` counter), `deepwidgets/shell` (the widget page, built with Vite), `deepwidgets/mcp` (the MCP server for agents, see its `README.md`). Electron main opens one floating window for each widget (`apps/desktop/src/deepwidgets-windows.ts`). |
 | MCP port | The desktop host binds the fixed port `DEEPWIDGETS_MCP_PORT` (default 47615). It writes `$DSH_HOME/deepwidgets/mcp.json`. Smoke runs use port 0. |
 | Main window | The app opens the main window at once, with no welcome window. The main window shows only `hello` and the probe text. |
-| Checks | `tools/smoke-desktop.mjs` boots the app. With `DSH_SMOKE_PROBE=1`, it also runs the probe test. With `DSH_SMOKE_TRACE=1`, it also runs the trace test. With `DSH_SMOKE_HELLO=1`, it also runs the hello test. With `DSH_SMOKE_ROWS=<folder>`, it also compares the loaded rows with the row lists in that folder. With `DSH_SMOKE_INSTALL=<absolute bundle folder>`, it also installs that bundle into the running host. The bundle must apply at once, and its plugin must run. With `DSH_SMOKE_WIDGET=<slug>`, it checks the widget page and its live refresh. With `DSH_SMOKE_WINDOWS=1`, it checks that `sample` gets one window, and that the window closes when the `sample` row turns off. `tools/widgets-runtime.mjs` and `tools/widgets-mcp.mjs` check the runtime and the MCP server with a host and no app. `tools/widgets-mcp-port.mjs` checks the fixed port. It also boots the app twice, unless `WIDGETS_MCP_PORT_SKIP_DESKTOP=1`. `tools/trace-late-row.mjs` checks that the trace finds late rows. `tools/trace-client-rows.mjs` checks the client half with no app. |
+| Checks | `tools/smoke-desktop.mjs` boots the app. With `DSH_SMOKE_PROBE=1`, it also runs the probe test. With `DSH_SMOKE_TRACE=1`, it also runs the trace test. With `DSH_SMOKE_HELLO=1`, it also runs the hello test. With `DSH_SMOKE_ROWS=<folder>`, it also compares the loaded rows with the row lists in that folder. With `DSH_SMOKE_ROWS` and `DSH_SMOKE_ROWS_SAVE=<file>`, it also writes the host row snapshot to that file. With `DSH_SMOKE_ROWS` and `DSH_SMOKE_ROWS_SNAPSHOT=<file>`, it compares that snapshot with `rows.host.txt` and does not start the app. With `DSH_SMOKE_INSTALL=<absolute bundle folder>`, it also installs that bundle into the running host. The bundle must apply at once, and its plugin must run. With `DSH_SMOKE_WIDGET=<slug>`, it checks the widget page and its live refresh. With `DSH_SMOKE_WINDOWS=1`, it checks that `sample` gets one window, and that the window closes when the `sample` row turns off. With `DSH_SMOKE_CREATE=<widget source folder>`, an MCP client installs that folder with `widget_install`, finds its window, and removes it. The flag `DSH_SMOKE_HOST_RESTART` kills the host and checks the restart. Its modes are `1`, `boot`, `give-up`, `blame`, and `watchdog`. Mode `1` kills the host one time. Mode `boot` kills the host while the main window starts. Mode `give-up` checks safe mode and the fatal dialog. Mode `blame` checks that the crash record blames the widget. Mode `watchdog` checks that the watchdog stops a looping widget. The flag `DSH_SMOKE_TIMEOUT_MS` sets the time limit of the run in milliseconds. The default is 240000. `tools/widgets-runtime.mjs` and `tools/widgets-mcp.mjs` check the runtime and the MCP server with a host and no app. `tools/widgets-mcp-port.mjs` checks the fixed port. It also boots the app twice, unless `WIDGETS_MCP_PORT_SKIP_DESKTOP=1`. `tools/trace-late-row.mjs` checks that the trace finds late rows. `tools/trace-client-rows.mjs` checks the client half with no app. The script `tools/widgets-blame.mjs` checks the crash blame and the quarantine with a host and no app. The script `tools/widgets-watchdog.mjs` checks the watchdog with a host and no app. The script `tools/widgets-create.mjs` checks widget creation over MCP with a host, then runs the `DSH_SMOKE_CREATE` smoke, unless `WIDGETS_CREATE_DESKTOP=0`. The script `tools/widgets-action-replay.mjs` replays the `action_contract` model paths of widget actions on a host. The script `tools/widgets-install-replay.mjs` runs the `widget_install` replays of the `widget-state-models` skill on a host. The script `tools/dsh-upstream-check.sh` lists the upstream DSH changes in the parts that deepWidgets uses, and the merge conflicts. The script `tools/smoke-desktop-linux.mjs` is not a check, but it gives the Linux helpers of `tools/smoke-desktop.mjs`. The script `tools/verify-import.sh` compares the import commit with the upstream commit in `UPSTREAM.md`. |
 
 ## Where things are `head.map`
 
 | Path | Content |
 |---|---|
-| `docs/specs/` | `fork-trim.md` (`fork_trim`), `floating-widget.md` (`floating_widget`), `ts-move.md` (`ts_move`), `widget-rows.md` (`widget_rows`), `widget-mvp.md` (`widget_mvp`), `widget-phase2.md` (`widget_phase2`), `handoff.md` (`handoff`, proposed), `handoff-evidence.md` (`handoff_evidence`), `widget-fv.md` (`widget_fv`) |
-| `docs/explore/widget-system/` | The widget decisions (`where-we-stand.md`, `standing.decided`), the checked facts, and the open points |
+| `docs/specs/` | `fork-trim.md` (`fork_trim`), `floating-widget.md` (`floating_widget`), `ts-move.md` (`ts_move`), `widget-rows.md` (`widget_rows`), `widget-mvp.md` (`widget_mvp`), `widget-phase2.md` (`widget_phase2`), `handoff.md` (`handoff`, proposed), `handoff-evidence.md` (`handoff_evidence`), `widget-fv.md` (`widget_fv`), `mcp-consent.md` (`mcp_consent`) |
+| `docs/explore/widget-system/` | The widget decisions (`where-we-stand.md`, `standing.decided`), the checked facts, the open points, and the spikes `widget-kit-spike.md` (`kit_spike`) and `plugins-spike.md` (`plugins_spike`) |
 | `docs/plans/` | The plans of the specs. Each plan unit is one PR. |
 | `docs/canvas/` | JSON Canvas boards that show how a system works, such as `floating-widget-processes.canvas`. |
 | `docs/tasks/` | The task file of a unit, written before the unit starts. `docs/tasks/README.md` is the task protocol. |
@@ -103,6 +103,20 @@ DSH_SMOKE_WINDOWS=1 node tools/smoke-desktop.mjs
 node tools/widgets-runtime.mjs
 node tools/widgets-mcp.mjs
 node tools/widgets-mcp-port.mjs
+DSH_SMOKE_HOST_RESTART=1 node tools/smoke-desktop.mjs
+DSH_SMOKE_HOST_RESTART=boot node tools/smoke-desktop.mjs
+DSH_SMOKE_HOST_RESTART=give-up node tools/smoke-desktop.mjs
+DSH_SMOKE_HOST_RESTART=blame node tools/smoke-desktop.mjs
+DSH_SMOKE_HOST_RESTART=watchdog node tools/smoke-desktop.mjs
+DSH_SMOKE_ROWS=deepwidgets/trim DSH_SMOKE_ROWS_SAVE="$TMPDIR/rows.json" node tools/smoke-desktop.mjs
+DSH_SMOKE_ROWS=deepwidgets/trim DSH_SMOKE_ROWS_SNAPSHOT="$TMPDIR/rows.json" node tools/smoke-desktop.mjs
+node tools/widgets-blame.mjs
+node tools/widgets-watchdog.mjs
+node tools/widgets-create.mjs
+node tools/widgets-action-replay.mjs
+node tools/widgets-install-replay.mjs
+tools/dsh-upstream-check.sh
+tools/verify-import.sh d15b5ec5
 node tools/trace-late-row.mjs
 node tools/trace-client-rows.mjs
 ```
@@ -116,3 +130,7 @@ Several agents share this Mac. Thus only one app or smoke run can occur at a tim
 2. Do the run.
 
 3. Remove the lock with `rmdir /tmp/deepwidgets-smoke.lock`.
+
+Under machine load, the watchdog can stop a healthy host. `docs/specs/widget-fv.md` records one such event. Until the unit `widget.crash_records` lands, run a failed check one more time.
+
+A check that installs a bundle over the Node inspector must run the install in `hmr.executing.exit`. Without it, the install can fail with `HMR transactions cannot be nested`.
