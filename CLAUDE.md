@@ -38,7 +38,7 @@ Code without a comment can still be off. A plugin row is off when a patch layer 
 
 ## Checks `head.checks`
 
-The smoke check `tools/smoke-desktop.mjs` boots the app. Each flag below adds a test to the run.
+The smoke check `tools/smoke-desktop.mjs` boots the app. Each flag below adds a test to the run, or changes how the run works.
 
 - `DSH_SMOKE_PROBE=1` runs the probe test.
 
