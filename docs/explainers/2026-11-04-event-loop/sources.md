@@ -80,7 +80,7 @@ Other runs:
 | `acf_probe` | `<electron prefix> --expose-internals SN/acf_probe.cjs`, the same with `node24` and `node22` | `electron`: `enabled: true`; `node24`: `enabled: true`; `node22`: `enabled: false` |
 | unhandled rejection default | `<electron prefix> -e "Promise.reject(new Error('nobody handles me'))"` | exit 1 |
 | base check | `git rev-parse HEAD` in the worktree | `68aabd9afe3df694af31873150ad93c756fe06de` |
-| unchanged files | `git diff --stat 108d663f 68aabd9a -- <isolation, records, watchdog, worker, supervisor, profile-boot, app-boot>`; `git diff --stat 108d663f 68aabd9a -- apps/desktop/src/deepwidgets-crash-policy.ts` | only `isolation.ts` (quarantine lift, agent rows) and `BOOT` (recompose, not `installFailLoud`) changed |
+| unchanged files | `git diff --stat 108d663f 68aabd9a -- <isolation, records, watchdog, worker, supervisor, profile-boot, app-boot>`; `git diff --stat 108d663f 68aabd9a -- apps/desktop/src/deepwidgets-crash-policy.ts` | only `isolation.ts` (quarantine lift, agent rows) and `BOOT` (recompose, not `installFailLoud`) changed. The check `tools/widgets-watchdog.mjs` changed (165 lines in, 114 out), so its numbers belong to `108d663f` |
 | narration lint | `python3 /Users/rohanmalik/.claude/skills/ste-writing/ste-lint.py docs/explainers/2026-11-04-event-loop/narration.md` | `total=0 per100w=0.00 em_dash=0` |
 
 ## Claims by scene `sources.claims`
@@ -98,6 +98,7 @@ Other runs:
 | `run_to_completion` | No preemption inside an agent; a long job blocks the agent | verified (read): `src.mdn_exec_model` "Run-to-completion" |
 | `one_thread_many_widgets` | All widgets, routes, and timers share the host main thread | verified (read): `WWS:211` (`standing.hard.agent_code`), `WD:4-7`; mechanism inferred |
 | `tasks` | Timer, I/O, and request callbacks are tasks; one at a time | verified (read): `src.jake_tasks` "Why this happens"; `src.html_spec` 8.1.7.3 |
+| `tasks` | The task and microtask rules of the article also apply to Node | inferred: the article has no Node content; Node adds the next tick queue and the phases (`next_tick`, `libuv_ring`) |
 | `microtasks` | Promise callbacks and `await` resumes are microtasks; drain until empty | verified (read): `src.v8_fast_async` "Tasks vs. microtasks"; `src.html_spec` 8.1.7.3 |
 | `order_example`, `order_walkthrough` | The output order | verified (ran): `order.cjs`, same on all |
 | `order_walkthrough` | Next tick queue drains before the promise microtasks | verified (read): `src.node_process` "When to use queueMicrotask() vs. process.nextTick()"; verified (ran): `order.cjs` |
@@ -108,7 +109,7 @@ Other runs:
 | `poll_wait` | An idle host uses almost no processor time | inferred |
 | `poll_wait` | Each call from a user or an agent starts as an HTTP request callback | verified (read): routes `/api/widgets/<slug>/call` in `WR`; the earlier video scene `routes`; poll-phase dispatch inferred from `src.node_event_loop` |
 | `immediate_vs_timeout` | Inside an I/O callback, immediate first; top level not fixed (96/4) | verified (ran): `phases.cjs`, `toplevel_race.cjs`; the guide `src.node_event_loop` also covers this case, but this session did not read that section |
-| `next_tick` | `process.nextTick` is Legacy; use `queueMicrotask` | verified (read): `src.node_process` |
+| `next_tick` | `process.nextTick` is Legacy; use `queueMicrotask` | verified (read): `src.node_process`. The doc chip is a paraphrase, because `process_handlers` has the one quote from this source. |
 | `next_tick` | In an ES module, next tick comes after the promise callbacks | verified (ran): `order.mjs` |
 | `thread_pool` | Pool of 4 by default; fs and DNS; sockets on the loop thread; C work, callback on the main thread | verified (read): `src.libuv_design` threadpool page and "The I/O loop"; `src.node_dont_block` "What code runs on the Worker Pool?" |
 | `block_everything` | No preemption between clients; each callback must be short | verified (read): `src.node_dont_block` "What does this mean for application design?" |
@@ -117,6 +118,7 @@ Other runs:
 | `block_examples` | REDOS, sync fs calls, large `JSON.parse`; 50 MB parse about 1.3 s | verified (read): `src.node_dont_block` "REDOS", "Node.js core modules", "JSON DOS" |
 | `block_examples` | 150 MB parse in the host took 868 ms, host lives | verified (ran, earlier video): `tools/widgets-watchdog.mjs` at `108d663f`, `parseMs 868` |
 | `block_widgets` | A loop stops every route, timer, heartbeat, and the action timeout | verified (read): `WD:4-7`, `WD:123`, `WR:946-959`; mechanism inferred from `src.node_dont_block` |
+| `block_widgets` | Only the main thread stops; the watchdog thread keeps its own loop | verified (read): `WDW:145-200`; verified (ran): `heartbeat.cjs` |
 | `block_remedies` | Partition with `setImmediate`, or offload | verified (read): `src.node_dont_block` "Complex calculations without blocking the Event Loop" |
 | `block_remedies` | deepWidgets detects the block from outside and ends the host | verified (read): `WDW:4-7`, `WDW:199` |
 | `promise_value` | States, settled once, lives in the heap | verified (read): `src.mdn_promise` "Description" |
@@ -138,6 +140,7 @@ Other runs:
 | `async_chain` | Definition and example | verified (read): `CHAT` (answer at 10:36); tree framing from `src.node_async_hooks` |
 | `async_ids` | Async resource, `asyncId`, `triggerAsyncId`; the ids 1, 5, 7 | verified (read): `src.node_async_hooks` "Terminology", "triggerAsyncId"; verified (ran): `async_ids.cjs` |
 | `als_intro` | Not browser `localStorage`; thread-local comparison | verified (read): `src.node_async_context` "Introduction" |
+| `als_intro` | Thread-local storage cannot tell the chains of one thread apart | verified (read): `src.mdn_exec_model` (each worker is its own agent); verified (ran): `~/kyaloon-media/explainer-event-loop-2026-11-04/notes/corrections-agent/runs/per_thread.cjs` on Node 22.23.0 (a global set in a worker is not seen by the main thread) |
 | `als_intro` | Reader context / dynamic scope framing | inferred framing (`src.tc39_async_context` "Motivation") |
 | `als_run` | `run`, `getStore`, `undefined` outside; the output | verified (read): `src.node_async_context`; verified (ran): `als_basic.cjs` |
 | `als_capture` | Store captured at registration | verified (read): `src.tc39_async_context` FAQ; `src.wintertc_als` |
@@ -153,7 +156,7 @@ Other runs:
 | `pid_signals` | `SIGKILL` cannot have a listener; a killed child shows `SIGKILL`, no code, no exit listener output | verified (read): `src.node_process` "Signal events"; verified (ran): `kill_signal.cjs` |
 | `abort_exit` | OOM gives `SIGABRT`; no listener runs | verified (ran): `kill_signal.cjs` |
 | `abort_exit` | Exit code 134 = 128 + 6 | verified (read): `src.node_process` "Exit codes"; `SUP:72-73` |
-| `run_as` | Blame store, `runAs`, row id pattern, action handler inside `runAs` | verified (read): `ISO:34`, `ISO:51`, `ISO:113-115`, `WR:963` |
+| `run_as` | Blame store, `runAs`, row id pattern, action handler inside `runAs` | verified (read): `ISO:34`, `ISO:51`, `ISO:113-115`, `WR:963`. The store keeps the Loader entry id, which can have group ids in front (`ISO:59-62`, `ISO:88-91`). The pattern tests the row id, the last part (`include:deepwidgets-widget-watchdog` in the earlier watchdog check). |
 | `run_as` | Timers and promises that a handler makes carry the row | verified (ran): `als_basic.cjs`, `late_throw.cjs`, `late_reject.cjs` (model); the earlier video blame check (8 of 9 fault kinds blamed) |
 | `fiber_wrap` | The wrap of `fiber._runner.execute`; Cordis has no public hook | verified (read): `ISO:283-329` |
 | `claimer_path` | One fail-loud listener per event; the release calls the fatal hooks before its first `await`; the claimer is a hook | verified (read): `BOOT:880-929`, `PBOOT:311-320`, `PBOOT:370-400`, `ISO:370-375`. The "before any await" order is inferred from the JS rule that an async function runs to its first `await` at once (`BOOT:897-905`). |
@@ -172,7 +175,7 @@ Other runs:
 | `watchdog_poll` | Poll 50 ms; a new beat resets the clock and removes the provisional record; monotonic clock; a 1 s poll gap restarts the clock | verified (read): `WDW:136-164`; verified (ran, earlier video): `widgets-watchdog.log` `suspend` case |
 | `provisional_record` | At 500 ms, by slot only, only when the slot names a widget; removed when the beat returns | verified (read): `WDW:150-157`, `WDW:165-180`; verified (ran, earlier video): `stall` case |
 | `provisional_record` | Not tied to the call | verified (read): `WDW:150-156`; `docs/specs/widget-fv.md:61` (the planned rule); `CHAT` (answer at 10:13) |
-| `kill_path` | At 2 s: crash record, native read only when the slot is empty, remove provisional, fd 2 line, `SIGKILL` | verified (read): `WDW:181-199` |
+| `kill_path` | At 2 s: crash record and remove provisional (both in `write`), native read and a second write only when the slot is empty, fd 2 line, `SIGKILL` | verified (read): `WDW:181-199` (`write` at `WDW:183-190`) |
 | `kill_path` | No Electron build of the native module; the CLI host can load it | verified (read): `WD:10-12`, `WD:56-74`; verified (PR, earlier video): #65 |
 | `threshold_why` | 868 ms parse; a 500 ms threshold gave a false kill in the spike | verified (ran, earlier video); verified (read): `WWS:242`, `WD:6-8` |
 | `supervisor_rules` | Exit carries pid, code, signal; record rules; abort rule; discard | verified (read): `HP:275`, `SUP:52-98`, `SUP:152-159` |
@@ -185,7 +188,7 @@ Other runs:
 | `ex_throw_call` | Enqueue, timeout timer, `runAs` in a microtask; `ctx.timeout` calls raw `setTimeout` with no try | verified (read): `WR:817-846` (`enqueue` at `WR:826`), `WR:946-963`; `WWS` row `standing.checked.cordis_containment` |
 | `ex_throw_return` | `inSlot` restores the slot; the call answers; `clearTimeout` | verified (read): `WD:46-48`, `WR:974-981`, `WR:990-1000` |
 | `ex_throw_fire` | The throw reaches `uncaughtException` with the store of the timer | verified (ran): `late_throw.cjs` (model); verified (ran, earlier video): blame check `timer-throw store` |
-| `ex_throw_claim` | The record fields, the stderr line, exit 1, no dispose; 20 to 100 ms | verified (read): `ISO:342-369`; verified (ran, earlier video): blame check (19 to 103 ms at `108d663f`) |
+| `ex_throw_claim` | The record fields, the stderr line, exit 1, no dispose; timer throw about 65 ms | verified (read): `ISO:342-369`; verified (ran, earlier video): blame check, `timer-throw` 64 ms (run of record `8b9c8672`) and 67 ms (rerun `108d663f`); all nine fault kinds 19 to 103 ms |
 | `ex_throw_others` | No stall, no provisional record | inferred from `WDW:150-166` |
 | `ex_throw_supervisor` | Code 1, no signal; pid match; 500 ms; not counted; quarantine; windows stay | verified (read): `SUP:58-63`, `SUP:93-94`, `POL:10`, `ISO:214-224`; verified (ran, earlier video): worked example `crash` and `quarantine` steps |
 | `ex_loop_call` | `inSlot` writes the index before the handler runs | verified (read): `WR:963`, `ISO:113-115`, `WD:43` |
@@ -196,6 +199,7 @@ Other runs:
 | `ex_loop_kill` | Crash record, remove provisional, fd 2 line, `SIGKILL`; 2,050 ms | verified (read): `WDW:181-199`; verified (ran, earlier video): `spin` `exit SIGKILL`, `ms 2050` |
 | `ex_loop_supervisor` | Crash record of the dead pid wins; 500 ms; quarantine | verified (read): `SUP:93-94`, `ISO:223-224` |
 | `ex_loop_variants` | Loop after `await`: slot 0, no provisional record, unblamed crash record, safe mode after repeats | verified (read): `WDW:169-170`, `WDW:191-193`, `SUP:58-63`, `POL:14`; verified (ran): `slot_await.cjs` |
+| `ex_loop_variants` | OOM: stall of at least 500 ms (the check record says at least 508 ms), abort before the 2 s kill | verified (read): `WDW:166`, `WDW:181`; verified (ran, earlier video): `oom` case, "host aborts before the watchdog kill". The time of the abort was not measured. |
 | `ex_loop_variants` | OOM: provisional record decides on `SIGABRT` | verified (read): `SUP:93-97`; verified (ran, earlier video): `oom` case; verified (ran): `kill_signal.cjs` (OOM gives `SIGABRT`) |
 | `limit_store` | Module top level runs outside any `run` | inferred (the wrap covers `execute`, not the module import, `ISO:290-323`); `RES` tie-in "Unblamed cases" |
 | `limit_store` | Listener rule; context loss in callback APIs and custom thenables | verified (ran): `als_emitter.cjs`; verified (read): `src.node_async_context` "Troubleshooting: Context loss" |
@@ -203,17 +207,20 @@ Other runs:
 | `limit_slot` | `ctx.interval` and `ctx.timeout` callbacks run outside `inSlot` | verified (read): `WD:40-49` (the slot is put back when `fn` returns); verified (ran): `slot_await.cjs`. That a timer callback finds slot 0 is inferred. |
 | `limit_slot` | In the app such a stall is unblamed | verified (read): `WD:10-12`, `WDW:191-196` |
 | `limit_timeout` | The timeout works only for an awaiting handler | verified (read): `WR:935-981`; verified (ran): `race_timeout.cjs` |
-| `limit_threshold` | Load can stop a healthy host; open point | verified (read): `CLAUDE.md` `head.commands`; `docs/specs/widget-fv.md` `widget_fv.open` |
-| `limit_provisional_window` | The heartbeat clears it at the next poll; the innocent-widget case; the planned fix not built | verified (read): `WDW:150-156`, `docs/specs/widget-fv.md:57-67`, `docs/plans/widget-fv.md:13`; `CHAT` (answer at 10:13). The window length "about fifty milliseconds" is inferred: the overdue beat fires at the next timers phase, then the poll comes within 50 ms. |
+| `limit_threshold` | The 2 s threshold comes from one spike | verified (read): `WD:6-8`; `docs/explore/widget-system/where-we-stand.md:242` (`standing.checked.crash_only`) |
+| `limit_threshold` | Load can stop a healthy host; the spec keeps the threshold open | verified (read): `CLAUDE.md` `head.commands`; `docs/specs/widget-fv.md:85` `widget_fv.open` |
+| `limit_provisional_window` | The heartbeat clears it at the next poll; the innocent-widget case; the planned fix not built | verified (read): `WDW:150-156`, `docs/specs/widget-fv.md:57-67`, `docs/plans/widget-fv.md:13`; `CHAT` (answer at 10:13). The spec says only "the runtime removes the record". `runAs` comes from the chat answer. The window length "about fifty milliseconds" is inferred: the overdue beat fires at the next timers phase, then the poll comes within 50 ms. |
 | `limit_pid` | The formal model left PID reuse out | verified (read): `CHAT` (answer at 10:28). Not checked in the model files. |
 | `limit_pid` | A reuse inside one restart is rare | inferred |
 | `limit_crash_only` | Every widget stops; the quarantine key is row plus hash | verified (read): `ISO:236-245`; the earlier video `isolation_why` |
 | `answers_records` | The correction: `ctx.interval` and `ctx.timeout` callbacks carry the store, not the slot | verified (read): `WD:40-49`; `CHAT` (answer at 10:13 lists them under "what sort of widget call") |
 | `answers_records` | In the app, the provisional record counts only after an abort; the CLI host applies it | verified (read): `SUP:93-97`, `ISO:225-229` |
-| `answers_effect` | The planned fix is a `finally` in `runAs`, not a Cordis effect | verified (read): `docs/specs/widget-fv.md:61`; `CHAT` (answer at 10:13). The shape "in a finally" is from the chat, not from a merged change. |
+| `answers_effect` | The planned fix is a `finally` in `runAs`, not a Cordis effect | verified (read): `docs/specs/widget-fv.md:61`; `CHAT` (answer at 10:13). The spec names no function. `runAs` and the `finally` come from the chat proposal, not from the spec, the plan, or a merged change. |
 | `answers_rest` | The five short answers | see the scenes `promise_not_process`, `pid_signals`, `handler_not_watcher`, `als_intro`, `async_chain` |
 
 ## Claims left inferred `sources.inferred`
+
+- The task and microtask rules of the browser article also apply to Node (`tasks`).
 
 - An idle host uses almost no processor time (`poll_wait`).
 
@@ -237,7 +244,7 @@ The earlier video `docs/explainers/2026-11-02-deepwidgets/` (part `part_isolatio
 
 - The numbers of the watchdog check at `108d663f`: 150 MB parse 868 ms, `spin` killed 2,050 ms after the call, `oom` blamed by the provisional record.
 
-- The blame check: 8 of 9 fault kinds blamed, fault to exit about 20 to 100 ms.
+- The blame check: 8 of 9 fault kinds blamed, fault to exit about 20 to 100 ms. The timer throw took 64 ms (run of record) and 67 ms (rerun).
 
 - The crash-only cost of about 2 s per crash, the earlier design that hid host errors, safe mode with built-in widgets only, and the restart of the main window.
 

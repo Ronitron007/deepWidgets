@@ -64,7 +64,7 @@ Each turn ends only when the current code gives control back. Code gives control
 
 Where does new work come from when the stack is empty? It comes from queues. A task is one callback that the loop starts from a queue. A timer callback is a task. The callback of a finished file read is a task. The callback for an incoming network request is a task too.
 
-The loop runs one task at a time. It takes a task, runs it to completion, and then looks at the queues again. Jake Archibald shows this model step by step in his article Tasks, microtasks, queues and schedules. His article is about the browser, but the same rules apply to Node.
+The loop runs one task at a time. It takes a task, runs it to completion, and then looks at the queues again. Jake Archibald shows this model step by step in his article Tasks, microtasks, queues and schedules. His article is about the browser. We infer that its task and microtask rules also apply to Node.
 
 ## microtasks
 
@@ -102,7 +102,7 @@ The timers phase runs callbacks of set timeout and set interval. The pending pha
 
 The poll phase is where the loop sleeps. When no callback is ready, the loop waits there for input and output. It computes how long it may wait. The limit is the time until the next timer is due. The lib u v design page describes this step.
 
-Thus an idle host uses almost no processor time. The thread sleeps in poll until a request arrives or a timer is due. When a request arrives, the poll phase runs its callback. In deepWidgets, each call from a user or an agent starts as such a callback. The H T T P request of the call arrives, and its callback starts the action.
+We infer that an idle host uses almost no processor time. The thread sleeps in poll until a request arrives or a timer is due. When a request arrives, the poll phase runs its callback. In deepWidgets, each call from a user or an agent starts as such a callback. The H T T P request of the call arrives, and its callback starts the action.
 
 ## immediate_vs_timeout
 
@@ -144,7 +144,7 @@ The guide measured a fifty megabyte JSON text. Its parse took about one point th
 
 Apply this to the host. Every widget, every H T T P route, and every timer of the host share one loop. Suppose spinner runs its while loop. From that moment, the loop never reaches the timers phase or the poll phase again.
 
-Pinger cannot get a call. The sample counter cannot get a click. The heartbeat timer of the watchdog cannot run. Even the action timeout of spinner cannot run, because it is a timer too. The process still exists for the operating system, but it does no work for anyone.
+Pinger cannot get a call. The sample counter cannot get a click. The heartbeat timer of the watchdog cannot run. Even the action timeout of spinner cannot run, because it is a timer too. The process still exists, but its main thread does no work for anyone.
 
 ## block_remedies
 
@@ -244,7 +244,7 @@ We ran a small program. The top level had async I D one. Timer a ran with async 
 
 Async local storage is the Node tool that carries one value along an async chain. Despite the name, it has nothing in common with the local storage of a browser. Browser local storage keeps string pairs on disk for each web site, across reloads. Async local storage keeps one value in memory for each async chain. It lives only while that chain has work.
 
-The Node docs compare it with thread-local storage in other languages. JavaScript has no thread-local values, because one thread runs many chains in turns. So the store follows the chain, not the thread. In functional terms, it is a reader context, or a dynamic scope, for async code.
+The Node docs compare it with thread-local storage in other languages. Thread-local storage cannot tell the chains apart, because one thread runs many chains in turns. So the store follows the chain, not the thread. In functional terms, it is a reader context, or a dynamic scope, for async code.
 
 ## als_run
 
@@ -318,7 +318,7 @@ Back to the outline. We now have the words for every box. This part shows the bo
 
 ## run_as
 
-The blame store is one async local storage in the file isolation dot t s. Its value is the I D of a Loader row. A Loader row is one line of the plugin list of the host. Each widget has its own row. The row I D starts with deepwidgets widget, or with deepwidgets agent for a bundle that an agent installed.
+The blame store is one async local storage in the file isolation dot t s. Its value is the I D of a Loader row. A Loader row is one line of the plugin list of the host. Each widget has its own row. The last part of the row I D starts with deepwidgets widget, or with deepwidgets agent for an agent bundle.
 
 The function run as takes a row and a function. It calls run on the blame store with that row. Inside, it calls in slot, which puts the row into the running-widget slot. Then it calls the function. The runtime calls each action handler inside run as. So every timer and promise that an action handler makes carries the row I D.
 
@@ -398,7 +398,7 @@ If the beat comes back, the worker removes the record at its next poll. So the p
 
 ## kill_path
 
-Last, the kill. At a stall of two seconds, the worker reads the slot again. It writes crash dot json with the event stall. If the slot names no widget and the native module loaded, it also reads the stack of the stuck thread. Then it removes its provisional record and writes one line to file descriptor two. Last, it sends sig kill to its own process.
+Last, the kill. At a stall of two seconds, the worker reads the slot again. It writes crash dot json with the event stall, and it removes its provisional record. If the slot names no widget and the native module loaded, it reads the stack and writes the record again. Then it writes one line to file descriptor two. Last, it sends sig kill to its own process.
 
 No code in the host can catch sig kill, so a stuck host cannot refuse it. The desktop host has no Electron build of the native module. So in the app, the watchdog blames by the slot only. The command-line host can load that module.
 
@@ -458,7 +458,7 @@ Node emits uncaught exception on the process object. The listener of install fai
 
 The listener prints the fatal diagnostic and starts the exit. The exit calls the fatal hooks before its first await. The claimer reads get store and gets the pinger row. It builds the record with the row, the slug pinger, and the error late boom. The event is uncaught exception, and the method is store. It adds the package folder, its hash, and the P I D of the host.
 
-It writes crash dot json with a write and a rename, and it prints one line. Then it calls process dot exit with code one. The plugin dispose never runs. The blame check of the earlier video measured this path. From the fault to the exit took about twenty to one hundred milliseconds.
+It writes crash dot json with a write and a rename, and it prints one line. Then it calls process dot exit with code one. The plugin dispose never runs. The blame check of the earlier video measured a timer throw. From the fault to the exit took about sixty-five milliseconds.
 
 ## ex_throw_others
 
@@ -480,7 +480,7 @@ In slot writes the slot index of spinner into the running-widget slot. Then the 
 
 Now the main thread is stuck. Look at each box. The call stack never empties, so the loop never reaches another phase. The heartbeat interval cannot run, so the heartbeat slot stops at its last value. The action timeout of spinner cannot run either.
 
-Calls to pinger and to the sample counter wait at the socket, because the poll phase never comes. No error exists, so no process handler runs. The blame store holds spinner, but no code reads it.
+The poll phase never comes. We infer that calls to pinger and to the sample counter wait at the socket. No error exists, so no process handler runs. The blame store holds spinner, but no code reads it.
 
 ## ex_loop_timeout_fails
 
@@ -504,7 +504,7 @@ Electron main sees the host end with the signal sig kill. The crash record has t
 
 Two variants show the edges. In the await variant, spinner awaits once and then loops. After the await, in slot already put back zero, so the slot names no widget. The desktop host has no working native module, so the crash record blames no widget. The supervisor counts an unblamed crash, and a few of them lead to safe mode.
 
-In the heap variant, a widget fills the heap in a loop. The stall lasts five hundred milliseconds before the end. The worker writes the provisional record. Then V eight aborts the process, and no crash record exists. The supervisor sees sig abort, so the provisional record decides. The next host quarantines that widget.
+In the heap variant, a widget fills the heap in a loop. The stall lasts at least five hundred milliseconds, and the abort comes before two seconds. The worker writes the provisional record. Then V eight aborts the process, and no crash record exists. The supervisor sees sig abort, so the provisional record decides. The next host quarantines that widget.
 
 ## limit_store
 
@@ -524,13 +524,13 @@ The action timeout cannot stop a loop on the processor. It is a timer, and a tim
 
 ## limit_threshold
 
-The threshold is a guess with a margin. A healthy step longer than two seconds dies. Under heavy machine load, the watchdog can also stop a healthy host. The project rules record this as an open point. The early record at five hundred milliseconds also catches healthy long steps. The abort rule of the supervisor stops those records from blaming.
+The two second threshold comes from one spike. A healthy step longer than two seconds dies. Under heavy machine load, the watchdog can also stop a healthy host. The spec keeps the threshold as an open point. The early record at five hundred milliseconds also catches healthy long steps. The abort rule of the supervisor stops those records from blaming.
 
 ## limit_provisional_window
 
 The provisional record has a window of error, because the heartbeat clears it, not the end of the call. Suppose a call stalls for six hundred milliseconds and then returns. The worker removes the record only at its next poll, up to about fifty milliseconds later.
 
-If the host aborts for another reason inside that window, the record blames a widget that already returned. The spec section widget f v crash plans a fix. Run as would remove the record when the call returns. That fix is not built yet.
+If the host aborts for another reason inside that window, the record blames a widget that already returned. The spec section widget f v crash plans a fix. The runtime will remove the record when the call returns. That fix is not built yet.
 
 ## limit_pid
 
@@ -550,7 +550,7 @@ Which widget code can it name? Only the sync part of code inside run as. That is
 
 Rohan also asked whether the provisional record works like a Cordis effect with its own cleanup. Not today. The watchdog thread writes it and removes it by the heartbeat, not by the call.
 
-The planned fix is closer to that picture. Run as would remove the record in a finally block when the call returns. That is a try and finally around one call, not a Cordis effect. An effect lives as long as its plugin, but this record would live as long as one call.
+The planned fix is closer to that picture. In the chat proposal, run as removes the record in a finally block when the call returns. That is a try and finally around one call, not a Cordis effect. An effect lives as long as its plugin, but this record would live as long as one call.
 
 ## answers_rest
 

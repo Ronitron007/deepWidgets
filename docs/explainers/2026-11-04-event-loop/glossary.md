@@ -11,7 +11,7 @@ Each term is defined in the narration at its first use. The scene name in bracke
 | microtask queue | The queue of small callbacks that run right after the current code, before the next task. [`outline_map`] |
 | phase | One step of the Node loop ring, with its own callback queue: timers, pending callbacks, idle and prepare (internal), poll, check, close callbacks. [`outline_map`] |
 | action handler | A widget function that runs when a user or an agent calls an action of the widget. [`outline_walk`] |
-| blame store | The `AsyncLocalStorage<string>` in `isolation.ts` whose value is the Loader row id of the widget whose async chain runs. [`outline_walk`] |
+| blame store | The `AsyncLocalStorage<string>` in `isolation.ts` whose value is the Loader entry id of the widget row whose async chain runs. The entry id is the row id, with group ids in front. [`outline_walk`] |
 | process handler | A listener on the Node `process` object, here for `uncaughtException` or `unhandledRejection`. [`outline_walk`] |
 | watchdog thread | The worker thread of the host that polls the heartbeat slot and kills a stuck host (`watchdog-worker.ts`). [`outline_walk`] |
 | provisional record | `$DSH_HOME/deepwidgets/provisional.json`: a crash record with event `provisional-stall` that the watchdog thread writes at a stall of 500 ms. [`outline_walk`] |

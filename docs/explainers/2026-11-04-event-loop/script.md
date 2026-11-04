@@ -2,7 +2,7 @@
 
 Source of truth: `origin/main` `68aabd9a` (branch `rohan/explainer-event-loop-2026-11-04`), the research file `~/kyaloon-media/explainer-event-loop-2026-11-04/research.md`, and the Node snippets that this session ran (`sources.md`, `sources.runs`). The earlier video `docs/explainers/2026-11-02-deepwidgets/` explains the same isolation code at the product level. This video goes one level lower. Narration is in `narration.md` (STE, lint 0.00). Target length uses 140 spoken words per minute. Visuals give the written forms. The widgets `pinger` and `spinner` and their row ids, pids, and hashes are illustrative. Snippet outputs are real.
 
-Scenes: 95. Narration words: 9123. Total target: 65.2 min.
+Scenes: 95. Narration words: 9141. Total target: 65.3 min.
 
 ## Parts `explainer_loop.parts`
 
@@ -10,20 +10,20 @@ Scenes: 95. Narration words: 9123. Total target: 65.2 min.
 |---|---|---|---|
 | `part_intro` | 5 | 558 | 4.0 min |
 | `part_stack` | 4 | 431 | 3.1 min |
-| `part_queues` | 5 | 481 | 3.4 min |
-| `part_node_loop` | 5 | 502 | 3.6 min |
-| `part_blocking` | 5 | 476 | 3.4 min |
+| `part_queues` | 5 | 486 | 3.5 min |
+| `part_node_loop` | 5 | 504 | 3.6 min |
+| `part_blocking` | 5 | 474 | 3.4 min |
 | `part_promises` | 5 | 480 | 3.4 min |
 | `part_listeners` | 6 | 627 | 4.5 min |
-| `part_context` | 8 | 887 | 6.3 min |
+| `part_context` | 8 | 889 | 6.3 min |
 | `part_threads` | 6 | 707 | 5.0 min |
-| `part_blame` | 8 | 822 | 5.9 min |
-| `part_watchdog` | 8 | 734 | 5.2 min |
+| `part_blame` | 8 | 823 | 5.9 min |
+| `part_watchdog` | 8 | 735 | 5.2 min |
 | `part_supervisor` | 5 | 469 | 3.4 min |
-| `part_example_throw` | 6 | 488 | 3.5 min |
-| `part_example_loop` | 7 | 517 | 3.7 min |
+| `part_example_throw` | 6 | 486 | 3.5 min |
+| `part_example_loop` | 7 | 525 | 3.8 min |
 | `part_limits` | 8 | 510 | 3.6 min |
-| `part_close` | 4 | 434 | 3.1 min |
+| `part_close` | 4 | 437 | 3.1 min |
 
 ## `cold_open`
 
@@ -201,17 +201,17 @@ Outline: the widget chips on the main thread lane light. The timeline bar from t
 ## `tasks`
 
 - Part: `part_queues`
-- Target length: 45 s (106 words)
+- Target length: 48 s (111 words)
 
 **Narration**
 
 Where does new work come from when the stack is empty? It comes from queues. A task is one callback that the loop starts from a queue. A timer callback is a task. The callback of a finished file read is a task. The callback for an incoming network request is a task too.
 
-The loop runs one task at a time. It takes a task, runs it to completion, and then looks at the queues again. Jake Archibald shows this model step by step in his article Tasks, microtasks, queues and schedules. His article is about the browser, but the same rules apply to Node.
+The loop runs one task at a time. It takes a task, runs it to completion, and then looks at the queues again. Jake Archibald shows this model step by step in his article Tasks, microtasks, queues and schedules. His article is about the browser. We infer that its task and microtask rules also apply to Node.
 
 **Visuals**
 
-Outline: the ring lights faintly; a box `task queue` appears beside the stack. Cards drop into it: `timer callback`, `file read done`, `HTTP request arrived`. The loop arrow takes the first card, pushes it on the stack, the stack empties, the arrow returns. Source card: Jake Archibald, "Tasks, microtasks, queues and schedules" (2015-08-17), section "Why this happens". Small note: `browser article; the 2015 browser tables are out of date, the rules are not`.
+Outline: the ring lights faintly; a box `task queue` appears beside the stack. Cards drop into it: `timer callback`, `file read done`, `HTTP request arrived`. The loop arrow takes the first card, pushes it on the stack, the stack empties, the arrow returns. Source card: Jake Archibald, "Tasks, microtasks, queues and schedules" (2015-08-17), section "Why this happens". Small note: `browser article; the 2015 browser tables are out of date, the rules are not`. Amber tag: `applies to Node: inferred (the article has no Node content)`.
 
 ## `microtasks`
 
@@ -325,13 +325,13 @@ Outline: the ring fills the screen. Six arcs with their queues: `timers: setTime
 ## `poll_wait`
 
 - Part: `part_node_loop`
-- Target length: 48 s (112 words)
+- Target length: 49 s (114 words)
 
 **Narration**
 
 The poll phase is where the loop sleeps. When no callback is ready, the loop waits there for input and output. It computes how long it may wait. The limit is the time until the next timer is due. The lib u v design page describes this step.
 
-Thus an idle host uses almost no processor time. The thread sleeps in poll until a request arrives or a timer is due. When a request arrives, the poll phase runs its callback. In deepWidgets, each call from a user or an agent starts as such a callback. The H T T P request of the call arrives, and its callback starts the action.
+We infer that an idle host uses almost no processor time. The thread sleeps in poll until a request arrives or a timer is due. When a request arrives, the poll phase runs its callback. In deepWidgets, each call from a user or an agent starts as such a callback. The H T T P request of the call arrives, and its callback starts the action.
 
 **Visuals**
 
@@ -389,7 +389,7 @@ The Node docs now mark process dot next tick as legacy. They tell new code to us
 
 **Visuals**
 
-Diamond between two callbacks zooms in: `next tick queue` drains first, then `microtask queue`. Doc chip: `process.nextTick: Stability 3 - Legacy. Use queueMicrotask() instead.` (Node.js API, process, v26.13.0 docs, section "When to use queueMicrotask() vs. process.nextTick()"). Side-by-side outputs of the same code: `order.cjs` (CommonJS) and `order.mjs` (ES module):
+Diamond between two callbacks zooms in: `next tick queue` drains first, then `microtask queue`. Doc chip, a paraphrase, not a quote: `Node docs: process.nextTick is legacy; new code uses queueMicrotask()` (Node.js API, process, v26.13.0 docs, section "When to use queueMicrotask() vs. process.nextTick()"). Side-by-side outputs of the same code: `order.cjs` (CommonJS) and `order.mjs` (ES module):
 ```text
 script start
 script end
@@ -480,22 +480,22 @@ The guide measured a fifty megabyte JSON text. Its parse took about one point th
 
 **Visuals**
 
-Three cards: `REDOS: /(a+)*b/ on 'aaaa...c'`, `fs.readFileSync(path)`, `JSON.parse(hugeText)`. Number card: `50 MB JSON.parse: about 1.3 s` (Node.js guide, section "Blocking the Event Loop: JSON DOS"). Number card: `150 MB JSON.parse in the host: 868 ms, host lives` (tools/widgets-watchdog.mjs at 108d663f, earlier video). Small note: `watchdog files unchanged from 108d663f to 68aabd9a`.
+Three cards: `REDOS: /(a+)*b/ on 'aaaa...c'`, `fs.readFileSync(path)`, `JSON.parse(hugeText)`. Number card: `50 MB JSON.parse: about 1.3 s` (Node.js guide, section "Blocking the Event Loop: JSON DOS"). Number card: `150 MB JSON.parse in the host: 868 ms, host lives` (tools/widgets-watchdog.mjs at 108d663f, earlier video). Small note: `watchdog.ts and watchdog-worker.ts unchanged from 108d663f to 68aabd9a (the check tools/widgets-watchdog.mjs changed)`.
 
 ## `block_widgets`
 
 - Part: `part_blocking`
-- Target length: 39 s (92 words)
+- Target length: 39 s (90 words)
 
 **Narration**
 
 Apply this to the host. Every widget, every H T T P route, and every timer of the host share one loop. Suppose spinner runs its while loop. From that moment, the loop never reaches the timers phase or the poll phase again.
 
-Pinger cannot get a call. The sample counter cannot get a click. The heartbeat timer of the watchdog cannot run. Even the action timeout of spinner cannot run, because it is a timer too. The process still exists for the operating system, but it does no work for anyone.
+Pinger cannot get a call. The sample counter cannot get a click. The heartbeat timer of the watchdog cannot run. Even the action timeout of spinner cannot run, because it is a timer too. The process still exists, but its main thread does no work for anyone.
 
 **Visuals**
 
-Outline: `spinner` chip turns red and sits on the stack with `while (true) {}`. Greyed items, each with a lock icon: `pinger.ping (HTTP)`, `sample.add (click)`, `heartbeat setInterval 100 ms`, `spinner action timeout 5000 ms`, `GET /api/probe`. Caption: `one loop for all: one stuck callback stops all`.
+Outline: `spinner` chip turns red and sits on the stack with `while (true) {}`. Greyed items, each with a lock icon: `pinger.ping (HTTP)`, `sample.add (click)`, `heartbeat setInterval 100 ms`, `spinner action timeout 5000 ms`, `GET /api/probe`. Caption: `one loop for all: one stuck callback stops all`. Small dim box at the right: `watchdog thread: own loop, still runs (part_threads)`.
 
 ## `block_remedies`
 
@@ -799,13 +799,13 @@ Tree drawing from the output: `1 (top level)` > `5 (timer a)` > `7 (timer d)`, e
 ## `als_intro`
 
 - Part: `part_context`
-- Target length: 48 s (112 words)
+- Target length: 49 s (114 words)
 
 **Narration**
 
 Async local storage is the Node tool that carries one value along an async chain. Despite the name, it has nothing in common with the local storage of a browser. Browser local storage keeps string pairs on disk for each web site, across reloads. Async local storage keeps one value in memory for each async chain. It lives only while that chain has work.
 
-The Node docs compare it with thread-local storage in other languages. JavaScript has no thread-local values, because one thread runs many chains in turns. So the store follows the chain, not the thread. In functional terms, it is a reader context, or a dynamic scope, for async code.
+The Node docs compare it with thread-local storage in other languages. Thread-local storage cannot tell the chains apart, because one thread runs many chains in turns. So the store follows the chain, not the thread. In functional terms, it is a reader context, or a dynamic scope, for async code.
 
 **Visuals**
 
@@ -1071,11 +1071,11 @@ Outline: the left half lights: `blame store` ribbon, `process handlers`, a new b
 ## `run_as`
 
 - Part: `part_blame`
-- Target length: 54 s (125 words)
+- Target length: 54 s (126 words)
 
 **Narration**
 
-The blame store is one async local storage in the file isolation dot t s. Its value is the I D of a Loader row. A Loader row is one line of the plugin list of the host. Each widget has its own row. The row I D starts with deepwidgets widget, or with deepwidgets agent for a bundle that an agent installed.
+The blame store is one async local storage in the file isolation dot t s. Its value is the I D of a Loader row. A Loader row is one line of the plugin list of the host. Each widget has its own row. The last part of the row I D starts with deepwidgets widget, or with deepwidgets agent for an agent bundle.
 
 The function run as takes a row and a function. It calls run on the blame store with that row. Inside, it calls in slot, which puts the row into the running-widget slot. Then it calls the function. The runtime calls each action handler inside run as. So every timer and promise that an action handler makes carries the row I D.
 
@@ -1090,7 +1090,7 @@ export function runAs<T>(row: string | undefined, fn: () => T): T {
   return row === undefined ? fn() : blameStore.run(row, () => inSlot(row, fn))   // ISO:113-115
 }
 ```
-Row id pattern chip `ISO:34`: `/^deepwidgets-(?:widget|agent)-/`. Code card `deepwidgets/widgets/src/index.ts:963`:
+Row id pattern chip `ISO:34`: `/^deepwidgets-(?:widget|agent)-/`, with a note: `tested on the row id; the store keeps the entry id, which can have group ids in front (ISO:59-62, ISO:88-91)`. Code card `deepwidgets/widgets/src/index.ts:963`:
 ```ts
 const handled = Promise.resolve().then(() => runAs(entry.registration.row, () => action.handler(args, scope)))
 ```
@@ -1440,11 +1440,11 @@ Record card (illustrative values): `{ row: "include:deepwidgets-agent-spinner", 
 ## `kill_path`
 
 - Part: `part_watchdog`
-- Target length: 48 s (112 words)
+- Target length: 48 s (113 words)
 
 **Narration**
 
-Last, the kill. At a stall of two seconds, the worker reads the slot again. It writes crash dot json with the event stall. If the slot names no widget and the native module loaded, it also reads the stack of the stuck thread. Then it removes its provisional record and writes one line to file descriptor two. Last, it sends sig kill to its own process.
+Last, the kill. At a stall of two seconds, the worker reads the slot again. It writes crash dot json with the event stall, and it removes its provisional record. If the slot names no widget and the native module loaded, it reads the stack and writes the record again. Then it writes one line to file descriptor two. Last, it sends sig kill to its own process.
 
 No code in the host can catch sig kill, so a stuck host cannot refuse it. The desktop host has no Electron build of the native module. So in the app, the watchdog blames by the slot only. The command-line host can load that module.
 
@@ -1454,6 +1454,12 @@ Code card `WDW:181-199`:
 ```ts
 if (stalledMs < data.thresholdMs) return
 ...
+const write = (blame: Blame): void => {
+  try {
+    writeJsonSync(data.crashFile, recordOf(blame, 'stall', 'WatchdogStall', message, Date.now()))
+    if (provisionalAt !== undefined) removeProvisional(provisionalAt)
+  } catch (error) { ... }
+}
 let found = slotBlame()
 // Write the record first, so a long wait in the native read below cannot leave no record.
 write(found)
@@ -1627,13 +1633,13 @@ Red error card drops out of the stack into the process handler port.
 ## `ex_throw_claim`
 
 - Part: `part_example_throw`
-- Target length: 53 s (123 words)
+- Target length: 52 s (121 words)
 
 **Narration**
 
 The listener prints the fatal diagnostic and starts the exit. The exit calls the fatal hooks before its first await. The claimer reads get store and gets the pinger row. It builds the record with the row, the slug pinger, and the error late boom. The event is uncaught exception, and the method is store. It adds the package folder, its hash, and the P I D of the host.
 
-It writes crash dot json with a write and a rename, and it prints one line. Then it calls process dot exit with code one. The plugin dispose never runs. The blame check of the earlier video measured this path. From the fault to the exit took about twenty to one hundred milliseconds.
+It writes crash dot json with a write and a rename, and it prints one line. Then it calls process dot exit with code one. The plugin dispose never runs. The blame check of the earlier video measured a timer throw. From the fault to the exit took about sixty-five milliseconds.
 
 **Visuals**
 
@@ -1642,7 +1648,7 @@ Step list:
 `14 crash.json (temp file + rename)`
 `15 stderr: deepwidgets: uncaughtException blamed on include:deepwidgets-agent-pinger (store); the host exits now`
 `16 process.exit(1)`
-Record card (illustrative values): `{ row: "include:deepwidgets-agent-pinger", slugs: ["pinger"], error: { name: "Error", message: "late boom", stack }, event: "uncaughtException", method: "store", root: ".../pinger", hash: "…", pid: 41210, applied: false }`. Chip: `fault to exit 19 to 103 ms (earlier video, tools/widgets-blame.mjs)`.
+Record card (illustrative values): `{ row: "include:deepwidgets-agent-pinger", slugs: ["pinger"], error: { name: "Error", message: "late boom", stack }, event: "uncaughtException", method: "store", root: ".../pinger", hash: "…", pid: 41210, applied: false }`. Chip: `timer throw, fault to exit 64 ms (run of record 8b9c8672) and 67 ms (rerun 108d663f); all nine fault kinds 19 to 103 ms (earlier video, tools/widgets-blame.mjs)`.
 
 ## `ex_throw_others`
 
@@ -1701,13 +1707,13 @@ Memory strip: `[heartbeat 812, running widget 2]`.
 ## `ex_loop_stuck`
 
 - Part: `part_example_loop`
-- Target length: 34 s (80 words)
+- Target length: 35 s (82 words)
 
 **Narration**
 
 Now the main thread is stuck. Look at each box. The call stack never empties, so the loop never reaches another phase. The heartbeat interval cannot run, so the heartbeat slot stops at its last value. The action timeout of spinner cannot run either.
 
-Calls to pinger and to the sample counter wait at the socket, because the poll phase never comes. No error exists, so no process handler runs. The blame store holds spinner, but no code reads it.
+The poll phase never comes. We infer that calls to pinger and to the sample counter wait at the socket. No error exists, so no process handler runs. The blame store holds spinner, but no code reads it.
 
 **Visuals**
 
@@ -1793,17 +1799,17 @@ Outline: every box on path B lit once, in order.
 ## `ex_loop_variants`
 
 - Part: `part_example_loop`
-- Target length: 49 s (114 words)
+- Target length: 51 s (120 words)
 
 **Narration**
 
 Two variants show the edges. In the await variant, spinner awaits once and then loops. After the await, in slot already put back zero, so the slot names no widget. The desktop host has no working native module, so the crash record blames no widget. The supervisor counts an unblamed crash, and a few of them lead to safe mode.
 
-In the heap variant, a widget fills the heap in a loop. The stall lasts five hundred milliseconds before the end. The worker writes the provisional record. Then V eight aborts the process, and no crash record exists. The supervisor sees sig abort, so the provisional record decides. The next host quarantines that widget.
+In the heap variant, a widget fills the heap in a loop. The stall lasts at least five hundred milliseconds, and the abort comes before two seconds. The worker writes the provisional record. Then V eight aborts the process, and no crash record exists. The supervisor sees sig abort, so the provisional record decides. The next host quarantines that widget.
 
 **Visuals**
 
-Two strips. Strip 1 `spin after await`: `handler: await null; while (true) {}` > slot `0` > provisional: none (an unblamed provisional record changes nothing, `WDW:169-170`) > crash.json `row: null, method: null` > supervisor `unblamed, counted` > after 2 in 60 s: safe mode. Strip 2 `out of memory`: stall 500 ms > provisional.json `row: <widget>` > V8 `FATAL ERROR ... heap out of memory`, `SIGABRT` > no crash.json of this pid > supervisor `abort exit > provisional decides` > quarantine. Chip: `oom: SIGABRT, the provisional record blames the widget (tools/widgets-watchdog.mjs, 108d663f)`.
+Two strips. Strip 1 `spin after await`: `handler: await null; while (true) {}` > slot `0` > provisional: none (an unblamed provisional record changes nothing, `WDW:169-170`) > crash.json `row: null, method: null` > supervisor `unblamed, counted` > after 2 in 60 s: safe mode. Strip 2 `out of memory`: stall at least 500 ms (record at 508 ms in the check), abort before 2000 ms > provisional.json `row: <widget>` > V8 `FATAL ERROR ... heap out of memory`, `SIGABRT` > no crash.json of this pid > supervisor `abort exit > provisional decides` > quarantine. Chip: `oom: SIGABRT, the provisional record blames the widget (tools/widgets-watchdog.mjs, 108d663f)`.
 
 ## `limit_store`
 
@@ -1864,11 +1870,11 @@ Two rows: `handler awaits a slow fetch for 8 s` > timeout fires at 5 s > `504 ti
 
 **Narration**
 
-The threshold is a guess with a margin. A healthy step longer than two seconds dies. Under heavy machine load, the watchdog can also stop a healthy host. The project rules record this as an open point. The early record at five hundred milliseconds also catches healthy long steps. The abort rule of the supervisor stops those records from blaming.
+The two second threshold comes from one spike. A healthy step longer than two seconds dies. Under heavy machine load, the watchdog can also stop a healthy host. The spec keeps the threshold as an open point. The early record at five hundred milliseconds also catches healthy long steps. The abort rule of the supervisor stops those records from blaming.
 
 **Visuals**
 
-Chip: `CLAUDE.md head.commands: "Under machine load, the watchdog can stop a healthy host."`; open point `Watchdog threshold` in `widget_fv.open` (`docs/specs/widget-fv.md`). Scale bar from `threshold_why` with a grey zone `healthy but > 2 s: killed`.
+Chip: `2 s: from the crash_only spike (where-we-stand.md:242, WD:6-8)`. Chip: `CLAUDE.md head.commands: "Under machine load, the watchdog can stop a healthy host."`; open point `Watchdog threshold` in `widget_fv.open` (`docs/specs/widget-fv.md`). Scale bar from `threshold_why` with a grey zone `healthy but > 2 s: killed`.
 
 ## `limit_provisional_window`
 
@@ -1879,7 +1885,7 @@ Chip: `CLAUDE.md head.commands: "Under machine load, the watchdog can stop a hea
 
 The provisional record has a window of error, because the heartbeat clears it, not the end of the call. Suppose a call stalls for six hundred milliseconds and then returns. The worker removes the record only at its next poll, up to about fifty milliseconds later.
 
-If the host aborts for another reason inside that window, the record blames a widget that already returned. The spec section widget f v crash plans a fix. Run as would remove the record when the call returns. That fix is not built yet.
+If the host aborts for another reason inside that window, the record blames a widget that already returned. The spec section widget f v crash plans a fix. The runtime will remove the record when the call returns. That fix is not built yet.
 
 **Visuals**
 
@@ -1929,17 +1935,17 @@ Checklist column: the first card ticks. Summary card: `provisional.json = CrashR
 ## `answers_effect`
 
 - Part: `part_close`
-- Target length: 37 s (86 words)
+- Target length: 38 s (89 words)
 
 **Narration**
 
 Rohan also asked whether the provisional record works like a Cordis effect with its own cleanup. Not today. The watchdog thread writes it and removes it by the heartbeat, not by the call.
 
-The planned fix is closer to that picture. Run as would remove the record in a finally block when the call returns. That is a try and finally around one call, not a Cordis effect. An effect lives as long as its plugin, but this record would live as long as one call.
+The planned fix is closer to that picture. In the chat proposal, run as removes the record in a finally block when the call returns. That is a try and finally around one call, not a Cordis effect. An effect lives as long as its plugin, but this record would live as long as one call.
 
 **Visuals**
 
-Two bars: `ctx.effect: lives as long as the plugin fiber; disposer on stop or reload` and `planned provisional record (widget_fv.crash): lives as long as one call; removed in the finally of runAs`. Today bar: `provisional.json: removed by the watchdog thread when the beat returns (WDW:150-156)`. Tag: `planned, not built at 68aabd9a`.
+Two bars: `ctx.effect: lives as long as the plugin fiber; disposer on stop or reload` and `planned provisional record (widget_fv.crash): lives as long as one call; removed in the finally of runAs (chat proposal; the spec names no function)`. Today bar: `provisional.json: removed by the watchdog thread when the beat returns (WDW:150-156)`. Tag: `planned, not built at 68aabd9a`.
 
 ## `answers_rest`
 
