@@ -22,16 +22,18 @@ HOST = "#58C4DD"        # the host process (Node in Electron), its main thread l
 WIDGET = "#CBD5E1"      # widget action handlers: the chips sample, pinger, spinner; widget code
 STACK = "#FFD166"       # call stack, stack frames, run to completion
 TASK = "#6E8BFF"        # task queue, tasks (macrotasks): timer callback, I/O done, HTTP request
-MICROTASK = "#E36BF0"   # microtask queue and next tick queue, queueMicrotask, process.nextTick
-PHASE = "#2DD4BF"       # libuv: the loop phases (timers, pending, idle/prepare, poll, check, close)
+MICROTASK = "#E36BF0"   # microtask queue, small balls (microtasks)
+PHASE = "#2DD4BF"       # the event loop: the loop arrow (loopviz.LoopArrow). Script v2 shows no phase ring
+LOOP = PHASE            # the same color under its plain name
+HEAP = "#F2CDCD"        # the heap: objects that live longer than one call
 PROMISE = "#A78BFA"     # promises: pending, fulfilled, rejected, then, await
 EMITTER = "#FF8C3A"     # EventEmitter: event table, listeners, emit, process handlers
-ASYNC_CTX = "#C3E35A"   # async context: AsyncLocalStorage, async ids, the blame store ribbon
+ASYNC_CTX = "#C3E35A"   # async chain, async local storage, the blame store ribbon, the wrap
 WORKER = "#F472B6"      # worker thread: the watchdog thread, worker_threads, its own loop
-HEARTBEAT = "#7DD3FC"   # SharedArrayBuffer cells: heartbeat counter, running-widget slot, Atomics
+HEARTBEAT = "#7DD3FC"   # shared memory cells: heartbeat, widget number
 RECORDS = "#D9B38C"     # records on disk: provisional.json, crash.json, CrashRecord
-SUPERVISOR = "#4ADE80"  # Electron main: DesktopHostSupervisor, restart, backoff, safe mode
-ISOLATION = "#FC6255"   # errors, crash, blame, the claimer, kill, path A (late error, pinger)
+SUPERVISOR = "#4ADE80"  # the app process (Electron main): the supervisor, restart, waits
+ISOLATION = "#FC6255"   # errors, crash, the crash hook, kill, quarantine, the late error and endless loop arrows
 INFERRED = "#FFB020"    # amber: an inferred claim (with the word inferred), path B (stuck thread, spinner)
 OPEN = "#9AA3AF"        # not built / not covered: grey, drawn dashed
 MEASURED = TEXT         # white: a number that we ran and measured
@@ -41,13 +43,16 @@ PATH_B = INFERRED       # path B: stuck thread (spinner), amber
 CONCEPT = {
     "host": HOST, "main_thread": HOST, "widget": WIDGET, "handler": WIDGET,
     "stack": STACK, "call_stack": STACK, "task": TASK, "task_queue": TASK,
-    "microtask": MICROTASK, "microtask_queue": MICROTASK, "next_tick": MICROTASK,
-    "phase": PHASE, "libuv": PHASE, "loop": PHASE, "promise": PROMISE,
+    "microtask": MICROTASK, "microtask_queue": MICROTASK, "heap": HEAP,
+    "event_loop": LOOP, "loop": LOOP, "promise": PROMISE,
     "emitter": EMITTER, "listener": EMITTER, "process_handlers": EMITTER,
-    "async_context": ASYNC_CTX, "blame_store": ASYNC_CTX, "als": ASYNC_CTX,
-    "worker": WORKER, "watchdog": WORKER, "heartbeat": HEARTBEAT, "shared_memory": HEARTBEAT,
-    "records": RECORDS, "supervisor": SUPERVISOR, "electron_main": SUPERVISOR,
-    "error": ISOLATION, "crash": ISOLATION, "claimer": ISOLATION, "path_a": PATH_A, "path_b": PATH_B,
+    "async_chain": ASYNC_CTX, "blame_store": ASYNC_CTX, "als": ASYNC_CTX, "wrap": ASYNC_CTX,
+    "worker": WORKER, "worker_thread": WORKER, "watchdog": WORKER,
+    "heartbeat": HEARTBEAT, "shared_memory": HEARTBEAT, "widget_number": HEARTBEAT,
+    "records": RECORDS, "crash_record": RECORDS, "provisional_record": RECORDS, "fingerprint": RECORDS,
+    "supervisor": SUPERVISOR, "app_process": SUPERVISOR,
+    "error": ISOLATION, "crash": ISOLATION, "crash_hook": ISOLATION, "quarantine": ISOLATION,
+    "path_a": PATH_A, "path_b": PATH_B,
     "inferred": INFERRED, "open": OPEN, "measured": MEASURED,
 }
 

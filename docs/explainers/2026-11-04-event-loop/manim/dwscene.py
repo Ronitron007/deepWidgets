@@ -34,7 +34,7 @@ from manim import *  # noqa: F401,F403
 
 import timing
 from outline import PATH_A_KEYS, PATH_B_KEYS, OutlineDiagram  # noqa: F401
-from loopviz import CallStack, LoopQueue, PhaseRing, run_next  # noqa: F401
+from loopviz import CallStack, LoopArrow, LoopQueue, run_next  # noqa: F401
 from style import *  # noqa: F401,F403
 from style import FRAME_W, MIN_FONT_SIZE
 
