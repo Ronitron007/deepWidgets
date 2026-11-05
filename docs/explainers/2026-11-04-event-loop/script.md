@@ -233,7 +233,7 @@ Back to the host. All widget code in the host runs on one thread, the main threa
 
 This gives a strict rule. Once code starts, it runs until the call stack is empty again. Nothing can stop it in the middle. Another widget cannot cut in, and a clock cannot cut in either.
 
-Jake Archibald compares the main thread with a to do list whose items you cannot pause. The rule has a good side: two pieces of code never change one object at the same time. But it has a price, and we meet it soon.
+Jake Archibald stresses one rule: code runs to its end before other code starts. The rule has a good side: two pieces of code never change one object at the same time. But it has a price, and we meet it soon.
 
 **Visuals**
 
@@ -248,7 +248,7 @@ OUTLINE (the anchor of the video): six boxes from left to right, `widget code ru
 
 If only one piece of code runs at a time, where does the next piece wait? It waits in the task queue. A task is one callback that is ready to run. A call from a window, a finished file read, and a delay that has passed each make a task.
 
-The task queue is a line, first in, first out. In this example, two callbacks become ready while the script still runs. They wait. The script ends at zero milliseconds, and only then do both callbacks run, one after the other.
+The task queue is a line, first in, first out. In this example, two callbacks become ready after the script ends. They wait. The script ends at zero milliseconds, and only then do both callbacks run, one after the other.
 
 **Visuals**
 
@@ -269,7 +269,7 @@ The two callbacks sit in the queue as balls until the column is empty. Fixed sha
 
 **Narration**
 
-Who moves a task from the line onto the call stack? The event loop. The event loop is a loop inside Node that never stops. It waits until the call stack is empty. Then it takes the next task from the queue and runs it. Then it waits again.
+Who moves a task from the line onto the call stack? The event loop. The event loop is a loop inside Node that runs while work is left. It waits until the call stack is empty. Then it takes the next task from the queue and runs it. Then it waits again.
 
 We borrow the picture of Lydia Hallie. One box holds the call stack, one box holds the queue, and the loop sits between them.
 
@@ -400,7 +400,7 @@ Real output (tag `ran`): `try block ends`, `script ends`, then the error on stde
 
 An error travels in two forms. An exception is a thrown error that falls down the call stack until a catch takes it. A rejection is the failed result of a promise. It waits on the promise until some code asks for the result.
 
-Domenic Denicola calls a rejection the async twin of an exception. The bridge is await. Await turns a rejection back into an exception, so a normal try works again. A dot catch on the promise also takes the rejection.
+Domenic Denicola shows that a rejection works like an exception. The bridge is await. Await turns a rejection back into an exception, so a normal try works again. A dot catch on the promise also takes the rejection.
 
 In this example, both ways catch the late error. One uses await inside a try. The other uses dot catch.
 
@@ -459,7 +459,7 @@ Two doors into one exit sign `exit code 1`. Left door `uncaught exception`: a th
 
 Who decides what happens at the end? Node gives one emitter for the whole process. Its name is process. It emits uncaught exception for an escaped throw, and unhandled rejection for an escaped rejection.
 
-A process handler is a handler on that emitter. When you add one, it replaces the default exit. It gets only the error. It does not know which widget caused it.
+A process handler is a handler on that emitter. When you add one, it replaces the default exit. It gets the error, but no widget. It does not know which widget caused it.
 
 Our run adds one process handler for uncaught exception. Both the timer throw and the lone rejection reach it. By default, Node raises an unhandled rejection as an uncaught exception. The process stays alive afterwards. The Node docs warn against that: it is not safe to resume normal operation after uncaught exception.
 
@@ -532,7 +532,7 @@ Code chip `isolation.ts:370-375`: `ctx.effect(() => { hooks.add(claim); return (
 
 **Narration**
 
-Here is the gap. A process handler gets only the error. The call stack of the widget is long gone. So how can the handler know which widget started the work?
+Here is the gap. A process handler gets the error, but no widget. The call stack of the widget is long gone. So how can the handler know which widget started the work?
 
 The answer starts with the async chain. An async chain is all the work that one piece of code starts, now or later. A timer that the code sets is in the chain. A promise callback is in the chain. A timer that such a callback sets is in the chain too.
 
@@ -754,7 +754,7 @@ OUTLINE (the anchor of the video): six boxes from left to right, `widget code ru
 
 Next box: who starts the host again. The supervisor is code in the app process. It watches the host child. When the host exits, the supervisor gets three facts: the P I D, the exit code, and the signal.
 
-Then it reads the records. A crash record counts only when its P I D matches the dead host. So an old record never blames a new crash. A provisional record counts only when the host ended with an abort, such as sig abort. Any other end discards the provisional record. A crash record of the dead host always wins over a provisional record.
+Then it reads the records. A crash record counts only when its P I D matches the dead host. So an old record does not blame a new crash, except in one rare case that the limits part shows. A provisional record counts only when the host ended with an abort, such as sig abort. Any other end discards the provisional record. A crash record of the dead host always wins over a provisional record.
 
 Then the supervisor starts a new host after a short wait. A crash with a blamed widget does not count against the app. A crash with no blame does count. Repeated crashes with no blame make the wait longer. Then the host starts with only built in widgets. At last the restarts stop.
 
