@@ -24,14 +24,14 @@
  * @module @deepwidgets/widgets/isolation
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { Context, Fiber } from '@deepseek-ai/cordis'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { packageHash, readJson, writeJsonSync, type CrashRecord } from './records.ts'
-import { inSlot, startWatchdog } from './watchdog.ts'
+import { CRASH_DISPOSE_LIMIT_MS, inSlot, startWatchdog } from './watchdog.ts'
 
 export { packageHash, type BlameMethod, type CrashRecord } from './records.ts'
 
@@ -131,7 +131,7 @@ interface PackagesView {
 
 /**
  * widget_fv.crash: the package folder of the Loader row of `fiber`, by the profile package lookup, as
- * `packageDir` of `packages/extensions/tool-cordis` finds it.
+ * `packageDir` of `packages/extensions/tool-cordis` finds it, as a real path.
  * @returns undefined when the host has no package lookup, or when it does not find the package.
  */
 function rowRoot(ctx: Context, fiber: Fiber): string | undefined {
@@ -140,7 +140,9 @@ function rowRoot(ctx: Context, fiber: Fiber): string | undefined {
   const baseUrl = entry?.parent?.tree?.ctx?.baseUrl
   if (typeof name !== 'string' || typeof baseUrl !== 'string') return undefined
   try {
-    return (ctx.get('pluginPackages') as PackagesView | undefined)?.packageOf(name, baseUrl)?.dir
+    const dir = (ctx.get('pluginPackages') as PackagesView | undefined)?.packageOf(name, baseUrl)?.dir
+    // The real path, as the stack frames of the loaded module give it (on macOS, /var is a link to /private/var).
+    return dir === undefined ? undefined : realpathSync(dir)
   } catch {
     return undefined
   }
@@ -324,7 +326,7 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
   }
 
   // ---- the watchdog (widget_phase2.isolation.watchdog) ----
-  const watchdog = startWatchdog(ctx, { crashFile: crashFile(), provisionalFile: provisionalFile() })
+  const watchdog = startWatchdog(ctx, blameStore, { crashFile: crashFile(), provisionalFile: provisionalFile() })
 
   /** The slugs of `row`: the slugs that it registered, else the slug of its row id. */
   const slugsOf = (row: string): string[] => {
@@ -443,8 +445,9 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
    * safe_host.cleanup: write the crash record. The fail-loud release then disposes the plugin tree and exits with
    * code 1 (`apps/cli/src/profile-boot.ts`). First the watchdog thread learns that the dispose starts: it owns the
    * deadline of the dispose, and it writes no stall record over this record.
+   * @returns the time limit of the dispose in ms.
    */
-  function claim(error: unknown, event: CrashRecord['event']): void {
+  function claim(error: unknown, event: CrashRecord['event']): number {
     crashed = true
     watchdog.crashing()
     try {
@@ -470,6 +473,8 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
     } catch (failure) {
       process.stderr.write(`deepwidgets: the crash record was not written: ${String(failure)}\n`)
     }
+    // The time limit of the dispose. The release of profile-boot keeps a timer at it, as a backup of the watchdog thread.
+    return CRASH_DISPOSE_LIMIT_MS
   }
   ctx.effect(() => {
     const registry = globalThis as { [key: symbol]: Set<typeof claim> | undefined }

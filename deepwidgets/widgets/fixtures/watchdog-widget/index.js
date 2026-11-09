@@ -28,6 +28,26 @@ export function apply(ctx) {
         },
       },
       {
+        // safe_host.watchdog: a loop after an await. The running slot holds 0, and the store names this widget.
+        // With the native module, the innermost frame is in this file: a widget stall.
+        name: 'spinAfterAwait',
+        kind: 'query',
+        handler: async function watchdogSpinAfterAwait() {
+          await Promise.resolve()
+          for (;;) busy(1_000)
+        },
+      },
+      {
+        // safe_host.watchdog: host work that this widget awaits holds the event loop. Its timer has the store of
+        // this widget, but its frames are host code. The watchdog must not blame this widget.
+        name: 'awaitHost',
+        kind: 'query',
+        handler: async function watchdogAwaitHost(args) {
+          await ctx.get('watchdogHost').blockLater(Number(args?.ms ?? 3_000))
+          return { awaited: true }
+        },
+      },
+      {
         // A stall shorter than the threshold: the provisional record comes and goes, and the host lives.
         name: 'stall',
         kind: 'query',

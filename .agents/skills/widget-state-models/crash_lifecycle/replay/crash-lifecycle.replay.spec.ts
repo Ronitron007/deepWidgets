@@ -2,7 +2,7 @@
 // Each host is a real child process; Electron main is the real DesktopHostSupervisor with
 // its real file readers; the next Host is the real createIsolation (ISO) in this process.
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -72,22 +72,8 @@ afterEach(() => { vi.restoreAllMocks() })
 
 describe('crash_lifecycle replays', () => {
   // widget_fv.crash: these replays assert the fixed behavior. Each path is the TLC bug path of the code before the fix.
-  it('InnocentNeverQuarantined: a1 returns, host code aborts, a1 is not quarantined', async () => {
-    home('innocent')
-    const { supervisor, lines, restarted } = supervisorWithLog()
-    supervisor.ready()                                          // the Host is ready
-    const end = await raceHost('abort-after-return')           // a1 starts, stall, a1 returns, abort
-    expect(end.out).toContain('provisional.json exists = true') // the watchdog saw the stall of a1
-    expect(end.out).toContain('a1 code returns; slot = 0 ; provisional.json exists = false')
-    expect(end.signal).toBe('SIGABRT')
-    expect(supervisor.failed(exitFailure(end), false)).toBe(true)  // Electron main sees the exit
-    expect(lines.find((l) => l.includes('host-failed'))).toContain('"blamed":null')
-    await sleep(700)                                            // the restart timer fires (0.5 s)
-    expect(restarted()).toBe(1)
-    const next = nextHost()                                     // the Host applies the crash records
-    expect(next.a1).toBe('ran')
-  })
-
+  // InnocentNeverQuarantined and the path where the boot fails right after a1 returns need the real inSlot. They run on
+  // a real host: the case `innocent` of tools/widgets-crash-replay.mjs.
   it('ProvisionalOnlyOnAbort (all-rules path): Host never ready, OS kills it mid-stall, relaunch runs a1', async () => {
     home('prov-kill')
     const first = supervisorWithLog()                           // first app launch, never ready
@@ -97,18 +83,6 @@ describe('crash_lifecycle replays', () => {
     expect(first.supervisor.failed(exitFailure(end), false)).toBe(false)   // fatal dialog
     expect(provisionalExists()).toBe(false)                    // the kill is no abort: the record is discarded
     supervisorWithLog()                                         // you start the app again
-    expect(nextHost().a1).toBe('ran')
-  })
-
-  it('ProvisionalOnlyOnAbort (one-launch path): boot fails right after a1 returns', async () => {
-    home('prov-bootfail')
-    const { supervisor } = supervisorWithLog()
-    supervisor.ready()
-    const end = await raceHost('boot-fail-after-return')
-    expect(end.code).toBe(1)
-    expect(provisionalExists()).toBe(false)                    // a1 returned: its record went at once
-    expect(supervisor.failed(fatalFailure(end), false)).toBe(true)
-    await sleep(700)
     expect(nextHost().a1).toBe('ran')
   })
 
@@ -134,7 +108,7 @@ describe('crash_lifecycle replays', () => {
     const end = await claimHost(A1, false, join(R, 'pkg-a1'))   // a1 code starts, an uncaught error before track()
     expect(end.code).toBe(1)
     const record = JSON.parse(readFileSync(join(process.env.DSH_HOME!, 'deepwidgets', 'crash.json'), 'utf8')) as { root: unknown, hash: unknown, slugs: unknown }
-    expect(record.root).toBe(join(R, 'pkg-a1'))
+    expect(record.root).toBe(realpathSync(join(R, 'pkg-a1')))  // the real path of the row folder
     expect(typeof record.hash).toBe('string')
     expect(record.slugs).toEqual(['a1'])
     expect(supervisor.failed(exitFailure(end), false)).toBe(true)

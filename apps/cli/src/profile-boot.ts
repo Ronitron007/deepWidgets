@@ -33,6 +33,8 @@ import {
   type Profile,
   type RuntimeResolution,
 } from '@deepseek-ai/dsh-app-boot'
+// deepwidgets-trim: added line; safe_host.cleanup. The limit of a fatal hook that gives none.
+import { FAIL_LOUD_RELEASE_TIMEOUT_MS } from '@deepseek-ai/dsh-app-boot'
 import { PROFILE_TEMPLATES } from '@deepseek-ai/dsh-official-bundles'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { installProxyFromEnvironment } from '@deepseek-ai/dsh-http-proxy'
@@ -311,17 +313,24 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
     // deepwidgets-trim: widget_phase2.isolation.blame and safe_host.cleanup. After the fail-loud diagnostic, the widget
     // runtime writes the crash record. Then the release disposes the plugin tree and exits with code 1. The watchdog
     // thread of the widget runtime owns the deadline of that dispose, so the 2 s limit of installFailLoud does not end
-    // it. With no hook, the release is as before.
+    // it. A timer of the main thread at the same limit is the backup for an async hang when the watchdog thread is
+    // dead. With no hook, the release is as before.
     // installFailLoud(NAME, process, async () => {
     //   await app.current?.fiber.dispose()
     // })
     const fatal = withFatalHooks(process)
     installFailLoud(NAME, fatal.process, async () => {
-      const claimed = fatal.run()
+      const limitMs = fatal.run()
+      if (limitMs !== undefined) {
+        setTimeout(() => {
+          process.stderr.write(`${NAME}: the dispose after the crash took ${String(limitMs)} ms; the process is killed now\n`)
+          process.kill(process.pid, 'SIGKILL')
+        }, limitMs)
+      }
       try {
         await app.current?.fiber.dispose()
       } finally {
-        if (claimed) process.exit(1)
+        if (limitMs !== undefined) process.exit(1)
       }
     })
 
@@ -374,12 +383,12 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
  * `Symbol.for('deepwidgets.fatal.hooks')` the error in its own async context. A hook that throws does not stop the
  * release.
  *
- * A hook that ran owns the deadline of the dispose: `run` gives true, and the slice then ignores the exit of the
- * release timeout of `installFailLoud`. The release exits when the dispose ends, and the hook kills the process when
- * the dispose takes too long.
+ * A hook gives the time limit of the dispose in ms. Then `run` gives the longest limit, and the slice ignores the
+ * exit of the release timeout of `installFailLoud`. The release exits when the dispose ends. The hook kills the
+ * process when the dispose takes too long, and a timer of the release does the same as a backup.
  */
-function withFatalHooks(proc: NodeJS.Process): { process: FailLoudProcess; run(): boolean } {
-  type Hook = (error: unknown, event: FailLoudEvent) => void
+function withFatalHooks(proc: NodeJS.Process): { process: FailLoudProcess; run(): number | undefined } {
+  type Hook = (error: unknown, event: FailLoudEvent) => number | void
   const registry = globalThis as { [key: symbol]: Set<Hook> | undefined }
   const key = Symbol.for('deepwidgets.fatal.hooks')
   let last: { error: unknown; event: FailLoudEvent } | undefined
@@ -404,16 +413,19 @@ function withFatalHooks(proc: NodeJS.Process): { process: FailLoudProcess; run()
       },
     },
     run() {
-      if (last === undefined) return false
+      if (last === undefined) return undefined
+      let limitMs: number | undefined
       for (const hook of registry[key] ?? []) {
         claimed = true
         try {
-          hook(last.error, last.event)
+          const limit = hook(last.error, last.event)
+          if (typeof limit === 'number') limitMs = Math.max(limitMs ?? 0, limit)
         } catch (error) {
           proc.stderr.write(`${NAME}: a fatal hook failed: ${String(error)}\n`)
         }
       }
-      return claimed
+      // A hook that gave no limit, or that threw, still gets the limit of installFailLoud.
+      return claimed ? limitMs ?? FAIL_LOUD_RELEASE_TIMEOUT_MS : undefined
     },
   }
 }

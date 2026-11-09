@@ -7,14 +7,21 @@
  *   hash that lifts the quarantine, and the slug of a row that throws before it registers.
  * - specs: the vitest specs `host-process.spec.ts`, `deepwidgets-supervisor.spec.ts`, and
  *   `deepwidgets-crash-policy.spec.ts` of apps/desktop/tests (`safe_host.crash`).
- * Then it boots the CLI host (web profile) on free loopback ports with the fixtures `throw-widget` and `crash-host`
- * of deepwidgets/widgets/fixtures:
+ * Then it boots the CLI host (web profile) on free loopback ports with the fixtures `throw-widget`, `crash-host`,
+ * `watchdog-host`, and `watchdog-widget` of deepwidgets/widgets/fixtures:
+ * - innocent (widget_fv.crash): a widget call stalls 800 ms, so the provisional record comes. The call returns, and
+ *   host code aborts before the next heartbeat. The compiled `inSlot` must remove the record, so the real supervisor
+ *   blames no widget and the next host runs the widget.
  * - throw-first: a widget whose plugin body throws before it registers shows as failed with the reason.
  * - throw-timer: a timer of that widget throws before it registers. The crash record has the root and the hash of
  *   its package, the next host holds it, and a changed file lifts the quarantine when the new code loads with success.
  * - cleanup-marker: at an uncaught error, the host disposes its plugins (a disposer writes a marker) and exits 1.
  * - cleanup-async and cleanup-sync: a disposer that never settles, or that loops, ends the host with SIGKILL about
  *   3 s after the crash. The crash record stays the record of the claimer, and the real supervisor counts one crash.
+ * - cleanup-widget-loop: a disposer of a widget loops. The native stack of the stuck thread is in widget files, so
+ *   only the crash slot keeps the watchdog from a stall record over the record of the claimer.
+ * - cleanup-no-worker: the check stops the watchdog thread over the inspector. A disposer that never settles still
+ *   ends the host after about 3 s, by the timer of the fail-loud release.
  * Environment: WIDGETS_CRASH_CASES (comma list) runs only those cases.
  * Prints `widgets-crash-replay: pass` and exits 0 only when every check passes.
  * Needs `corepack pnpm install` and `corepack pnpm run build:artifacts` first.
@@ -43,7 +50,8 @@ const CLEANUP_MIN_MS = 2_800
 const CLEANUP_MAX_MS = 5_500
 /** True when the Loader row id `row` (with the ids of its parent rows) ends in the row id `id`. */
 const isRow = (row, id) => typeof row === 'string' && (row === id || row.endsWith(`:${id}`))
-const CASE_NAMES = ['replays', 'specs', 'throw-first', 'throw-timer', 'cleanup-marker', 'cleanup-async', 'cleanup-sync']
+const HOST_CASES = ['innocent', 'throw-first', 'throw-timer', 'cleanup-marker', 'cleanup-async', 'cleanup-sync', 'cleanup-widget-loop', 'cleanup-no-worker']
+const CASE_NAMES = ['replays', 'specs', ...HOST_CASES]
 const CASES = process.env.WIDGETS_CRASH_CASES?.split(',').map((name) => name.trim()).filter((name) => name !== '')
 const runs = (name) => CASES === undefined || CASES.length === 0 || CASES.includes(name)
 const unknownCases = (CASES ?? []).filter((name) => !CASE_NAMES.includes(name))
@@ -197,6 +205,38 @@ const widgetIn = async (host, slug, test) => {
 }
 const alive = (host) => host.child.exitCode === null && host.child.signalCode === null
 
+/** Stop each worker thread of the host over the inspector. Gives the number of workers. */
+async function stopWorkers(inspectPort) {
+  const targets = await (await fetch(`http://127.0.0.1:${String(inspectPort)}/json/list`)).json()
+  const socket = new WebSocket(targets[0].webSocketDebuggerUrl)
+  await new Promise((resolve, reject) => { socket.addEventListener('open', resolve); socket.addEventListener('error', () => reject(new Error('inspector connection failed'))) })
+  let next = 0
+  const waiting = new Map()
+  socket.addEventListener('message', (event) => {
+    const message = JSON.parse(String(event.data))
+    const item = waiting.get(message.id)
+    if (item === undefined) return
+    waiting.delete(message.id)
+    if (message.error) item.reject(new Error(message.error.message))
+    else if (message.result?.exceptionDetails) item.reject(new Error(message.result.exceptionDetails.exception?.description ?? 'evaluate failed'))
+    else item.resolve(message.result)
+  })
+  const send = (method, params) => new Promise((resolve, reject) => { next += 1; waiting.set(next, { resolve, reject }); socket.send(JSON.stringify({ id: next, method, params })) })
+  try {
+    const proto = await send('Runtime.evaluate', { expression: "require('node:worker_threads').Worker.prototype", includeCommandLineAPI: true })
+    const workers = await send('Runtime.queryObjects', { prototypeObjectId: proto.result.objectId })
+    const reply = await send('Runtime.callFunctionOn', {
+      objectId: workers.objects.objectId,
+      returnByValue: true,
+      // The list also holds objects that only inherit from Worker.prototype, such as the prototype of a subclass.
+      functionDeclaration: 'function () { let stopped = 0; for (const worker of this) { try { void worker.terminate(); stopped += 1 } catch { /* not a worker */ } } return stopped }',
+    })
+    return reply.result.value
+  } finally {
+    socket.close()
+  }
+}
+
 /** The real supervisor of Electron main decides on the exit of `exit`. Gives its log lines. */
 async function supervise(exit, pid) {
   process.env.DSH_HOME = home
@@ -238,7 +278,7 @@ async function main() {
     const summary = `${run.stdout ?? ''}`.split('\n').filter((line) => /Tests|Test Files|FAIL/.test(line)).slice(-12).join(' | ')
     check('specs: the host process, supervisor, and crash policy specs pass', run.status === 0, `exit ${String(run.status)}: ${summary}`)
   }
-  if (!['throw-first', 'throw-timer', 'cleanup-marker', 'cleanup-async', 'cleanup-sync'].some(runs)) return
+  if (!HOST_CASES.some(runs)) return
 
   const port = await freePort()
   const inspectPort = await freePort()
@@ -249,7 +289,7 @@ async function main() {
 
   let host = await startHost(port, inspectPort)
   try {
-    for (const name of ['crash-host', 'throw-widget']) {
+    for (const name of ['crash-host', 'throw-widget', 'watchdog-host', 'watchdog-widget']) {
       const result = await installBundle(inspectPort, join(fixtures, name)).catch((error) => ({ error: String(error.message) }))
       // The plugin of throw-widget throws, so its install can report the failed start. Its row stays in the config.
       check(`install ${name}: the bundle is in the config`, result?.error === undefined || name === 'throw-widget', JSON.stringify(result?.error ?? result?.application))
@@ -266,6 +306,40 @@ async function main() {
     }
   } finally {
     await host.stop()
+  }
+
+  // innocent: widget_fv.crash, the main-thread half. The compiled inSlot removes the record when the call returns.
+  if (runs('innocent')) {
+    clearState()
+    host = await startHost(port, inspectPort)
+    const pid = host.child.pid
+    let exit = null
+    try {
+      await waitFor(async () => (await listed(host, 'watchdog'))?.failed === undefined, 20_000)
+      void host.post('/api/watchdoghost/innocent', {}).catch(() => undefined)
+      exit = await Promise.race([host.exited, sleep(20_000).then(() => null)])
+    } finally {
+      await host.stop()
+    }
+    const provisional = readState('provisional.json')
+    const detail = JSON.stringify({ exit: exit === null ? 'alive after 20 s' : exit.signal ?? exit.code, provisional: provisional === undefined ? null : { row: provisional.row, pid: provisional.pid === pid } })
+    check('innocent: host code aborts after the widget call returned', exit?.signal === 'SIGABRT', detail)
+    check('innocent: the call that returned left no provisional record', provisional?.pid !== pid, detail)
+    const lines = exit === null ? [] : await supervise(exit, pid)
+    const failed = lines.find((line) => line.event === 'host-failed')
+    check('innocent: the real supervisor blames no widget', failed !== undefined && failed.blamed === null, JSON.stringify(failed))
+    host = await startHost(port, inspectPort)
+    try {
+      const live = await waitFor(async () => {
+        const widget = await listed(host, 'watchdog')
+        return widget !== undefined && widget.failed === undefined
+      }, 20_000)
+      const quarantine = readState('quarantine.json')
+      check('innocent: the next host runs the widget', live && !(Array.isArray(quarantine) && quarantine.some((item) => isRow(item?.row, 'deepwidgets-widget-watchdog'))),
+        JSON.stringify({ widget: await listed(host, 'watchdog'), quarantine }))
+    } finally {
+      await host.stop()
+    }
   }
 
   // throw-timer: widget_fv.crash, the root and the hash from the row.
@@ -305,16 +379,28 @@ async function main() {
   }
 
   // cleanup: safe_host.cleanup.
-  for (const mode of ['marker', 'async', 'sync']) {
+  const crashModes = { marker: 'marker', async: 'async-hang', sync: 'sync-loop', 'widget-loop': 'none', 'no-worker': 'async-hang' }
+  for (const mode of ['marker', 'async', 'sync', 'widget-loop', 'no-worker']) {
     if (!runs(`cleanup-${mode}`)) continue
     clearState()
-    host = await startHost(port, inspectPort)
+    host = await startHost(port, inspectPort, [], mode === 'widget-loop' ? { DEEPWIDGETS_THROWFIRST: 'ok' } : {})
     const pid = host.child.pid
     const marker = join(work, `marker-${String(Date.now())}`)
     let exit = null
     let armed
+    let setup
     try {
-      armed = await host.post('/api/crashhost/arm', { mode: mode === 'marker' ? 'marker' : mode === 'async' ? 'async-hang' : 'sync-loop', marker })
+      if (mode === 'widget-loop') {
+        await waitFor(async () => (await listed(host, 'throwfirst'))?.failed === undefined, 20_000)
+        setup = await host.post('/api/widgets/throwfirst/call', { action: 'armDisposeLoop', args: {} })
+        const record = readState('crash.json')
+        if (record?.pid === pid) setup = { ...setup, early: record.event }
+      }
+      if (mode === 'no-worker') {
+        setup = await stopWorkers(inspectPort).catch((error) => String(error.message))
+        await sleep(500)
+      }
+      armed = await host.post('/api/crashhost/arm', { mode: crashModes[mode], marker })
       const sent = Date.now()
       exit = await Promise.race([host.exited, sleep(20_000).then(() => null)])
       if (exit !== null) exit = { ...exit, ms: exit.at - sent }
@@ -322,13 +408,15 @@ async function main() {
       await host.stop()
     }
     const record = readState('crash.json')
-    const detail = JSON.stringify({ armed: armed?.status, exit: exit === null ? 'alive after 20 s' : { code: exit.code, signal: exit.signal, ms: exit.ms }, row: record?.row, event: record?.event, pid: record?.pid === pid })
+    const detail = JSON.stringify({ setup, armed: armed?.status, exit: exit === null ? 'alive after 20 s' : { code: exit.code, signal: exit.signal, ms: exit.ms }, row: record?.row, event: record?.event, pid: record?.pid === pid })
     const claimed = record?.pid === pid && record?.row === null && record?.event === 'uncaughtException' && record?.applied === false
     if (mode === 'marker') {
       check('cleanup-marker: the host runs the disposers and exits with code 1', exit?.code === 1 && existsSync(marker) && readFileSync(marker, 'utf8') === 'disposed', detail)
       check('cleanup-marker: the crash record is the record of the claimer', claimed, detail)
       continue
     }
+    if (mode === 'no-worker') check('cleanup-no-worker: the check stopped the worker threads', typeof setup === 'number' && setup >= 1, detail)
+    if (mode === 'widget-loop') check('cleanup-widget-loop: the widget armed its disposer', setup?.status === 200 && setup.early === undefined, detail)
     check(`cleanup-${mode}: a disposer that does not end gives SIGKILL after ${String(CLEANUP_MIN_MS)} to ${String(CLEANUP_MAX_MS)} ms`,
       exit?.signal === 'SIGKILL' && exit.ms >= CLEANUP_MIN_MS && exit.ms <= CLEANUP_MAX_MS, detail)
     check(`cleanup-${mode}: the crash record stays the record of the claimer, with no stall record over it`, claimed, detail)

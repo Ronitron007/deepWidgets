@@ -4,6 +4,7 @@
  * - `marker`: the disposer writes the file `marker`, so the check sees that the dispose at the crash ran.
  * - `async-hang`: the disposer gives a promise that never settles.
  * - `sync-loop`: the disposer holds the main thread in a loop that never ends.
+ * - `none`: no disposer. Another plugin can hold the dispose.
  */
 import { writeFileSync } from 'node:fs'
 
@@ -15,6 +16,7 @@ export function apply(ctx) {
     marker: (marker) => () => { writeFileSync(marker, 'disposed') },
     'async-hang': () => () => new Promise(() => {}),
     'sync-loop': () => () => { for (;;) { /* never ends */ } },
+    none: () => () => {},
   }
   ctx.connection.fetch.register({
     path: '/api/crashhost/arm',

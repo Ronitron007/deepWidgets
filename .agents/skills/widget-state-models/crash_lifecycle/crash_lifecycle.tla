@@ -224,7 +224,8 @@ Die(kind) ==
   /\ run' = None /\ slot' = None /\ beat' = FALSE /\ stall' = 0 /\ provAt' = FALSE
 
 \* WDW: the stall reaches its limit: crash record by the slot (no widget at slot 0),
-\* remove the provisional record, SIGKILL.
+\* remove the provisional record, SIGKILL. This is the desktop app: under Electron the
+\* native stack module has no build, so slot 0 waits TIdle (safe_host.watchdog).
 WatchdogKill ==
   /\ Started /\ ~beat /\ run # None /\ stall + 1 >= Limit
   /\ crash' = Mark(Record(slot), "wdkill")

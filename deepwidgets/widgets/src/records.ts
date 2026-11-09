@@ -13,9 +13,10 @@ const HASH_FILE_LIMIT = 2_000
 
 /**
  * How the widget was found. `store` and `stack` come from the claimer (`widget_phase2.isolation.blame`).
- * `slot`, `native-store`, and `native-stack` come from the watchdog (`widget_phase2.isolation.watchdog`).
+ * `slot` and `native-stack` come from the watchdog (`widget_phase2.isolation.watchdog`). The watchdog never blames by
+ * the store of the stuck thread alone (`safe_host.watchdog`).
  */
-export type BlameMethod = 'store' | 'stack' | 'slot' | 'native-store' | 'native-stack'
+export type BlameMethod = 'store' | 'stack' | 'slot' | 'native-stack'
 
 /**
  * The crash record `$DSH_HOME/deepwidgets/crash.json`. The host that starts next applies it.
@@ -67,6 +68,10 @@ export interface WatchdogData {
   pollMs: number
   crashFile: string
   provisionalFile: string
+  /** safe_host.watchdog: the resolved entry of `@sentry/node-native-stacktrace`, or null when it did not load on the main thread. */
+  nativeEntry: string | null
+  /** The name under which the main thread registered with the native module. */
+  mainThread: string
 }
 
 /** A message from the main thread: one widget row, its slot index, and what the record needs of it. */
