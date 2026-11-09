@@ -41,6 +41,8 @@ export const IDLE_THRESHOLD_MS = 10_000
 export const SUSPEND_GAP_MS = 1_000
 /** safe_host.cleanup: the time limit of the plugin dispose at a crash. */
 export const CRASH_DISPOSE_LIMIT_MS = 3_000
+/** safe_host.hmr: the time limit of each disposer of a widget or agent row. */
+export const DISPOSER_LIMIT_MS = 5_000
 /** The heartbeat period. */
 const BEAT_MS = Math.max(20, Math.min(100, Math.floor(WATCHDOG_THRESHOLD_MS / 5)))
 /** The poll period of the watchdog thread. */

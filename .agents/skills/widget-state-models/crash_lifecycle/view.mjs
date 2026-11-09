@@ -21,6 +21,7 @@ export const step = (a, from, to) => {
     case "IsolationStart": return "the Host applies the crash records";
     case "HostReady": return "the Host is ready";
     case "RunWidget": return `${to.run} code starts`;
+    case "HostWork": return to.slot === "none" ? "host code runs while an agent row awaits" : "host code runs with the waiting agent row in the slot";
     case "Register": return "the widget registers its slug";
     case "FinishWidget": return `${from.run} code returns`;
     case "Beat": return "the heartbeat ticks";

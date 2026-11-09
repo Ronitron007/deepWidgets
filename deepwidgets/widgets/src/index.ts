@@ -16,7 +16,7 @@ import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { z } from 'zod'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import { agentRow, callerRoot, createIsolation, hostCrashing, isAgentRow, rowId, runAs, runningRow, widgetRow } from './isolation.ts'
+import { agentRow, callerRoot, createIsolation, expiredFiber, hostCrashing, isAgentRow, rowId, runAs, runningRow, widgetRow } from './isolation.ts'
 import { readJson, writeJsonSync } from './records.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -472,6 +472,8 @@ export class WidgetsService extends Service {
    * @throws {WidgetError} with a code of {@link WIDGET_ERROR_STATUS}.
    */
   call(slug: string, action: string, args: unknown, options: CallOptions): Promise<CallOutcome> {
+    const late = lateWrite(this.ctx.fiber, slug)
+    if (late !== undefined) return Promise.reject(late)
     return this.runtime.call(slug, action, args, options)
   }
 
@@ -481,6 +483,8 @@ export class WidgetsService extends Service {
    * @throws {WidgetError} `unknown-widget` or `busy`.
    */
   update<S>(slug: string, fn: (state: S) => S, options: { by?: string } = {}): Promise<S> {
+    const late = lateWrite(this.ctx.fiber, slug)
+    if (late !== undefined) return Promise.reject(late)
     const by = options.by ?? `plugin:${this.ctx.fiber.name}`
     return this.runtime.update(slug, fn as (state: unknown) => unknown, by) as Promise<S>
   }
@@ -490,6 +494,8 @@ export class WidgetsService extends Service {
    * @throws {WidgetError} `unknown-widget` or `bad-request`.
    */
   setProgram(slug: string, text: string, options: { by?: string } = {}): Promise<{ rev: number }> {
+    const late = lateWrite(this.ctx.fiber, slug)
+    if (late !== undefined) return Promise.reject(late)
     return this.runtime.setProgram(slug, text, options.by ?? `plugin:${this.ctx.fiber.name}`)
   }
 
@@ -687,6 +693,16 @@ async function readBody(request: Request): Promise<unknown> {
   } catch {
     throw new WidgetError('bad-request', 'the body is not JSON')
   }
+}
+
+/**
+ * safe_host.hmr: after a disposer of a row passed its time limit, the host refuses each later write of that row fiber.
+ * Thus a disposer that runs late can not change state after the next install.
+ * @returns the error for a write of `fiber`, or undefined when it can write.
+ */
+function lateWrite(fiber: Fiber, slug: string): WidgetError | undefined {
+  if (!expiredFiber(fiber)) return undefined
+  return new WidgetError('widget-failed', `${slug}: a disposer of the row of this code did not end in its time limit, so this code can not write`)
 }
 
 export const name = 'deepwidgets-widgets'
@@ -1461,6 +1477,16 @@ export function apply(ctx: Context, config: Config): void {
       return async () => { for (const dispose of disposers) await dispose() }
     },
     failed: (row) => { rowFailed(row) },
+    // safe_host.hmr: in safe mode the gate does not load agent rows, so they do not reach `add`. Their slugs show as off.
+    refused(rows) {
+      for (const { row, slugs } of rows) {
+        for (const slug of slugs) {
+          if (widgets.has(slug) || off.has(slug)) continue
+          off.set(slug, { title: slug, message: `safe mode: the agent row ${rowId(row)} is off for this Host start; only built-in widgets run`, agent: true })
+        }
+      }
+      ctx.logger.warn(`widgets: safe mode skipped ${String(rows.length)} agent rows; only built-in rows run: ${rows.map(({ row }) => rowId(row)).join(', ')}`)
+    },
   })
 
   // The service methods report each failure as a WidgetError, so the caller sees one form.

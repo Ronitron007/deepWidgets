@@ -10,6 +10,10 @@
       "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./gate": {
+      "types": "./lib/types/gate.d.ts",
+      "default": "./lib/gate.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

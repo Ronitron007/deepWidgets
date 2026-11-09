@@ -45,6 +45,8 @@ const crashMutants = {
   keep_prov: 'ProvisionalGoneAfterBeat',
   // widget.crash_records: each mutant is the code before that unit.
   no_row_root: 'HashChangeLifts', prov_outlives_call: 'InnocentNeverQuarantined', keep_prov_unarmed: 'ProvisionalOnlyOnAbort',
+  // host.hmr_guards: the code at 5a47dd3d kept an agent row in the running slot across an await.
+  slot_spans_awaits: 'InnocentNeverQuarantined',
 }
 const installMutants = {
   'M-builtinRow-BuiltInUntouched': 'BuiltInUntouched', 'M-builtinRow-OneBundlePerSlug': 'OneBundlePerSlug',

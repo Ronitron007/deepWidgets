@@ -3,6 +3,9 @@
 (* crash_lifecycle: the outermost state machine of deepWidgets, synced at   *)
 (* widget.crash_records (the fix of widget_fv.crash, safe_host.watchdog,     *)
 (* safe_host.cleanup). Line refs before that unit are at c254b9df.          *)
+(* host.hmr_guards (safe_host.hmr) added HostWork: agent rows load through  *)
+(* the agent-row gate (deepwidgets/widgets/src/gate.ts) after IsolationStart, *)
+(* so RunWidget needs Started also at boot. The slot never spans an await.  *)
 (* Host process + crash.json/provisional.json + quarantine.json + the       *)
 (* watchdog thread + the Electron-main supervisor (HostCrashPolicy).        *)
 (* Code refs (path, function):                                              *)
@@ -33,6 +36,7 @@ CONSTANTS
 
 Widgets == Agents \cup {Sample}
 None == "none"   \* no widget row: record row null, empty slot, host code
+HostCode == "host"   \* safe_host.hmr: host code that is not widget code holds the main thread
 \* Sentinels with the same fields as the real values, so TLC compares like with like.
 NoRec == [kind |-> "nil", pid |-> 0, row |-> None, hash |-> -1, trueHash |-> -1,
           applied |-> TRUE, death |-> "none", running |-> None]
@@ -161,6 +165,17 @@ RunWidget(w, slotted) ==
   /\ UNCHANGED <<supVars, host, nextPid, beat, stall, provAt, registered, loaded,
                  crash, prov, quar, hash, ghostQ>>
 
+\* safe_host.hmr: host code runs, for example a host plugin that stalls the loop, while an agent row
+\* waits for an await (an import with a top-level await, or an async disposer). The slot holds only
+\* the synchronous code of a row (ISO runAs, WD inSlot), so it is empty here. The mutant
+\* slot_spans_awaits keeps the waiting agent row in the slot across the await, as enterSlot did at 5a47dd3d.
+HostWork(w) ==
+  /\ Started /\ run = None /\ loaded[w] = "live"
+  /\ run' = HostCode
+  /\ slot' = IF Mutant = "slot_spans_awaits" THEN w ELSE None
+  /\ UNCHANGED <<supVars, host, nextPid, beat, stall, provAt, registered, loaded,
+                 crash, prov, quar, hash, ghostQ>>
+
 \* The agent widget registers a slug: track() gives the Host its package folder (ISO:381-387).
 Register(w) ==
   /\ Started /\ run = w /\ w \notin registered
@@ -241,7 +256,7 @@ WatchdogKill ==
 \* so both ends leave the same record, and one exit gives one HostFails.
 Throw(how) ==
   /\ Started
-  /\ crash' = Mark(Record(run), how)
+  /\ crash' = Mark(Record(IF run = HostCode THEN None ELSE run), how)
   /\ prov' = Mark(prov, how)
   /\ Die(how)
   /\ UNCHANGED <<supVars, nextPid, registered, loaded, quar, hash, ghostQ>>
@@ -350,6 +365,7 @@ Next ==
   \/ IsolationStart \/ HostReady
   \/ \E w \in Agents, s \in BOOLEAN : RunWidget(w, s)
   \/ RunWidget(Sample, TRUE)
+  \/ \E w \in Agents : HostWork(w)
   \/ \E w \in Agents : Register(w)
   \/ FinishWidget \/ Beat
   \/ PollBeat \/ PollStall \/ WatchdogKill \/ Suspend
@@ -376,6 +392,9 @@ Spec == Init /\ [][Next]_vars
 (*   no_row_root      root only from track()      -> HashChangeLifts        *)
 (*   prov_outlives_call  the return keeps it      -> InnocentNeverQuarantined *)
 (*   keep_prov_unarmed   no discard before ready  -> ProvisionalOnlyOnAbort *)
+(* The mutant of host.hmr_guards is the code at 5a47dd3d:                   *)
+(*   slot_spans_awaits   the slot stays across an await of an agent row     *)
+(*                                                -> InnocentNeverQuarantined *)
 (***************************************************************************)
 
 (***************************************************************************)
@@ -424,5 +443,5 @@ ProvisionalGoneAfterBeat == (Started /\ ~provAt) => ~OwnProv
 TypeOK ==
   /\ sup \in {"run", "fatal", "gaveUp"}
   /\ stall \in 0..TIdle
-  /\ run \in Widgets \cup {None} /\ slot \in Widgets \cup {None}
+  /\ run \in Widgets \cup {None, HostCode} /\ slot \in Widgets \cup {None}
 =============================================================================

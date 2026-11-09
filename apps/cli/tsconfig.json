@@ -12,6 +12,9 @@
       "path": "../../vendor/cordis"
     },
     {
+      "path": "../../deepwidgets/widgets/tsconfig.host.json"
+    },
+    {
       "path": "../../vendor/loader"
     },
     {

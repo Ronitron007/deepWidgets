@@ -201,6 +201,9 @@ export class Fiber {
 
   public readonly _hooks: Dict<DisposableList<Function>> = Object.create(null)
   public readonly _disposables = new DisposableList<Disposable>()
+  // deepwidgets-trim: added field; safe_host.hmr. A host can bound each disposer of this fiber. `_unload` gives it the
+  // task of each disposer, which also joins a dispose that is already in flight, and awaits what it returns.
+  public disposerLimit: ((task: void | Promise<void>, dispose: Disposable) => void | Promise<void>) | undefined = undefined
 
   // Same as `this.ctx`, but with a more specific type.
   protected context: Context
@@ -722,7 +725,10 @@ export class Fiber {
         await composeError(async (info) => {
           await Promise.resolve()
           info.error = new Error()
-          await runDisposable(dispose)
+          // deepwidgets-trim: safe_host.hmr. The disposer limit of the host, when it set one.
+          // await runDisposable(dispose)
+          const task = runDisposable(dispose)
+          await (this.disposerLimit === undefined ? task : this.disposerLimit(task, dispose))
         }, this._runner.getOuterStack)
       } catch (reason) {
         this.ctx.logger.error(reason)

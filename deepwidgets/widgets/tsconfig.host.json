@@ -6,6 +6,7 @@
     "tsBuildInfoFile": "lib/tsconfig.host.tsbuildinfo"
   },
   "files": [
+    "src/gate.ts",
     "src/index.ts",
     "src/isolation.ts",
     "src/records.ts",
