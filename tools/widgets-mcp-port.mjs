@@ -15,6 +15,9 @@
  *   Origin with 403, and a host restart keeps the port and the pid, gives 503 with Retry-After in the gap,
  *   then 200, a new nonce, and a bridge that reconnects. No host may bind Q: the mutant (the host binds
  *   the setting) fails the first host with `listen EADDRINUSE` for Q.
+ * - proxy: the port owner of Electron main (`McpPortOwner`) with a fake host. A request that never reaches a
+ *   host (no host, or the connect is refused) gets 503 with Retry-After: 1. A request whose host connection resets
+ *   after the request was sent gets 502 with no Retry-After. A WebSocket upgrade gets 400 and does not reach the host.
  * - clean_stop: SIGTERM of the host removes its port file.
  * - pid_reuse: a file whose pid is alive but whose start time differs is not owned; a new host replaces it.
  * - epoch: a token of an earlier host start gets 401 after a restart.
@@ -222,8 +225,63 @@ async function settingChecks() {
   check('Electron main reads DEEPWIDGETS_MCP_PORT from the environment, then the profile .env, then $DSH_HOME/.env', layered.join() === '48000,48001,48002,47615', layered.join())
 }
 
+/** One raw request to `port`. Gives status and headers, or the error text. */
+function rawAsk(port, { method = 'POST', path = '/mcp', headers = {}, body = '{}' } = {}) {
+  return new Promise((resolve) => {
+    const req = httpRequest({ host: '127.0.0.1', port, method, path, agent: false, timeout: 10_000, headers: { 'content-type': 'application/json', connection: 'close', ...headers } }, (res) => {
+      res.resume()
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers }))
+    })
+    req.once('timeout', () => req.destroy(new Error('timed out')))
+    req.once('error', (error) => resolve({ error: error.message }))
+    req.end(body)
+  })
+}
+
+/** The port owner of Electron main with a fake host: 503 only before a host connection, 502 after it, and no upgrade. */
+async function proxyChecks() {
+  const { McpPortOwner } = await import(pathToFileURL(join(ROOT, 'apps/desktop/src/deepwidgets-mcp-port.ts')).href)
+  const owner = new McpPortOwner({ port: 0, portFile: join(work, 'proxy', 'mcp.json'), log: () => {} })
+  const port = await owner.listen()
+  const seen = []
+  // The fake host reads the whole request, then resets the connection with no answer: a crash after the request ran.
+  const fake = createServer((socket) => {
+    let text = ''
+    socket.on('data', (chunk) => {
+      text += chunk
+      if (text.includes('\r\n\r\n')) { seen.push(text.split('\r\n')[0]); socket.resetAndDestroy() }
+    })
+    socket.on('error', () => {})
+  })
+  await new Promise((resolve) => fake.listen(0, '127.0.0.1', resolve))
+  const fakePort = fake.address().port
+  const refusedPort = await freePort()
+  const mcp = (hostPort) => ({ port: hostPort, nonce: randomBytes(16).toString('base64url'), secret: randomBytes(32).toString('base64url') })
+  try {
+    const link = owner.link()
+    const none = await rawAsk(port)
+    link.update(mcp(refusedPort))
+    const refused = await rawAsk(port)
+    link.update(mcp(fakePort))
+    const reset = await rawAsk(port)
+    const before = seen.length
+    const upgrade = await rawAsk(port, { method: 'GET', body: undefined, headers: { connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-version': '13', 'sec-websocket-key': randomBytes(16).toString('base64') } })
+    const retry = (answer) => answer.headers?.['retry-after']
+    check('proxy: with no host, a request gets 503 with Retry-After: 1', none.status === 503 && retry(none) === '1', JSON.stringify(none.status ?? none.error))
+    check('proxy: when the host connect is refused, the request never reached a host and gets 503 with Retry-After: 1', refused.status === 503 && retry(refused) === '1', JSON.stringify(refused.status ?? refused.error))
+    check('proxy: when the host connection resets after the request was sent, the request gets 502 with no Retry-After',
+      reset.status === 502 && retry(reset) === undefined && seen.length === 1, `${JSON.stringify(reset.status ?? reset.error)} retry-after ${String(retry(reset))}, host saw ${String(seen.length)}`)
+    check('proxy: a WebSocket upgrade gets 400 from Electron main and does not reach the host',
+      upgrade.status === 400 && upgrade.headers?.['x-deepwidgets-answer'] === 'electron-main' && seen.length === before, `${JSON.stringify(upgrade.status ?? upgrade.error)}, host saw ${String(seen.length - before)}`)
+  } finally {
+    owner.close()
+    await new Promise((resolve) => fake.close(resolve))
+  }
+}
+
 async function main() {
   await settingChecks()
+  await proxyChecks()
   const port = await freePort()
   console.log(`widgets-mcp-port: work folder ${work}, port ${String(port)}`)
 

@@ -4,7 +4,9 @@
  * The Host listens on a port that the OS picks, and the MCP row tells Electron main that port, its nonce, and its
  * forward secret over IPC. Electron main adds the secret to each forwarded request; the Host refuses a request
  * without it. Electron main writes `$DSH_HOME/deepwidgets/mcp.json` with its own port, and only Electron main
- * removes that file. While no Host is ready, each request gets 503 with `Retry-After: 1`.
+ * removes that file. When a request does not reach a Host (no Host is ready, or the connection to it fails), it
+ * gets 503 with `Retry-After: 1`. When the Host connection fails after Electron main connected, the request may
+ * have run, so it gets 502 with no `Retry-After`. Electron main refuses a WebSocket upgrade with 400.
  * Each Host process gets its own link, so a later handover (`handover.order`) can make the new Host current while
  * the old one disposes.
  * The module imports only Node built-in modules and `./deepwidgets-port-file.ts`.
@@ -15,7 +17,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync,
 import { Agent, createServer, request as httpRequest } from 'node:http'
 import type { IncomingHttpHeaders, IncomingMessage, OutgoingHttpHeaders, Server, ServerResponse } from 'node:http'
 import { dirname, join } from 'node:path'
-import { pipeline } from 'node:stream'
+import { pipeline, type Duplex } from 'node:stream'
 import { parseEnv } from 'node:util'
 import { mcpPortFileOwnerAlive, mcpPortFilePath, removeDeadMcpPortFile } from './deepwidgets-port-file.ts'
 
@@ -148,8 +150,15 @@ function unavailable(res: ServerResponse): void {
   answer(res, 503, { error: 'the deepWidgets host is not ready; retry after the Retry-After seconds' }, { 'retry-after': String(RETRY_AFTER_SECONDS) })
 }
 
-/** Network errors that mean the Host is gone or not yet listening: the gap of a restart. */
-const GAP_ERRORS = new Set(['ECONNREFUSED', 'ECONNRESET', 'EPIPE'])
+/** The answer to a WebSocket upgrade: this port serves only plain HTTP. */
+const UPGRADE_REFUSAL = [
+  'HTTP/1.1 400 Bad Request',
+  'content-type: application/json',
+  `${MCP_ANSWER_HEADER}: electron-main`,
+  'connection: close',
+  '',
+  JSON.stringify({ error: 'this port does not take a WebSocket upgrade' }),
+].join('\r\n')
 
 /** The port file content. `pid` and `started` name Electron main, the owner of the port. */
 interface PortFile {
@@ -171,7 +180,8 @@ export interface McpPortOwnerOptions {
 /** The MCP port of Electron main and the port file. */
 export class McpPortOwner {
   private readonly server: Server
-  private readonly agent = new Agent({ keepAlive: true })
+  /** No keep-alive: each request connects again, so a connect error always means that the request did not reach a Host. */
+  private readonly agent = new Agent({ keepAlive: false })
   private readonly log: (line: string) => void
   private current: { link: McpHostLink; mcp: HostMcp } | undefined
   private listening: number | undefined
@@ -186,6 +196,11 @@ export class McpPortOwner {
     this.options = options
     this.log = options.log ?? ((line) => { console.log(line) })
     this.server = createServer((req, res) => { this.handle(req, res) })
+    // Without this listener, node:http gives an upgrade request to the handler, and the Host gets it as a plain request.
+    this.server.on('upgrade', (_req: IncomingMessage, socket: Duplex) => {
+      socket.on('error', () => { /* The client left. */ })
+      socket.end(UPGRADE_REFUSAL)
+    })
   }
 
   /** The listening port, after {@link listen}. */
@@ -263,6 +278,11 @@ export class McpPortOwner {
     const headers = endToEnd(req.headers)
     headers[MCP_FORWARD_HEADER] = target.secret
     const upstream = httpRequest({ host: '127.0.0.1', port: target.port, method: req.method, path: req.url, headers, agent: this.agent })
+    let connected = false
+    upstream.on('socket', (socket) => {
+      if (!socket.connecting) connected = true
+      else socket.once('connect', () => { connected = true })
+    })
     upstream.on('response', (response) => {
       res.writeHead(response.statusCode ?? 502, endToEnd(response.headers))
       // A server-sent event stream must reach the client before the first event.
@@ -271,9 +291,10 @@ export class McpPortOwner {
     })
     upstream.on('error', (error: NodeJS.ErrnoException) => {
       if (res.headersSent) { res.destroy(); return }
-      // The Host died before Electron main saw its exit: this is the same gap as no Host.
-      if (error.code !== undefined && GAP_ERRORS.has(error.code)) { unavailable(res); return }
-      answer(res, 502, { error: `the deepWidgets host did not answer: ${error.message}` })
+      // The connect failed, so the request never reached a Host: the Host died before Electron main saw its exit.
+      if (!connected) { unavailable(res); return }
+      // The Host may have run the request, so a client must not retry it blindly.
+      answer(res, 502, { error: `the deepWidgets host did not answer; the request may have run: ${error.message}` })
     })
     // A client that leaves ends the Host request too, so a long stream of the Host does not stay open.
     res.on('close', () => { if (!res.writableFinished) upstream.destroy() })
