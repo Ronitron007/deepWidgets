@@ -6,7 +6,8 @@
  * without it. Electron main writes `$DSH_HOME/deepwidgets/mcp.json` with its own port, and only Electron main
  * removes that file. When a request does not reach a Host (no Host is ready, or the connection to it fails), it
  * gets 503 with `Retry-After: 1`. When the Host connection fails after Electron main connected, the request may
- * have run, so it gets 502 with no `Retry-After`. Electron main refuses a WebSocket upgrade with 400.
+ * have run. A GET or HEAD is safe to retry, so it gets 503 with `Retry-After: 1`. Another method gets 502 with no
+ * `Retry-After`. Electron main refuses a WebSocket upgrade with 400.
  * Each Host process gets its own link, so a later handover (`handover.order`) can make the new Host current while
  * the old one disposes.
  * The module imports only Node built-in modules and `./deepwidgets-port-file.ts`.
@@ -293,7 +294,8 @@ export class McpPortOwner {
       if (res.headersSent) { res.destroy(); return }
       // The connect failed, so the request never reached a Host: the Host died before Electron main saw its exit.
       if (!connected) { unavailable(res); return }
-      // The Host may have run the request, so a client must not retry it blindly.
+      // The Host may have run the request. A safe method may run again; a client must not retry another one blindly.
+      if (req.method === 'GET' || req.method === 'HEAD') { unavailable(res); return }
       answer(res, 502, { error: `the deepWidgets host did not answer; the request may have run: ${error.message}` })
     })
     // A client that leaves ends the Host request too, so a long stream of the Host does not stay open.

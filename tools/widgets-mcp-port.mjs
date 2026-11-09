@@ -16,8 +16,8 @@
  *   then 200, a new nonce, and a bridge that reconnects. No host may bind Q: the mutant (the host binds
  *   the setting) fails the first host with `listen EADDRINUSE` for Q.
  * - proxy: the port owner of Electron main (`McpPortOwner`) with a fake host. A request that never reaches a
- *   host (no host, or the connect is refused) gets 503 with Retry-After: 1. A request whose host connection resets
- *   after the request was sent gets 502 with no Retry-After. A WebSocket upgrade gets 400 and does not reach the host.
+ *   host (no host, or the connect is refused) gets 503 with Retry-After: 1. When the host connection resets after
+ *   the request was sent, a POST gets 502 with no Retry-After, and a GET gets 503 with Retry-After: 1. A WebSocket upgrade gets 400 and does not reach the host.
  * - clean_stop: SIGTERM of the host removes its port file.
  * - pid_reuse: a file whose pid is alive but whose start time differs is not owned; a new host replaces it.
  * - epoch: a token of an earlier host start gets 401 after a restart.
@@ -264,13 +264,16 @@ async function proxyChecks() {
     const refused = await rawAsk(port)
     link.update(mcp(fakePort))
     const reset = await rawAsk(port)
+    const resetGet = await rawAsk(port, { method: 'GET', body: '' })
     const before = seen.length
     const upgrade = await rawAsk(port, { method: 'GET', body: undefined, headers: { connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-version': '13', 'sec-websocket-key': randomBytes(16).toString('base64') } })
     const retry = (answer) => answer.headers?.['retry-after']
     check('proxy: with no host, a request gets 503 with Retry-After: 1', none.status === 503 && retry(none) === '1', JSON.stringify(none.status ?? none.error))
     check('proxy: when the host connect is refused, the request never reached a host and gets 503 with Retry-After: 1', refused.status === 503 && retry(refused) === '1', JSON.stringify(refused.status ?? refused.error))
-    check('proxy: when the host connection resets after the request was sent, the request gets 502 with no Retry-After',
-      reset.status === 502 && retry(reset) === undefined && seen.length === 1, `${JSON.stringify(reset.status ?? reset.error)} retry-after ${String(retry(reset))}, host saw ${String(seen.length)}`)
+    check('proxy: when the host connection resets after a POST was sent, the POST gets 502 with no Retry-After',
+      reset.status === 502 && retry(reset) === undefined && seen[0]?.startsWith('POST ') === true, `${JSON.stringify(reset.status ?? reset.error)} retry-after ${String(retry(reset))}, host saw ${JSON.stringify(seen[0])}`)
+    check('proxy: when the host connection resets after a GET was sent, the GET gets 503 with Retry-After: 1',
+      resetGet.status === 503 && retry(resetGet) === '1' && seen[1]?.startsWith('GET ') === true, `${JSON.stringify(resetGet.status ?? resetGet.error)} retry-after ${String(retry(resetGet))}, host saw ${JSON.stringify(seen[1])}`)
     check('proxy: a WebSocket upgrade gets 400 from Electron main and does not reach the host',
       upgrade.status === 400 && upgrade.headers?.['x-deepwidgets-answer'] === 'electron-main' && seen.length === before, `${JSON.stringify(upgrade.status ?? upgrade.error)}, host saw ${String(seen.length - before)}`)
   } finally {
