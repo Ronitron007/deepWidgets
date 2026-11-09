@@ -1,15 +1,20 @@
 #!/usr/bin/env node
 /**
  * Check of the fixed MCP port, the port file, and the token handshake (unit widget.mcp_port).
- * - setting: DEEPWIDGETS_MCP_PORT of the desktop Host gives the default, a set port, or a loud error.
+ * - setting: DEEPWIDGETS_MCP_PORT of Electron main and of a Host gives the default, a set port, or a loud error.
  * - port_file: a CLI host (web profile) on port P writes $DSH_HOME/deepwidgets/mcp.json with
  *   { port: P, nonce, pid }, mode 0600. An agent reads the file, sends a random challenge to
  *   POST /mcp/token, and checks proof = HMAC-SHA256(nonce, challenge). The answer has no nonce.
  * - owner: a second CLI host on the same home does not overwrite the file of a live host, and its
  *   stop does not remove it.
  * - second_instance: the desktop app (tools/smoke-desktop.mjs with DEEPWIDGETS_MCP_PORT=P) starts
- *   while the first host holds P. It fails with `listen EADDRINUSE` for P, and Electron main keeps
+ *   while the first host holds P. Electron main fails with `listen EADDRINUSE` for P, and it keeps
  *   a port file whose owner is alive.
+ * - restart (`safe_host.port`): the desktop app on a free fixed port Q runs the smoke mode
+ *   DSH_SMOKE_HOST_RESTART=mcp-port. Electron main owns Q and mcp.json, MCP goes through it, it refuses
+ *   Origin with 403, and a host restart keeps the port and the pid, gives 503 with Retry-After in the gap,
+ *   then 200, a new nonce, and a bridge that reconnects. No host may bind Q: the mutant (the host binds
+ *   the setting) fails the first host with `listen EADDRINUSE` for Q.
  * - clean_stop: SIGTERM of the host removes its port file.
  * - pid_reuse: a file whose pid is alive but whose start time differs is not owned; a new host replaces it.
  * - epoch: a token of an earlier host start gets 401 after a restart.
@@ -17,9 +22,9 @@
  *   the file stays; a fake server on P replays or echoes. The agent refuses each fake token. The
  *   mutant agent (no proof check) accepts it, so the check can fail.
  * - crash_cleanup: the desktop app fails on P while its home holds a port file of a dead host (its pid
- *   reused by a live process with another start time); Electron main removes the file.
+ *   reused by a live process with another start time); Electron main removes the file at its start.
  * Prints `widgets-mcp-port: pass` and exits 0 only when every check passes.
- * WIDGETS_MCP_PORT_SKIP_DESKTOP=1 skips second_instance and crash_cleanup (for quick mutant runs;
+ * WIDGETS_MCP_PORT_SKIP_DESKTOP=1 skips second_instance, restart, and crash_cleanup (for quick mutant runs;
  * the run then does not pass).
  * Needs `corepack pnpm run build:artifacts` and the desktop build first. It starts the desktop
  * app, so run it under the machine smoke lock.
@@ -190,15 +195,31 @@ async function desktopOnTakenPort(port, label, seed) {
   return { smoke, inUse, started }
 }
 
-/** The port setting of the desktop Host: default, `0`, a number, and bad values that must stop the Host. */
+/** The port setting of Electron main and of a Host with no Electron main: default, `0`, a number, and bad values that must stop the app. */
 async function settingChecks() {
-  const { resolveMcpPort, DEFAULT_MCP_PORT } = await import(pathToFileURL(join(ROOT, 'apps/desktop-host/src/mcp-port.ts')).href)
-  const good = [[undefined, DEFAULT_MCP_PORT], ['', DEFAULT_MCP_PORT], ['0', 0], ['48000', 48000], [' 47615 ', 47615]]
+  const host = await import(pathToFileURL(join(ROOT, 'apps/desktop-host/src/mcp-port.ts')).href)
+  const main = await import(pathToFileURL(join(ROOT, 'apps/desktop/src/deepwidgets-mcp-port.ts')).href)
+  const good = [[undefined, 47615], ['', 47615], ['0', 0], ['48000', 48000], [' 47615 ', 47615]]
   const bad = ['abc', '-1', '1.5', '65536', '0x10', '1e3']
-  const throws = (value) => { try { resolveMcpPort({ DEEPWIDGETS_MCP_PORT: value }); return false } catch { return true } }
-  check('DEEPWIDGETS_MCP_PORT: unset gives the default 47615, numbers give that port, bad values throw',
-    DEFAULT_MCP_PORT === 47615 && good.every(([value, port]) => resolveMcpPort(value === undefined ? {} : { DEEPWIDGETS_MCP_PORT: value }) === port) && bad.every(throws),
-    JSON.stringify(bad.map((value) => [value, throws(value)])))
+  for (const [label, { resolveMcpPort, DEFAULT_MCP_PORT }] of [['Electron main', main], ['a Host with no Electron main', host]]) {
+    const throws = (value) => { try { resolveMcpPort({ DEEPWIDGETS_MCP_PORT: value }); return false } catch { return true } }
+    check(`DEEPWIDGETS_MCP_PORT of ${label}: unset gives the default 47615, numbers give that port, bad values throw`,
+      DEFAULT_MCP_PORT === 47615 && good.every(([value, port]) => resolveMcpPort(value === undefined ? {} : { DEEPWIDGETS_MCP_PORT: value }) === port) && bad.every(throws),
+      JSON.stringify(bad.map((value) => [value, throws(value)])))
+  }
+  // The .env layers of the Host: the environment, then the profile folder, then $DSH_HOME.
+  const envDir = join(work, 'env-layers')
+  mkdirSync(join(envDir, 'profile'), { recursive: true })
+  writeFileSync(join(envDir, 'profile', '.env'), 'DEEPWIDGETS_MCP_PORT=48001\n')
+  writeFileSync(join(envDir, '.env'), 'DEEPWIDGETS_MCP_PORT=48002\n')
+  const files = [join(envDir, 'profile', '.env'), join(envDir, '.env')]
+  const layered = [
+    main.resolveLayeredMcpPort({ DEEPWIDGETS_MCP_PORT: '48000' }, files),
+    main.resolveLayeredMcpPort({}, files),
+    main.resolveLayeredMcpPort({}, files.slice(1)),
+    main.resolveLayeredMcpPort({}, [join(envDir, 'missing.env')]),
+  ]
+  check('Electron main reads DEEPWIDGETS_MCP_PORT from the environment, then the profile .env, then $DSH_HOME/.env', layered.join() === '48000,48001,48002,47615', layered.join())
 }
 
 async function main() {
@@ -260,6 +281,18 @@ async function main() {
     let after
     try { after = await agentToken(portFile, true) } catch (error) { console.log(`  first host after the second start: ${error.message}`) }
     check('the first host still serves with a valid proof', after !== undefined && first.exitCode === null)
+  }
+
+  // restart: the port owner of `safe_host.port`, on its own free port.
+  if (!skipDesktop) {
+    const owned = await freePort()
+    const run = await runSmoke({ DEEPWIDGETS_MCP_PORT: String(owned), DSH_SMOKE_HOST_RESTART: 'mcp-port' }, join(work, 'restart'))
+    const inUse = run.desktopLog.split('\n').find((line) => /\blisten EADDRINUSE\b/u.test(line) && line.includes(`:${String(owned)}`))
+    const last = run.output.split('\n').at(-1) ?? ''
+    console.log(`  desktop restart: exit ${String(run.code)}, ${last}, log ${run.folder === undefined ? 'missing' : join(run.folder, 'desktop.log')}`)
+    check('restart: no host binds the port of Electron main (the first host has no listen EADDRINUSE)', inUse === undefined, inUse?.trim().slice(0, 200) ?? '')
+    check('restart: MCP goes through Electron main, Origin gets 403 from it, and a host restart keeps the port and pid, gives 503 with Retry-After, then 200, a new nonce, and a bridge that reconnects',
+      run.code === 0 && last === 'smoke-desktop: pass', last)
   }
 
   // clean_stop
@@ -334,7 +367,7 @@ async function main() {
         writeFileSync(seeded, `${JSON.stringify({ ...JSON.parse(stale), pid: process.pid, started: 1 })}\n`, { mode: 0o600 })
       })
       check('crash_cleanup: the app fails with listen EADDRINUSE', run.smoke.code !== 0 && run.inUse !== undefined, run.inUse?.trim().slice(0, 200) ?? `app started ${String(run.started)}`)
-      check('Electron main removes a port file whose owner is dead (pid reused, start time differs) when its Host fails', seeded !== undefined && !existsSync(seeded))
+      check('Electron main removes a port file whose owner is dead (pid reused, start time differs) at its start', seeded !== undefined && !existsSync(seeded))
     } finally {
       await new Promise((resolve) => squatter.close(resolve))
     }
