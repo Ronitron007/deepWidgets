@@ -41,6 +41,8 @@ export const IDLE_THRESHOLD_MS = 10_000
 export const SUSPEND_GAP_MS = 1_000
 /** safe_host.cleanup: the time limit of the plugin dispose at a crash. */
 export const CRASH_DISPOSE_LIMIT_MS = 3_000
+/** safe_host.hmr: the time limit of each disposer of a widget or agent row. */
+export const DISPOSER_LIMIT_MS = 5_000
 /** The heartbeat period. */
 const BEAT_MS = Math.max(20, Math.min(100, Math.floor(WATCHDOG_THRESHOLD_MS / 5)))
 /** The poll period of the watchdog thread. */
@@ -79,6 +81,26 @@ export function inSlot<T>(row: string, fn: () => T): T {
     Atomics.store(watch.slots, RUNNING_SLOT, previous)
     // The order matters: the watchdog thread reads the calls count before the slot, and again after it wrote a
     // record. So either this exchange sees its flag, or the watchdog thread sees the new count and removes the record.
+    Atomics.add(watch.slots, CALLS_SLOT, 1)
+    if (Atomics.exchange(watch.slots, PROVISIONAL_SLOT, 0) !== 0) removeOwnProvisional(watch.provisionalFile)
+  }
+}
+
+/**
+ * safe_host.hmr: put `row` in the running-widget slot until the returned function runs, also across awaits. The
+ * agent-row gate loads one agent row at a time with it, so a loop in the top-level code of the row is blamed on it.
+ * Host work that runs during the load also runs with the row in the slot.
+ * @returns the function that puts the old value back. With no watchdog, it does nothing.
+ */
+export function enterSlot(row: string): () => void {
+  const watch = active
+  if (watch === undefined) return () => {}
+  const previous = Atomics.exchange(watch.slots, RUNNING_SLOT, watch.index(row))
+  let done = false
+  return () => {
+    if (done) return
+    done = true
+    Atomics.store(watch.slots, RUNNING_SLOT, previous)
     Atomics.add(watch.slots, CALLS_SLOT, 1)
     if (Atomics.exchange(watch.slots, PROVISIONAL_SLOT, 0) !== 0) removeOwnProvisional(watch.provisionalFile)
   }

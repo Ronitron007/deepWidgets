@@ -1461,6 +1461,15 @@ export function apply(ctx: Context, config: Config): void {
       return async () => { for (const dispose of disposers) await dispose() }
     },
     failed: (row) => { rowFailed(row) },
+    // safe_host.hmr: in safe mode the gate does not load agent rows, so they do not reach `add`. Their slugs show as off.
+    refused(row, slugs) {
+      for (const slug of slugs) {
+        if (widgets.has(slug) || off.has(slug)) continue
+        const message = `safe mode: the agent row ${rowId(row)} is off for this Host start; only built-in widgets run`
+        off.set(slug, { title: slug, message, agent: true })
+        ctx.logger.warn(`widgets: ${message}`)
+      }
+    },
   })
 
   // The service methods report each failure as a WidgetError, so the caller sees one form.

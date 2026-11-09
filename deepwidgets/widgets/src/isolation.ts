@@ -19,6 +19,11 @@
  * crash record has the root and the hash also when the widget throws before it registers. safe_host.crash: a row
  * whose plugin body throws shows its slugs as failed with the reason.
  *
+ * safe_host.hmr: each `ctx.on` listener of a widget or agent row runs in the store of the row. Each disposer of a row
+ * fiber has a time limit of 5 s: when it passes, the row is quarantined, and the unload goes on. The agent rows load
+ * through the agent-row gate (`gate.ts`) only after the watchdog starts, one at a time, in the store and the running
+ * slot of the row. A quarantined agent row loads a stub in place of its module.
+ *
  * The key is the Loader row, not the exported plugin `name`: a bundle can export any name, so a name key would let
  * one bundle get another widget quarantined.
  * @module @deepwidgets/widgets/isolation
@@ -31,7 +36,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { Context, Fiber } from '@deepseek-ai/cordis'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { packageHash, readJson, writeJsonSync, type CrashRecord } from './records.ts'
-import { CRASH_DISPOSE_LIMIT_MS, inSlot, startWatchdog } from './watchdog.ts'
+import { openAgentGate, type GateEntry } from './gate.ts'
+import { CRASH_DISPOSE_LIMIT_MS, DISPOSER_LIMIT_MS, enterSlot, inSlot, startWatchdog } from './watchdog.ts'
 
 export { packageHash, type BlameMethod, type CrashRecord } from './records.ts'
 
@@ -39,6 +45,8 @@ export { packageHash, type BlameMethod, type CrashRecord } from './records.ts'
 const WIDGET_ROW = /^deepwidgets-(?:widget|agent)-/
 /** The Loader row ids of agent bundles (`widget_phase2.creation.rows`). */
 const AGENT_ROW = /^deepwidgets-agent-/
+/** The key of the effect meta on a Cordis effect disposer (`symbols.effect` of vendor/cordis/src/utils.ts). */
+const EFFECT_META = Symbol.for('cordis.effect')
 /** The key under which the DSH fail-loud release finds the fatal hooks (`apps/cli/src/profile-boot.ts`). */
 const FATAL_HOOKS = Symbol.for('deepwidgets.fatal.hooks')
 /** One quarantined widget row in `$DSH_HOME/deepwidgets/quarantine.json`. */
@@ -135,7 +143,11 @@ interface PackagesView {
  * @returns undefined when the host has no package lookup, or when it does not find the package.
  */
 function rowRoot(ctx: Context, fiber: Fiber): string | undefined {
-  const entry = entryOf(fiber)
+  return entryRoot(ctx, entryOf(fiber))
+}
+
+/** safe_host.hmr: the package folder of the Loader entry `entry`, as {@link rowRoot} finds it. It needs no fiber. */
+function entryRoot(ctx: Context, entry: RowView | undefined): string | undefined {
   const name = entry?.options.name
   const baseUrl = entry?.parent?.tree?.ctx?.baseUrl
   if (typeof name !== 'string' || typeof baseUrl !== 'string') return undefined
@@ -229,6 +241,8 @@ export interface IsolationHost {
   hold(slugs: string[], row: string, reason: string, fiber?: Fiber): () => Promise<void>
   /** widget_fv.replace: the plugin body of the widget row `row` threw. */
   failed(row: string): void
+  /** safe_host.hmr: safe mode did not load the agent row `row`. Its slugs show as off. */
+  refused(row: string, slugs: string[]): void
 }
 
 /** The isolation of one runtime instance. */
@@ -346,6 +360,62 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
     known.set(row, item)
     watchdog.track(row, item.root, slugsOf(row))
   }
+  /** safe_host.hmr: the agent row `row` starts to load. Its package folder comes from its Loader entry, before the import. */
+  function noteEntry(row: string, entry: GateEntry): void {
+    const root = entryRoot(ctx, entry as unknown as RowView)
+    const item = known.get(row) ?? { root, slugs: new Set<string>() }
+    if (root !== undefined) item.root = root
+    known.set(row, item)
+    watchdog.track(row, item.root, slugsOf(row))
+  }
+
+  /**
+   * safe_host.hmr: a disposer of `row` did not end in {@link DISPOSER_LIMIT_MS}. Quarantine the row with the hash of its
+   * files. The fiber unload goes on, so the next install works. When the row loads again, it shows as failed (`wrap`).
+   */
+  function disposerHung(row: string, label: string): void {
+    if (crashed) return
+    const root = known.get(row)?.root ?? null
+    const reason = `quarantined: a disposer of the row ${rowId(row)} did not end in ${String(DISPOSER_LIMIT_MS)} ms (${label})`.slice(0, 500)
+    quarantine.set(row, { row, slugs: slugsOf(row), reason, at: Date.now(), root, hash: root === null ? null : packageHash(root) })
+    writeJsonSync(quarantineFile(), [...quarantine.values()])
+    ctx.logger.error(`widgets: ${reason}`)
+  }
+  /** The time limit of one disposer of `row`. A disposer that gives no promise runs as is. */
+  function limited(row: string, dispose: () => unknown): () => unknown {
+    const label = (dispose as unknown as { [key: symbol]: { label?: unknown } | undefined })[EFFECT_META]?.label
+    return () => {
+      const result = dispose()
+      if (result === null || typeof result !== 'object' || typeof (result as PromiseLike<unknown>).then !== 'function') return result
+      let timer: ReturnType<typeof setTimeout> | undefined
+      return Promise.race([
+        Promise.resolve(result).finally(() => { clearTimeout(timer) }),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            disposerHung(row, typeof label === 'string' ? label : 'anonymous')
+            resolve()
+          }, DISPOSER_LIMIT_MS)
+        }),
+      ])
+    }
+  }
+  /**
+   * safe_host.hmr: Cordis awaits each disposer of a fiber in `_unload` with no limit (vendor/cordis/src/fiber.ts). The
+   * list hands its disposers to `_unload` with `clear`, so the clear of the row fiber gives each one with a limit.
+   * Only the rows of the isolation get it: host plugins, such as this runtime with its drain, keep no limit. A disposer
+   * that the plugin code already started is not joined, because Cordis keeps that promise private.
+   */
+  type Clearable = { clear: () => Array<() => unknown> }
+  const clears = new Map<Clearable, Clearable['clear']>()
+  function limitDisposers(fiber: Fiber, row: string): void {
+    const list = (fiber as unknown as { _disposables?: Clearable })._disposables
+    if (list === undefined || clears.has(list)) return
+    const clear = list.clear
+    clears.set(list, clear)
+    list.clear = function (this: Clearable) {
+      return clear.call(this).map((dispose) => limited(row, dispose))
+    }
+  }
   /**
    * safe_host.crash: the failed entries of each fiber whose plugin body threw. Cordis disposes the effects of a
    * failed fiber at once, so the isolation keeps them. They end when the fiber loads again or is disposed.
@@ -388,6 +458,7 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
     const row = ownRow(fiber)
     const runner = (fiber as unknown as { _runner?: Runner })._runner
     if (row === undefined || runner === undefined || originals.has(runner)) return
+    limitDisposers(fiber, row)
     const execute = runner.execute
     originals.set(runner, execute)
     runner.execute = function (this: Fiber) {
@@ -426,10 +497,33 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
   ctx.effect(() => () => {
     for (const [runner, execute] of originals) runner.execute = execute
     originals.clear()
+    for (const [list, clear] of clears) list.clear = clear
+    clears.clear()
     thrown.clear()
   }, 'widgets: restore the fiber runners')
   for (const runtime of ctx.registry.values()) for (const fiber of runtime.fibers) wrap(fiber)
   ctx.on('internal/plugin', wrap)
+
+  // ---- safe_host.hmr: each ctx.on listener of a widget or agent row runs in the store of the row ----
+  // Cordis bails `internal/listener` with the context of the caller of ctx.on, and returns a bail result as the
+  // disposer of ctx.on (vendor/cordis/src/events.ts). So the hook registers the wrapped listener in place of the
+  // listener, on the same context. The flag stops the hook at that inner registration.
+  let rewrapping = false
+  ctx.on('internal/listener', function (this: Context, name: string | symbol, listener: (...args: unknown[]) => unknown, options: unknown) {
+    if (rewrapping || (typeof name === 'string' && name.startsWith('internal/'))) return
+    const row = widgetRow(this.fiber)
+    if (row === undefined) return
+    const inner = listener
+    const wrapped = function (this: unknown, ...args: unknown[]): unknown {
+      return runAs(row, () => inner.apply(this, args))
+    }
+    rewrapping = true
+    try {
+      return (this as unknown as { on(name: string | symbol, listener: unknown, options: unknown): () => boolean }).on(name, wrapped, options)
+    } finally {
+      rewrapping = false
+    }
+  })
 
   // ---- the claimer ----
   function stackBlame(stack: string): string | undefined {
@@ -482,6 +576,31 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
     hooks.add(claim)
     return () => { hooks.delete(claim) }
   }, 'widgets: the crash claimer')
+
+  // ---- safe_host.hmr: the agent rows load now, after the watchdog, the wrappers, and the claimer ----
+  ctx.effect(() => openAgentGate({
+    // A quarantined agent row loads a stub in place of its module: its top-level code is the code that crashed or
+    // hung. The fiber of the stub runs the held branch of `wrap`, so the row shows as failed for the life of its entry.
+    held: (entry) => held(entry.id)?.reason,
+    run(entry, load) {
+      const row = entry.id
+      noteEntry(row, entry)
+      return blameStore.run(row, async () => {
+        const exit = enterSlot(row)
+        // A load that does not end leaves the slot after the load limit, so it does not blame later host work.
+        const timer = setTimeout(exit, DISPOSER_LIMIT_MS)
+        try {
+          await load()
+        } finally {
+          clearTimeout(timer)
+          exit()
+        }
+      })
+    },
+    refused(entry) {
+      host.refused(entry.id, slugsOf(entry.id))
+    },
+  }), 'widgets: the agent-row gate')
 
   return {
     track(row, root, slug) {

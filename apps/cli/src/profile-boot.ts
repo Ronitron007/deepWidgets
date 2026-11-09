@@ -37,6 +37,8 @@ import {
 import { FAIL_LOUD_RELEASE_TIMEOUT_MS } from '@deepseek-ai/dsh-app-boot'
 import { PROFILE_TEMPLATES } from '@deepseek-ai/dsh-official-bundles'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+// deepwidgets-trim: added line; safe_host.hmr. The agent-row gate holds agent rows until the widget runtime starts.
+import { installAgentGate } from '@deepwidgets/widgets/gate'
 import { installProxyFromEnvironment } from '@deepseek-ai/dsh-http-proxy'
 import { DSH_LAUNCH_ENVIRONMENT_KEY, type LaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment'
 import { provideCmdline, type AppReady } from '@deepseek-ai/dsh-cmdline'
@@ -346,6 +348,9 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
     }
     const ctx = await boot(NAME, rootConfig, readProfilePatches(NAME, profileContext, composed.profile), async (hostCtx) => {
       app.current = hostCtx
+      // deepwidgets-trim: added line; safe_host.hmr. Before any config-tree entry mounts, so no agent row loads before
+      // the watchdog of the widget runtime starts, and none loads in safe mode.
+      installAgentGate(hostCtx)
       hostCtx.provide('profileContext', profileContext)
       // Before any config-tree entry mounts, so plugins resolve all launch-time
       // environment values from the same immutable launch snapshot.
