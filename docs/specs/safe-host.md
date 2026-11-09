@@ -64,13 +64,21 @@ If the dispose does not end in 3 s, the host stops itself with `SIGKILL`. The su
 
 ## HMR guards `safe_host.hmr`
 
-- Each disposer, and `runExclusive` of `hmr`, has a time limit of 5 s. When the limit passes, the host quarantines the row, and the row shows as failed.
+- Each disposer of an agent row or a widget row, and `runExclusive` of `hmr`, has a time limit of 5 s. When the limit passes, the host quarantines the row, and the row shows as failed.
+
+- After the limit passes, the host refuses each later write of that row. Thus a disposer that runs late can not change state after the next install.
+
+- Built-in rows that are not widgets have no disposer limit. They are trusted code, and the drain of the widget runtime can take 11 s.
 
 - Blame covers each agent row, not only widgets. Each `ctx.on` listener of an agent row runs in the blame store of that row. The crash record gets the root and the hash from the row.
 
 - In safe mode, the host does not load agent rows. Built-in rows load as before.
 
-- The watchdog starts before the host loads agent rows. While the host loads an agent row, the running slot holds that row.
+- The watchdog starts before the host loads agent rows.
+
+- The running slot holds an agent row only while the host runs synchronous code of that row. The slot does not stay across an `await`, so a stall of other code is never blamed on the agent row.
+
+- A loop in the top-level code of an agent row is blamed by the native stack, when the module `@sentry/node-native-stacktrace` loads. Without the module, the loop is a stall with no blame. After two such crashes, safe mode does not load agent rows, so the host recovers.
 
 ## Later `safe_host.later`
 
