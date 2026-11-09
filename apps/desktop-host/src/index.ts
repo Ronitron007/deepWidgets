@@ -35,7 +35,10 @@ async function main(): Promise<void> {
   //   args: ['--no-open', '--host', '127.0.0.1', '--port', '0'],
   // Load the layered .env first: `$DSH_HOME/.env` may set the port.
   const environment = loadLayeredEnv('dsh')
-  const port = resolveMcpPort(process.env)
+  // deepwidgets-trim: safe_host.port. Electron main owns the fixed port and forwards to this Host, so this Host
+  // binds a port that the OS picks. A Host with no Electron main (DEEPWIDGETS_MCP_FORWARDED unset) binds the setting.
+  // const port = resolveMcpPort(process.env)
+  const port = process.env.DEEPWIDGETS_MCP_FORWARDED === '1' ? 0 : resolveMcpPort(process.env)
   const application = runProfile({
     environment,
     profile: 'desktop',

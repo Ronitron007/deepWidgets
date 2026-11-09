@@ -1,7 +1,7 @@
 /**
  * deepWidgets: cleanup of the MCP port file `$DSH_HOME/deepwidgets/mcp.json` (`widget_phase2.mcp_port`).
- * The Host writes the file and removes it on a clean stop. A Host that crashes, or one that fails to
- * start, cannot; the shell removes the file here so that agents do not trust a dead port.
+ * In the desktop app, Electron main owns the port and the file (`safe_host.port`, `deepwidgets-mcp-port.ts`).
+ * At its start, Electron main removes a file whose owner is dead here, so that agents do not trust a dead port.
  * The owner check matches `@deepwidgets/mcp` (`ownerAlive`): the pid must be alive and its start time
  * must match `started`, so a reused pid does not keep a dead Host's file.
  */
@@ -36,7 +36,17 @@ function startMs(pid: number): number | undefined {
   }
 }
 
-function ownerAlive(pid: number, started: unknown): boolean {
+/** `$DSH_HOME/deepwidgets/mcp.json`, with the `DSH_HOME` of `environment`. */
+export function mcpPortFilePath(environment: NodeJS.ProcessEnv): string {
+  return join(resolveDshHome(undefined, environment), 'deepwidgets', 'mcp.json')
+}
+
+/**
+ * True when process `pid` is alive and is the process that wrote the file: its start time matches `started`.
+ * @param pid - The `pid` of the port file.
+ * @param started - The `started` of the port file.
+ */
+export function mcpPortFileOwnerAlive(pid: number, started: unknown): boolean {
   if (!alive(pid)) return false
   if (typeof started !== 'number') return true
   const actual = startMs(pid)
@@ -50,7 +60,7 @@ function ownerAlive(pid: number, started: unknown): boolean {
  * @param environment - The Host environment; its `DSH_HOME` names the file.
  */
 export function removeDeadMcpPortFile(exitedPid: number | undefined, environment: NodeJS.ProcessEnv): void {
-  const file = join(resolveDshHome(undefined, environment), 'deepwidgets', 'mcp.json')
+  const file = mcpPortFilePath(environment)
   try {
     let current: { pid?: unknown; started?: unknown } | null
     try {
@@ -62,7 +72,7 @@ export function removeDeadMcpPortFile(exitedPid: number | undefined, environment
     }
     const pid = current?.pid
     const owner = typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 ? pid : undefined
-    if (owner !== undefined && owner !== exitedPid && ownerAlive(owner, current?.started)) return
+    if (owner !== undefined && owner !== exitedPid && mcpPortFileOwnerAlive(owner, current?.started)) return
     unlinkSync(file)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
