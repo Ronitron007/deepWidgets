@@ -69,6 +69,9 @@ The operator made these decisions. They outrank every other document.
 | `widget.agent_code_v1` | In v1, agent code in the host has no guard: no approval, no lint, and no sandbox. Later iterations add the items in `standing.later`. |
 | `widget.builtin_slugs` | The slug of a built-in widget, such as `sample`, is reserved. `widget_install` gives `slug-taken` for that slug, also when the built-in widget is off. Decided on 2026-11-03. |
 | `widget.mcp_consent` | In the MVP, the only security work is the MCP endpoint. An agent gets access only after the operator approves it in the app, through a channel that no other local process can forge. Each approved agent can do everything. This decision replaces `widget.agent_identity`. Decided on 2026-11-03. Spec: `docs/specs/mcp-consent.md`. |
+| `widget.watchdog_rule` | The watchdog stops the host after a stall of 2 s when a widget runs, and after 10 s when no widget runs. Decided on 2026-11-06. Spec: `docs/specs/safe-host.md`. |
+| `widget.host_cleanup` | At a crash, the host disposes its plugins with a time limit of 3 s, then exits. A handover to a new host during the dispose is a later speed-up (`docs/explore/widget-system/host-handover.md`). Decided on 2026-11-09. |
+| `widget.port_owner` | Electron main owns the MCP port and forwards each request to the current host. Decided on 2026-11-09. |
 
 ## The design `standing.design`
 
