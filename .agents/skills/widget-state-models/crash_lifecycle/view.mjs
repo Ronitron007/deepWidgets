@@ -1,4 +1,4 @@
-const death = { abort: "aborted", kill: "killed", exit1: "exited after an uncaught error", wdkill: "killed by the watchdog", bootfail: "boot failed" };
+const death = { abort: "aborted", kill: "killed", exit1: "exited after an uncaught error", wdkill: "killed by the watchdog", dispkill: "killed by the watchdog after a dispose of 3 s", bootfail: "boot failed" };
 export const title = "deepWidgets crash_lifecycle";
 export const state = (v) => {
   if (v.sup === "gaveUp") return "Gave up: fatal dialog";

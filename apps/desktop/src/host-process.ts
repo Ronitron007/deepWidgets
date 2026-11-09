@@ -391,6 +391,10 @@ export class DesktopHostProcess {
 
   private fail(error: Error): void {
     if (this.runId !== undefined) Object.assign(error, { hostRunId: this.runId })
+    // deepwidgets-trim: added lines; widget_fv.crash. Each failure of the child carries its pid, also the IPC `fatal`
+    // event that comes before the exit, so the supervisor matches the records of this Host and discards its provisional record.
+    const hostPid = this.child?.pid
+    if (hostPid !== undefined && !('hostPid' in error)) Object.assign(error, { hostPid })
     this.onPlatformSession?.(null)
     this.readyReject(error)
     for (const request of this.controlRequests.values()) request.reject(error)

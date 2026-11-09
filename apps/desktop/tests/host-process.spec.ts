@@ -272,7 +272,9 @@ ${HTTP_HOST}`)
     await expect.poll(() => failure.mock.calls.length).toBe(1)
     await host.stop()
     expect(failure).toHaveBeenCalledTimes(1)
-    expect(failure).toHaveBeenCalledWith(new Error('plugin unavailable'))
+    // deepwidgets-trim: widget_fv.crash. Each failure carries the pid of the child (host-process.ts `fail`).
+    // expect(failure).toHaveBeenCalledWith(new Error('plugin unavailable'))
+    expect(failure).toHaveBeenCalledWith(expect.objectContaining({ message: 'plugin unavailable', hostPid: expect.any(Number) as number }))
   })
 
   it('reports a child crash after readiness with its stderr diagnostic', async () => {
@@ -282,7 +284,12 @@ ${HTTP_HOST}`)
     const { url } = await host.start()
     await fetch(new URL('/crash', url))
     await expect.poll(() => failure.mock.calls.length).toBe(1)
-    expect(failure).toHaveBeenCalledWith(new Error('dsh desktop host exited with 7: plugin crashed'))
+    // deepwidgets-trim: widget_phase2.isolation.blame and widget_phase2.isolation.watchdog. The exit failure also carries
+    // the pid, the code, and the signal of the child (host-process.ts, the `close` listener).
+    // expect(failure).toHaveBeenCalledWith(new Error('dsh desktop host exited with 7: plugin crashed'))
+    expect(failure).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'dsh desktop host exited with 7: plugin crashed', hostPid: expect.any(Number) as number, hostCode: 7, hostSignal: null,
+    }))
   })
 
   it('retains only recent diagnostics from a noisy child', async () => {

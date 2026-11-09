@@ -9,6 +9,18 @@
  * - stall: a 900 ms stall in a widget action writes the provisional record, which goes when the heartbeat comes back.
  * - spin: a loop in a widget action kills the host within 2.5 s. The crash record blames the widget, and the next
  *   host shows the widget as failed while `sample` stays live.
+ * - idle (widget.crash_records, safe_host.watchdog): with no widget in the running slot, a 4 s stall in host code
+ *   does not kill the host, and a longer stall kills it after about 10 s. The crash record blames no widget.
+ * - native (safe_host.watchdog): a widget action loops after an `await`, so the running slot holds 0. With
+ *   `@sentry/node-native-stacktrace`, which loads on this host, the host dies in about 2 s, and the record blames the
+ *   widget with `native-stack`.
+ * - native-off: the same loop on a host where a module hook refuses to load the module. The host dies after about
+ *   10 s, and the record blames no widget.
+ * - native-slow: each native stack read takes 1.5 s more (the test hook DEEPWIDGETS_WATCHDOG_TEST_READ_DELAY_MS).
+ *   Host code holds the event loop with slot 0. The reads are not poll gaps, so the stall clock goes on, and the host
+ *   dies after about 10 s with no blame. A read that counts as a suspend would keep the host alive.
+ * - host-await: a widget awaits host work that holds the event loop for 3 s. That work has the store of the widget,
+ *   but its frames are host code. The host lives, and no record blames the widget.
  * - oom: a stall, then fast allocation. The out-of-memory abort (provisional record) and the stall kill (crash record)
  *   both blame the widget. The case checks the result: the host died, a record blames the widget, and the next host
  *   has the widget quarantined.
@@ -19,13 +31,13 @@
  * Needs `corepack pnpm run build:artifacts` first.
  */
 import { spawn } from 'node:child_process'
-import { cpSync, createWriteStream, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { cpSync, createWriteStream, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const BIN = join(ROOT, 'apps/cli/lib/bin.js')
@@ -44,7 +56,14 @@ const isRow = (row, id) => typeof row === 'string' && (row === id || row.endsWit
 /** The cases to run. All cases when WIDGETS_WATCHDOG_CASES is not set. */
 const CASES = process.env.WIDGETS_WATCHDOG_CASES?.split(',').map((name) => name.trim()).filter((name) => name !== '')
 const runs = (name) => CASES === undefined || CASES.length === 0 || CASES.includes(name)
-const CASE_NAMES = ['parse', 'suspend', 'stall', 'spin', 'oom']
+const CASE_NAMES = ['parse', 'suspend', 'stall', 'spin', 'idle', 'native', 'native-off', 'native-slow', 'host-await', 'oom']
+/** native-slow: the reads add up to 6 s over the 10 s limit at most, so the kill comes in this window. */
+const SLOW_KILL_MAX_MS = 16_000
+/** safe_host.watchdog: a widget stall that the native stack finds kills the host in this time after the call. */
+const NATIVE_KILL_MAX_MS = 3_500
+/** safe_host.watchdog: a stall with no widget in the running slot kills the host after 10 s, in this window. */
+const IDLE_KILL_MIN_MS = 9_500
+const IDLE_KILL_MAX_MS = 12_500
 const unknownCases = (CASES ?? []).filter((name) => !CASE_NAMES.includes(name))
 if (unknownCases.length > 0) {
   console.log(`widgets-watchdog: fail: unknown case in WIDGETS_WATCHDOG_CASES: ${unknownCases.join(', ')} (known: ${CASE_NAMES.join(', ')})`)
@@ -72,12 +91,12 @@ function freePort() {
 
 // ---- host process ----
 
-async function startHost(port, inspectPort, nodeArgs = []) {
+async function startHost(port, inspectPort, nodeArgs = [], env = {}) {
   mkdirSync(home, { recursive: true })
   const out = createWriteStream(logPath, { flags: 'a' })
   const child = spawn(process.execPath, [...nodeArgs, `--inspect=127.0.0.1:${String(inspectPort)}`, BIN, '--profile', 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open'], {
     cwd: home,
-    env: { ...process.env, DSH_HOME: home },
+    env: { ...process.env, DSH_HOME: home, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   children.add(child)
@@ -323,6 +342,109 @@ async function main() {
       const add = await host.post('/api/widgets/sample/call', { action: 'add', args: { by: 1 } })
       check('spin: sample stays live', add.status === 200 && await widgetIn(host, 'sample', (widget) => widget.failed === undefined), JSON.stringify(add))
       check('spin: the record is applied', readState('crash.json')?.applied === true)
+    } finally {
+      await host.stop()
+    }
+  }
+
+  // idle: host code holds the event loop with slot 0 (safe_host.watchdog).
+  if (runs('idle')) {
+    clearState()
+    host = await startHost(port, inspectPort)
+    try {
+      await live(host)
+      const pid = host.child.pid
+      const healthy = await host.post('/api/watchdoghost/block', { ms: 4_000 })
+      await sleep(500)
+      const crash = readState('crash.json')
+      check('idle: a healthy 4 s stall with no widget does not kill the host', healthy.status === 200 && alive(host) && crash?.pid !== pid,
+        JSON.stringify({ status: healthy.status, alive: alive(host), crash: crash === undefined ? null : { pid: crash.pid, message: crash.error?.message } }))
+      check('idle: host code writes no provisional record', readState('provisional.json') === undefined)
+      const sent = Date.now()
+      void host.post('/api/watchdoghost/block', { ms: 30_000 }).catch(() => undefined)
+      const exit = await Promise.race([host.exited, sleep(25_000).then(() => null)])
+      const record = readState('crash.json')
+      const ms = exit === null ? null : exit.at - sent
+      const detail = JSON.stringify({ exit: exit === null ? 'alive after 25 s' : exit.signal ?? exit.code, ms, row: record?.row, method: record?.method, event: record?.event, message: record?.error?.message })
+      check(`idle: a longer stall with no widget kills the host after ${String(IDLE_KILL_MIN_MS)} to ${String(IDLE_KILL_MAX_MS)} ms`,
+        exit !== null && exit.signal === 'SIGKILL' && ms !== null && ms >= IDLE_KILL_MIN_MS && ms <= IDLE_KILL_MAX_MS, detail)
+      check('idle: the crash record blames no widget', record?.row === null && record?.event === 'stall' && record?.pid === pid && record?.method === null, detail)
+    } finally {
+      await host.stop()
+    }
+  }
+
+  // native and native-off: a loop after an await, with the slot at 0 (safe_host.watchdog).
+  for (const name of ['native', 'native-off']) {
+    if (!runs(name)) continue
+    clearState()
+    // A module hook of the host process refuses to load the native module, as on Electron with no build for Electron.
+    const block = join(work, 'block-native.mjs')
+    writeFileSync(block, [
+      "import { registerHooks } from 'node:module'",
+      'registerHooks({ resolve(specifier, context, next) {',
+      '  const result = next(specifier, context)',
+      "  if (result.url.includes('/@sentry/node-native-stacktrace/')) throw new Error('the check refuses @sentry/node-native-stacktrace')",
+      '  return result',
+      '} })',
+    ].join('\n'))
+    host = await startHost(port, inspectPort, name === 'native' ? [] : ['--import', pathToFileURL(block).href])
+    try {
+      await live(host)
+      const pid = host.child.pid
+      const sent = Date.now()
+      void host.post('/api/widgets/watchdog/call', { action: 'spinAfterAwait' }).catch(() => undefined)
+      const exit = await Promise.race([host.exited, sleep(25_000).then(() => null)])
+      const record = readState('crash.json')
+      const ms = exit === null ? null : exit.at - sent
+      const detail = JSON.stringify({ exit: exit === null ? 'alive after 25 s' : exit.signal ?? exit.code, ms, row: record?.row, method: record?.method, message: record?.error?.message, stack: record?.error?.stack?.split('\n').slice(0, 3) })
+      if (name === 'native') {
+        check(`native: the host dies within ${String(NATIVE_KILL_MAX_MS)} ms of the call`, exit?.signal === 'SIGKILL' && ms !== null && ms <= NATIVE_KILL_MAX_MS, detail)
+        check('native: the crash record blames the widget with native-stack', isRow(record?.row, WIDGET) && record?.method === 'native-stack' && record?.pid === pid
+          && typeof record?.hash === 'string', detail)
+      } else {
+        check(`native-off: the host dies after ${String(IDLE_KILL_MIN_MS)} to ${String(IDLE_KILL_MAX_MS)} ms`, exit?.signal === 'SIGKILL' && ms !== null && ms >= IDLE_KILL_MIN_MS && ms <= IDLE_KILL_MAX_MS, detail)
+        // An empty stack: the watchdog thread had no native module to read the stack with.
+        check('native-off: the crash record blames no widget, and the watchdog read no native stack', record?.row === null && record?.method === null && record?.pid === pid && record?.error?.stack === '', detail)
+      }
+    } finally {
+      await host.stop()
+    }
+  }
+
+  // native-slow: safe_host.watchdog, the time of the stack read is not a poll gap.
+  if (runs('native-slow')) {
+    clearState()
+    host = await startHost(port, inspectPort, [], { DEEPWIDGETS_WATCHDOG_TEST_READ_DELAY_MS: '1500' })
+    try {
+      await live(host)
+      const pid = host.child.pid
+      const sent = Date.now()
+      void host.post('/api/watchdoghost/block', { ms: 40_000 }).catch(() => undefined)
+      const exit = await Promise.race([host.exited, sleep(30_000).then(() => null)])
+      const record = readState('crash.json')
+      const ms = exit === null ? null : exit.at - sent
+      const detail = JSON.stringify({ exit: exit === null ? 'alive after 30 s' : exit.signal ?? exit.code, ms, row: record?.row, method: record?.method, message: record?.error?.message })
+      check(`native-slow: with reads of 1.5 s, a host stall still dies after ${String(IDLE_KILL_MIN_MS)} to ${String(SLOW_KILL_MAX_MS)} ms`,
+        exit?.signal === 'SIGKILL' && ms !== null && ms >= IDLE_KILL_MIN_MS && ms <= SLOW_KILL_MAX_MS, detail)
+      check('native-slow: the crash record blames no widget', record?.row === null && record?.method === null && record?.pid === pid, detail)
+    } finally {
+      await host.stop()
+    }
+  }
+
+  // host-await: host work that a widget awaits has the store of the widget. It must not blame the widget.
+  if (runs('host-await')) {
+    clearState()
+    host = await startHost(port, inspectPort)
+    try {
+      await live(host)
+      const pid = host.child.pid
+      const answer = await host.post('/api/widgets/watchdog/call', { action: 'awaitHost', args: { ms: 3_000 } })
+      await sleep(500)
+      const crash = readState('crash.json')
+      check('host-await: 3 s of host work that the widget awaits does not kill the host', answer.status === 200 && alive(host) && crash?.pid !== pid,
+        JSON.stringify({ status: answer.status, alive: alive(host), crash: crash === undefined ? null : { row: crash.row, method: crash.method, message: crash.error?.message } }))
     } finally {
       await host.stop()
     }

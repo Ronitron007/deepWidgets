@@ -43,7 +43,7 @@ function discardProvisionalRecord(pid: number): void {
   }
 }
 
-/** The pid of the dead Host child, which `DesktopHostProcess` puts on the failure of an exit. */
+/** The pid of the Host child, which `DesktopHostProcess` puts on each failure of the child (widget_fv.crash). */
 function hostPidOf(failure: unknown): number | undefined {
   const pid = (failure as { hostPid?: unknown } | null)?.hostPid
   return typeof pid === 'number' ? pid : undefined
@@ -150,13 +150,15 @@ export class DesktopHostSupervisor {
    * @returns true when a restart is scheduled; false sends the failure to the DSH fatal dialog.
    */
   failed(failure: unknown, closing: boolean): boolean {
+    // widget_fv.crash: each exit that is not an abort discards the provisional record of its Host, also before the
+    // first ready and on quit. The next app launch would apply it otherwise.
+    const deadPid = hostPidOf(failure)
+    const blame = blamedByRecords(this.crashRecord(), this.provisionalRecord(), deadPid, abortedExit(failure))
+    if (blame.discard && deadPid !== undefined) this.discardProvisional(deadPid)
     if (this.disposed || closing || !this.armed) return false
     // One failure gives one `error` state. A second one while a restart waits is the same outage.
     if (this.timer !== undefined) return true
     // A blamed crash is the quarantine's job: the next Host does not run that widget (`widget_phase2.isolation.blame`).
-    const deadPid = hostPidOf(failure)
-    const blame = blamedByRecords(this.crashRecord(), this.provisionalRecord(), deadPid, abortedExit(failure))
-    if (blame.discard && deadPid !== undefined) this.discardProvisional(deadPid)
     const decision = this.policy.crash(blame.row)
     if (decision.kind === 'give-up') {
       log('give-up', { crashes: decision.crashes, message: messageOf(failure) })

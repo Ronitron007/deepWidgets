@@ -135,6 +135,21 @@ describe('DesktopHostSupervisor provisional record (widget_phase2.isolation.watc
     expect(supervisor.hostEnvironment()).toEqual({ DEEPWIDGETS_SAFE_MODE: '1' })
   })
 
+  it('discards the provisional record of an end that is not an abort also before the first ready, on quit, and for an IPC fatal event', async () => {
+    // widget_fv.crash: the fatal event of DesktopHostProcess carries the pid and no code or signal.
+    const { supervisor, discarded, set, fail } = provisionalFixture()
+    set(...records(420))
+    expect(await fail(endOf(420, 'SIGKILL'))).toBe(false)
+    set(...records(421))
+    expect(supervisor.failed(endOf(421, null, 1), true)).toBe(false)
+    supervisor.ready()
+    set(...records(422))
+    expect(await fail(Object.assign(new Error('startup failed'), { hostPid: 422 }))).toBe(true)
+    set(...records(423))
+    expect(supervisor.failed(endOf(423, 'SIGABRT'), true)).toBe(false)
+    expect(discarded).toEqual([420, 421, 422])
+  })
+
   it('lets a crash record of the dead Host win over its provisional record', async () => {
     const { supervisor, discarded, set, fail } = provisionalFixture()
     supervisor.ready()

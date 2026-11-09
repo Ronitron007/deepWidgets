@@ -6,7 +6,8 @@
  * action handler inside an AsyncLocalStorage store that names the row. Timers, promises, and listeners that the
  * widget code creates there keep the store. On a fatal error, the claimer reads the store; when the store is empty,
  * it matches the stack against the package folder of each widget row. It writes `$DSH_HOME/deepwidgets/crash.json`
- * with a synchronous write and exits the host at once. The next host reads the record and does not run the blamed
+ * with a synchronous write. Then the fail-loud release disposes the plugin tree and exits with code 1. The watchdog
+ * thread kills the host when that dispose takes 3 s (`safe_host.cleanup`). The next host reads the record and does not run the blamed
  * row while its package files have the blamed hash. The quarantine ends only when files with a different hash load
  * with success (`widget_fv.install`): a failed load and the rollback to the blamed files keep it. During a
  * `widget_install` of the slug, it ends only when the whole install succeeds.
@@ -14,19 +15,23 @@
  * The watchdog (`widget_phase2.isolation.watchdog`, `watchdog.ts`) writes the same record when the main thread stalls,
  * and a provisional record at a quarter of its threshold. The next host applies both through the same quarantine.
  *
+ * widget_fv.crash: the package folder and the slugs of a row come from its Loader entry when its code starts, so a
+ * crash record has the root and the hash also when the widget throws before it registers. safe_host.crash: a row
+ * whose plugin body throws shows its slugs as failed with the reason.
+ *
  * The key is the Loader row, not the exported plugin `name`: a bundle can export any name, so a name key would let
  * one bundle get another widget quarantined.
  * @module @deepwidgets/widgets/isolation
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { Context, Fiber } from '@deepseek-ai/cordis'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { packageHash, readJson, writeJsonSync, type CrashRecord } from './records.ts'
-import { inSlot, startWatchdog } from './watchdog.ts'
+import { CRASH_DISPOSE_LIMIT_MS, inSlot, startWatchdog } from './watchdog.ts'
 
 export { packageHash, type BlameMethod, type CrashRecord } from './records.ts'
 
@@ -49,11 +54,19 @@ export interface Quarantine {
 
 /** The store: the id of the widget row whose code runs. */
 const blameStore = new AsyncLocalStorage<string>()
+/** safe_host.cleanup: set when the claimer wrote its crash record. The dispose that follows ends this process. */
+let crashed = false
+
+/** safe_host.cleanup: true while the plugin tree disposes after a crash. */
+export function hostCrashing(): boolean {
+  return crashed
+}
 
 /** The part of a Loader entry that the isolation reads. The Loader sets `fiber.entry` on the fiber of each row. */
 interface RowView {
   readonly id: string
-  readonly options: { readonly id?: unknown }
+  readonly options: { readonly id?: unknown, readonly name?: unknown }
+  readonly parent?: { readonly tree?: { readonly ctx?: { readonly baseUrl?: unknown } } }
 }
 
 /** The widget row id of a Loader entry, or undefined when the entry is not a widget row. */
@@ -104,6 +117,35 @@ export function agentRow(fiber: Fiber): boolean {
 /** The widget row whose code runs now, or undefined outside widget code. */
 export function runningRow(): string | undefined {
   return blameStore.getStore()
+}
+
+/** widget_fv.crash: the slug that the row id of `row` names, as `bundleName` of `@deepwidgets/mcp` gives it, or undefined. */
+function slugOfRow(row: string): string | undefined {
+  return /^deepwidgets-(?:agent|widget)-([a-z0-9][a-z0-9-]*?)(?:\.b)?$/.exec(rowId(row))?.[1]
+}
+
+/** The part of the service `pluginPackages` that the isolation reads. */
+interface PackagesView {
+  packageOf(specifier: string, parentURL: string): { readonly dir: string } | undefined
+}
+
+/**
+ * widget_fv.crash: the package folder of the Loader row of `fiber`, by the profile package lookup, as
+ * `packageDir` of `packages/extensions/tool-cordis` finds it, as a real path.
+ * @returns undefined when the host has no package lookup, or when it does not find the package.
+ */
+function rowRoot(ctx: Context, fiber: Fiber): string | undefined {
+  const entry = entryOf(fiber)
+  const name = entry?.options.name
+  const baseUrl = entry?.parent?.tree?.ctx?.baseUrl
+  if (typeof name !== 'string' || typeof baseUrl !== 'string') return undefined
+  try {
+    const dir = (ctx.get('pluginPackages') as PackagesView | undefined)?.packageOf(name, baseUrl)?.dir
+    // The real path, as the stack frames of the loaded module give it (on macOS, /var is a link to /private/var).
+    return dir === undefined ? undefined : realpathSync(dir)
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -180,7 +222,10 @@ export function callerRoot(): string | undefined {
 
 /** What the runtime gives the isolation: how to show a held widget. */
 export interface IsolationHost {
-  /** Show each slug as failed with the reason. The returned disposer removes them. `fiber` is the fiber of the row. */
+  /**
+   * Show each slug as failed with the reason. The returned disposer removes them. `fiber` is the fiber of the row.
+   * The isolation calls it for a quarantined row, and for a row whose plugin body threw (safe_host.crash).
+   */
   hold(slugs: string[], row: string, reason: string, fiber?: Fiber): () => Promise<void>
   /** widget_fv.replace: the plugin body of the widget row `row` threw. */
   failed(row: string): void
@@ -280,6 +325,56 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
     else lift(row)
   }
 
+  // ---- the watchdog (widget_phase2.isolation.watchdog) ----
+  const watchdog = startWatchdog(ctx, blameStore, { crashFile: crashFile(), provisionalFile: provisionalFile() })
+
+  /** The slugs of `row`: the slugs that it registered, else the slug of its row id. */
+  const slugsOf = (row: string): string[] => {
+    const slugs = known.get(row)?.slugs
+    if (slugs !== undefined && slugs.size > 0) return [...slugs]
+    const slug = slugOfRow(row)
+    return slug === undefined ? [] : [slug]
+  }
+  /**
+   * widget_fv.crash: the code of `row` starts. Its package folder comes from its Loader row, so a crash record has
+   * the root and the hash also before the row registers a slug. The folder that `track` finds is the fallback.
+   */
+  function noteRow(row: string, fiber: Fiber): void {
+    const root = rowRoot(ctx, fiber)
+    const item = known.get(row) ?? { root, slugs: new Set<string>() }
+    if (root !== undefined) item.root = root
+    known.set(row, item)
+    watchdog.track(row, item.root, slugsOf(row))
+  }
+  /**
+   * safe_host.crash: the failed entries of each fiber whose plugin body threw. Cordis disposes the effects of a
+   * failed fiber at once, so the isolation keeps them. They end when the fiber loads again or is disposed.
+   */
+  const thrown = new Map<Fiber, () => Promise<void>>()
+  function endFailed(fiber: Fiber): void {
+    const dispose = thrown.get(fiber)
+    if (dispose === undefined) return
+    thrown.delete(fiber)
+    dispose().catch((error: unknown) => { ctx.logger.warn(`widgets: a failed entry did not end: ${String(error)}`) })
+  }
+  /**
+   * safe_host.crash: the plugin body of `row` threw. Its slugs that have no entry show as failed with the reason.
+   * A refusal of safe mode keeps its own `off` entry.
+   */
+  function showFailed(row: string, fiber: Fiber, error: unknown): void {
+    host.failed(row)
+    if ((error as { code?: unknown } | null)?.code === 'safe-mode') return
+    const slugs = slugsOf(row)
+    if (slugs.length === 0) return
+    const reason = `the code of the row ${rowId(row)} threw: ${errorInfo(error).message}`.slice(0, 500)
+    try {
+      endFailed(fiber)
+      thrown.set(fiber, host.hold(slugs, row, reason, fiber))
+    } catch (failure) {
+      ctx.logger.warn(`widgets: the failed slugs of the row ${row} do not show: ${String(failure)}`)
+    }
+  }
+
   // ---- the store around the plugin body of each widget fiber ----
   // Cordis has no documented hook around a plugin body. The fiber runner `execute` runs the body on each load,
   // so the runtime wraps it (vendor/cordis/src/fiber.ts). A held row loads with no effect but the failed slugs.
@@ -288,34 +383,41 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
   type Runner = { execute: (this: Fiber) => unknown }
   const originals = new Map<Runner, Runner['execute']>()
   function wrap(fiber: Fiber): void {
+    // Cordis emits `internal/plugin` also when it disposes a fiber, with no uid.
+    if ((fiber as { uid?: unknown }).uid === null) endFailed(fiber)
     const row = ownRow(fiber)
     const runner = (fiber as unknown as { _runner?: Runner })._runner
     if (row === undefined || runner === undefined || originals.has(runner)) return
     const execute = runner.execute
     originals.set(runner, execute)
     runner.execute = function (this: Fiber) {
+      endFailed(this)
       const item = held(row)
       if (item !== undefined) {
         ctx.logger.warn(`widgets: the row ${row} is quarantined: ${item.reason}`)
         return host.hold(item.slugs, row, item.reason, this)
       }
+      noteRow(row, this)
+      const failed = (error: unknown): never => {
+        showFailed(row, this, error)
+        throw error
+      }
       let effect: unknown
       try {
         effect = runAs(row, () => execute.call(this))
       } catch (error) {
-        host.failed(row)
-        throw error
+        failed(error)
       }
       const promised = effect !== null && typeof effect === 'object' && 'then' in effect && typeof effect.then === 'function'
       // A throw leaves before the lift. An async body lifts when its promise resolves.
       if (!quarantine.has(row) && installing.size === 0) {
-        return promised ? (effect as PromiseLike<unknown>).then(undefined, (error: unknown) => { host.failed(row); throw error }) : effect
+        return promised ? (effect as PromiseLike<unknown>).then(undefined, failed) : effect
       }
       if (promised) {
         return (effect as PromiseLike<unknown>).then((value) => {
           loaded(row)
           return value
-        }, (error: unknown) => { host.failed(row); throw error })
+        }, failed)
       }
       loaded(row)
       return effect
@@ -324,6 +426,7 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
   ctx.effect(() => () => {
     for (const [runner, execute] of originals) runner.execute = execute
     originals.clear()
+    thrown.clear()
   }, 'widgets: restore the fiber runners')
   for (const runtime of ctx.registry.values()) for (const fiber of runtime.fibers) wrap(fiber)
   ctx.on('internal/plugin', wrap)
@@ -338,18 +441,24 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
     return undefined
   }
 
-  /** Write the crash record and exit at once. It does not return. */
-  function claim(error: unknown, event: CrashRecord['event']): void {
+  /**
+   * safe_host.cleanup: write the crash record. The fail-loud release then disposes the plugin tree and exits with
+   * code 1 (`apps/cli/src/profile-boot.ts`). First the watchdog thread learns that the dispose starts: it owns the
+   * deadline of the dispose, and it writes no stall record over this record.
+   * @returns the time limit of the dispose in ms.
+   */
+  function claim(error: unknown, event: CrashRecord['event']): number {
+    crashed = true
+    watchdog.crashing()
     try {
       const info = errorInfo(error)
       const store = blameStore.getStore()
       const stack = store === undefined ? stackBlame(info.stack) : undefined
       const row = store ?? stack ?? null
-      const item = row === null ? undefined : known.get(row)
-      const root = item?.root ?? null
+      const root = (row === null ? undefined : known.get(row)?.root) ?? null
       const crash: CrashRecord = {
         row,
-        slugs: [...(item?.slugs ?? [])],
+        slugs: row === null ? [] : slugsOf(row),
         error: info,
         at: Date.now(),
         event,
@@ -360,12 +469,12 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
         applied: false,
       }
       writeJsonSync(crashFile(), crash)
-      process.stderr.write(`deepwidgets: ${event} blamed on ${row ?? 'no widget'} (${crash.method ?? 'none'}); the host exits now\n`)
+      process.stderr.write(`deepwidgets: ${event} blamed on ${row ?? 'no widget'} (${crash.method ?? 'none'}); the host disposes its plugins and exits\n`)
     } catch (failure) {
       process.stderr.write(`deepwidgets: the crash record was not written: ${String(failure)}\n`)
     }
-    // No cleanup: each storage write is an atomic rename, so a hard exit loses no acknowledged write.
-    process.exit(1)
+    // The time limit of the dispose. The release of profile-boot keeps a timer at it, as a backup of the watchdog thread.
+    return CRASH_DISPOSE_LIMIT_MS
   }
   ctx.effect(() => {
     const registry = globalThis as { [key: symbol]: Set<typeof claim> | undefined }
@@ -374,11 +483,9 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
     return () => { hooks.delete(claim) }
   }, 'widgets: the crash claimer')
 
-  // ---- the watchdog (widget_phase2.isolation.watchdog) ----
-  const watchdog = startWatchdog(ctx, blameStore, { crashFile: crashFile(), provisionalFile: provisionalFile() })
-
   return {
     track(row, root, slug) {
+      // The folder of the Loader row (noteRow) wins over the folder of the caller.
       const item = known.get(row) ?? { root, slugs: new Set<string>() }
       item.root ??= root
       item.slugs.add(slug)

@@ -16,7 +16,7 @@ import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { z } from 'zod'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import { agentRow, callerRoot, createIsolation, isAgentRow, rowId, runAs, runningRow, widgetRow } from './isolation.ts'
+import { agentRow, callerRoot, createIsolation, hostCrashing, isAgentRow, rowId, runAs, runningRow, widgetRow } from './isolation.ts'
 import { readJson, writeJsonSync } from './records.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -1369,12 +1369,16 @@ export function apply(ctx: Context, config: Config): void {
     entry.end = async () => {
       if (widgets.get(slug) !== entry) return
       widgets.delete(slug)
+      // safe_host.cleanup: the dispose at a crash does not remove the widget. Its pages and windows see the stream
+      // end, as at a kill, and they come back with the next host. No standby takes the slug.
+      const crashed = hostCrashing()
       const frame = sseFrame({ type: 'removed' })
       for (const open of [...entry.streams]) {
-        open.send(frame)
+        if (!crashed) open.send(frame)
         open.close()
       }
       for (const dispose of entry.routes) await dispose()
+      if (crashed) return
       logChange({ slug, kind: 'removed', by: 'host' })
       pushEvent({ type: 'removed', slug })
       promote(slug, entry.tail)

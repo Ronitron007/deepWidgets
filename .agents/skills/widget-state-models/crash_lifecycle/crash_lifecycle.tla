@@ -1,9 +1,11 @@
 --------------------------- MODULE crash_lifecycle ---------------------------
 (***************************************************************************)
-(* crash_lifecycle: the outermost state machine of deepWidgets at c254b9df. *)
+(* crash_lifecycle: the outermost state machine of deepWidgets, synced at   *)
+(* widget.crash_records (the fix of widget_fv.crash, safe_host.watchdog,     *)
+(* safe_host.cleanup). Line refs before that unit are at c254b9df.          *)
 (* Host process + crash.json/provisional.json + quarantine.json + the       *)
 (* watchdog thread + the Electron-main supervisor (HostCrashPolicy).        *)
-(* Code refs (path:line at c254b9df):                                       *)
+(* Code refs (path, function):                                              *)
 (*   SUP  = apps/desktop/src/deepwidgets-supervisor.ts                      *)
 (*   POL  = apps/desktop/src/deepwidgets-crash-policy.ts                    *)
 (*   ISO  = deepwidgets/widgets/src/isolation.ts                            *)
@@ -11,7 +13,8 @@
 (*   WDW  = deepwidgets/widgets/src/watchdog-worker.ts                      *)
 (*   IDX  = deepwidgets/widgets/src/index.ts                                *)
 (*   HP   = apps/desktop/src/host-process.ts                                *)
-(*   SPEC = docs/specs/widget-phase2.md                                     *)
+(*   SPEC = docs/specs/widget-phase2.md, docs/specs/safe-host.md            *)
+(*   PB   = apps/cli/src/profile-boot.ts (the fail-loud release)            *)
 (* Time is abstract ticks. One watchdog poll step = a quarter threshold.    *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets
@@ -22,7 +25,8 @@ CONSTANTS
   MaxHosts,   \* bound on host pids (one pid per spawned host, pids never reused)
   MaxLaunch,  \* bound on app launches (the user starts the app again after a dialog)
   MaxHash,    \* bound on package-hash versions per agent widget
-  T,          \* watchdog threshold, in poll steps (WD:25 WATCHDOG_THRESHOLD_MS)
+  T,          \* watchdog threshold with a widget in the slot, in poll steps (WD WATCHDOG_THRESHOLD_MS)
+  TIdle,      \* watchdog threshold with slot 0, in poll steps (WD IDLE_THRESHOLD_MS, safe_host.watchdog)
   Q,          \* provisional point, in poll steps (WDW:166 thresholdMs / 4)
   WIN,        \* crash window, in ticks (POL:12 CRASH_WINDOW_MS)
   Mutant      \* "none", or one broken variant of the code (see `Mutants` below)
@@ -72,11 +76,12 @@ supVars == <<sup, armed, safeMode, timer, policy, launches, unbl, lastCount, las
 Alive == host.phase \in {"spawned", "booting", "ready"}
 Started == host.phase \in {"booting", "ready"}  \* the isolation ran (ISO:205)
 
-\* A record as ISO:350-361 (claimer) and WDW:108-122 (watchdog) write it.
-\* hash is -1 (null) when the Host does not know the row's package folder:
-\* root comes only from track() (ISO:348-349, WD:113,141).
+\* A record as ISO claim (claimer) and WDW recordOf (watchdog) write it.
+\* widget_fv.crash: the root comes from the Loader row when its code starts
+\* (ISO noteRow, rowRoot), so a blamed record always has the hash, also before
+\* track(). Before the fix, hash was -1 unless the row had registered.
 Record(row) == [kind |-> "rec", pid |-> host.pid, row |-> row,
-                hash |-> IF row # None /\ (row \in registered \/ row = Sample) THEN hash[row] ELSE -1,
+                hash |-> IF row # None /\ (Mutant # "no_row_root" \/ row \in registered \/ row = Sample) THEN hash[row] ELSE -1,
                 trueHash |-> IF row = None THEN -1 ELSE hash[row],
                 applied |-> FALSE, death |-> "alive", running |-> None]
 QEntry(r, src) == [kind |-> "q", hash |-> r.hash, trueHash |-> r.trueHash, src |-> src,
@@ -141,6 +146,10 @@ HostReady ==
   /\ UNCHANGED <<sup, safeMode, timer, policy, launches, unbl, lastCount, last, nextPid, mainVars,
                  crash, prov, quar, hash, ghostQ>>
 
+OwnProv == prov # NoRec /\ prov.pid = host.pid /\ ~prov.applied
+\* safe_host.watchdog: the stall limit is T with a widget in the slot, and TIdle with slot 0.
+Limit == IF slot # None THEN T ELSE TIdle
+
 (***************************************************************************)
 (* Main thread.                                                            *)
 (***************************************************************************)
@@ -159,12 +168,16 @@ Register(w) ==
   /\ UNCHANGED <<supVars, host, nextPid, run, slot, beat, stall, provAt, loaded,
                  crash, prov, quar, hash, ghostQ>>
 
-\* The widget code returns (WD:47). The next code can run before the beat timer.
+\* The widget code returns (WD inSlot finally). The next code can run before the beat timer.
+\* widget_fv.crash: the main thread removes the provisional record of the call at once
+\* (WD inSlot, CALLS_SLOT and PROVISIONAL_SLOT; WDW writeProvisional rechecks the count).
 FinishWidget ==
   /\ Started /\ run # None
   /\ run' = None /\ slot' = None
-  /\ UNCHANGED <<supVars, host, nextPid, beat, stall, provAt, registered, loaded,
-                 crash, prov, quar, hash, ghostQ>>
+  /\ prov' = IF provAt /\ OwnProv /\ Mutant \notin {"prov_outlives_call", "keep_prov"} THEN NoRec ELSE prov
+  /\ provAt' = (provAt /\ Mutant \in {"prov_outlives_call", "keep_prov"})
+  /\ UNCHANGED <<supVars, host, nextPid, beat, stall, registered, loaded,
+                 crash, quar, hash, ghostQ>>
 
 \* WD:123 the heartbeat timer runs (only when the main thread is free).
 Beat ==
@@ -176,7 +189,6 @@ Beat ==
 (***************************************************************************)
 (* Watchdog thread (WDW:145-200).                                          *)
 (***************************************************************************)
-OwnProv == prov # NoRec /\ prov.pid = host.pid /\ ~prov.applied
 
 \* WDW:150-157: the heartbeat came back; remove our provisional record (WDW:125-130).
 PollBeat ==
@@ -185,17 +197,17 @@ PollBeat ==
   /\ prov' = IF provAt /\ OwnProv /\ Mutant # "keep_prov" THEN NoRec ELSE prov
   /\ UNCHANGED <<supVars, host, nextPid, run, slot, registered, loaded, crash, quar, hash, ghostQ>>
 
-\* WDW:165-180: no beat while code runs. At Q steps, a provisional record that
-\* names the slot only (WDW:167-169). (An idle main thread beats within a step.)
+\* WDW poll loop: no beat while code runs. At Q steps, a provisional record that
+\* names the slot only, and only when the slot holds a widget. (An idle main thread beats within a step.)
 PollStall ==
-  /\ Started /\ ~beat /\ run # None /\ stall + 1 < T
+  /\ Started /\ ~beat /\ run # None /\ stall + 1 < Limit
   /\ stall' = stall + 1
   /\ IF stall + 1 >= Q /\ ~provAt /\ slot # None
        THEN prov' = Record(slot) /\ provAt' = TRUE
        ELSE UNCHANGED <<prov, provAt>>
   /\ UNCHANGED <<supVars, host, nextPid, run, slot, beat, registered, loaded, crash, quar, hash, ghostQ>>
 
-\* WDW:159-164: this thread did not run for half the threshold (sleep, SIGSTOP):
+\* WDW: this thread did not run for 1 s (sleep, SIGSTOP):
 \* the stall clock starts again. provisionalAt stays.
 Suspend ==
   /\ Started /\ ~beat /\ stall > 0
@@ -211,23 +223,27 @@ Die(kind) ==
   /\ host' = [host EXCEPT !.phase = "dead", !.death = kind, !.running = run]
   /\ run' = None /\ slot' = None /\ beat' = FALSE /\ stall' = 0 /\ provAt' = FALSE
 
-\* WDW:181-199: the stall reaches the threshold: crash record by the slot, remove
-\* the provisional record, SIGKILL. (No native module under Electron: WD:10-12.)
+\* WDW: the stall reaches its limit: crash record by the slot (no widget at slot 0),
+\* remove the provisional record, SIGKILL. This is the desktop app: under Electron the
+\* native stack module has no build, so slot 0 waits TIdle (safe_host.watchdog).
 WatchdogKill ==
-  /\ Started /\ ~beat /\ run # None /\ stall + 1 >= T
+  /\ Started /\ ~beat /\ run # None /\ stall + 1 >= Limit
   /\ crash' = Mark(Record(slot), "wdkill")
   /\ prov' = IF ~provAt /\ slot # None THEN NoRec   \* written and removed in this poll
              ELSE IF provAt /\ OwnProv THEN NoRec ELSE prov
   /\ Die("wdkill")
   /\ UNCHANGED <<supVars, nextPid, registered, loaded, quar, hash, ghostQ>>
 
-\* ISO:342-369 claimer: uncaught exception or unhandled rejection; the store
-\* names the row whose code runs (sync or async); crash.json; exit(1).
-Throw ==
+\* ISO claim: uncaught exception or unhandled rejection; the store names the row
+\* whose code runs (sync or async); crash.json. safe_host.cleanup: then the plugin
+\* dispose (PB) and exit(1), or SIGKILL by the watchdog thread after 3 s
+\* ("dispkill"). The watchdog writes no stall record over the claim (CRASH_SLOT),
+\* so both ends leave the same record, and one exit gives one HostFails.
+Throw(how) ==
   /\ Started
-  /\ crash' = Mark(Record(run), "exit1")
-  /\ prov' = Mark(prov, "exit1")
-  /\ Die("exit1")
+  /\ crash' = Mark(Record(run), how)
+  /\ prov' = Mark(prov, how)
+  /\ Die(how)
   /\ UNCHANGED <<supVars, nextPid, registered, loaded, quar, hash, ghostQ>>
 
 \* V8 out-of-memory or fatal error: SIGABRT/SIGTRAP/SIGILL or code 134. No JS runs.
@@ -244,8 +260,8 @@ OtherExit ==
   /\ Die("kill")
   /\ UNCHANGED <<supVars, nextPid, registered, loaded, quar, hash, ghostQ>>
 
-\* Boot fails: main() rejects and sends IPC 'fatal' first (apps/desktop-host/src/index.ts:154-166);
-\* that failure carries no hostPid (HP:254, SUP:47-50).
+\* Boot fails: main() rejects and sends IPC 'fatal' first (apps/desktop-host/src/index.ts);
+\* widget_fv.crash: that failure carries the hostPid (HP fail), with no code or signal.
 BootFail ==
   /\ host.phase \in {"spawned", "booting"} /\ run = None
   /\ crash' = Mark(crash, "bootfail") /\ prov' = Mark(prov, "bootfail")
@@ -257,7 +273,7 @@ BootFail ==
 (***************************************************************************)
 HostFails ==
   /\ host.phase = "dead"
-  /\ LET pid == IF host.death = "bootfail" THEN 0 ELSE host.pid            \* SUP:47-50
+  /\ LET pid == host.pid                                                   \* SUP hostPidOf, HP fail
          aborted == host.death = "abort"                                  \* SUP:71-79
          own == pid # 0 /\ crash # NoRec /\ (crash.pid = pid \/ Mutant = "no_pid_check")   \* SUP:93
          crow == IF own /\ crash.row # None /\ ~crash.applied THEN crash.row ELSE None   \* SUP:58-63
@@ -275,9 +291,11 @@ HostFails ==
                  death |-> host.death,
                  added |-> times # policy]
      IN IF ~armed
-          THEN \* SUP:153: not armed -> DSH fatal dialog (main.ts:631); nothing is discarded
+          THEN \* SUP failed: not armed -> DSH fatal dialog (main.ts); widget_fv.crash: the
+               \* provisional record of an exit that is not an abort is discarded first
                /\ sup' = "fatal" /\ host' = NoHost
-               /\ UNCHANGED <<armed, safeMode, timer, policy, launches, unbl, lastCount, last, prov>>
+               /\ prov' = IF discard /\ Mutant # "keep_prov_unarmed" THEN NoRec ELSE prov
+               /\ UNCHANGED <<armed, safeMode, timer, policy, launches, unbl, lastCount, last>>
           ELSE /\ prov' = IF discard THEN NoRec ELSE prov                 \* SUP:36-44,159
                /\ policy' = times /\ unbl' = u1 /\ lastCount' = Cardinality(u1) /\ last' = dec
                /\ host' = NoHost
@@ -335,7 +353,8 @@ Next ==
   \/ \E w \in Agents : Register(w)
   \/ FinishWidget \/ Beat
   \/ PollBeat \/ PollStall \/ WatchdogKill \/ Suspend
-  \/ Throw \/ Abort \/ OtherExit \/ BootFail
+  \/ \E k \in {"exit1", "dispkill"} : Throw(k)
+  \/ Abort \/ OtherExit \/ BootFail
   \/ HostFails \/ LongQuiet \/ Restart \/ Relaunch
   \/ \E w \in Agents : ChangeHash(w)
   \/ Done
@@ -351,7 +370,12 @@ Spec == Init /\ [][Next]_vars
 (*   no_dispose       restart timer after give-up -> NoRestartAfterGiveUp   *)
 (*   no_quarantine    the crash record is ignored -> QuarantinedNeverRuns   *)
 (*   no_pid_check     no pid match in the blame   -> RecordOnlyBlamesItsHost*)
-(*   keep_prov        the beat keeps provisional  -> ProvisionalGoneAfterBeat *)
+(*   keep_prov        the beat and the return keep the provisional record   *)
+(*                                                -> ProvisionalGoneAfterBeat *)
+(* The mutants of widget.crash_records are the code before that unit:       *)
+(*   no_row_root      root only from track()      -> HashChangeLifts        *)
+(*   prov_outlives_call  the return keeps it      -> InnocentNeverQuarantined *)
+(*   keep_prov_unarmed   no discard before ready  -> ProvisionalOnlyOnAbort *)
 (***************************************************************************)
 
 (***************************************************************************)
@@ -399,6 +423,6 @@ ProvisionalGoneAfterBeat == (Started /\ ~provAt) => ~OwnProv
 
 TypeOK ==
   /\ sup \in {"run", "fatal", "gaveUp"}
-  /\ stall \in 0..T
+  /\ stall \in 0..TIdle
   /\ run \in Widgets \cup {None} /\ slot \in Widgets \cup {None}
 =============================================================================

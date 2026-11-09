@@ -22,10 +22,12 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
+// widget.crash_records fixed HashChangeLifts, ProvisionalOnlyOnAbort, and InnocentNeverQuarantined (widget_fv.crash).
 const CRASH_HOLDS = ['TypeOK', 'BlamedCrashNeverCounts', 'SafeModeAfterTwo', 'GiveUpAtFour', 'NoRestartAfterGiveUp',
-  'QuarantinedNeverRuns', 'RecordOnlyBlamesItsHost', 'ProvisionalGoneAfterBeat', 'NoDeadlock']
-const CRASH_BREAKS = ['SampleNeverQuarantined', 'HashChangeLifts', 'ProvisionalOnlyOnAbort', 'InnocentNeverQuarantined',
-  'SampleLiveInSafeMode']
+  'QuarantinedNeverRuns', 'HashChangeLifts', 'ProvisionalOnlyOnAbort', 'InnocentNeverQuarantined',
+  'RecordOnlyBlamesItsHost', 'ProvisionalGoneAfterBeat', 'NoDeadlock']
+// The known breaks of widget_fv.open (built-in widgets).
+const CRASH_BREAKS = ['SampleNeverQuarantined', 'SampleLiveInSafeMode']
 const ACTION_HOLDS = ['TypeOK', 'AtMostOnce', 'ReplaySameResult', 'ReplayFlag', 'ConflictOnOtherArgs', 'NoLateWrite', 'OneAtATime', 'FIFO',
   'QueryNoQueue', 'BusyNeverRuns', 'NoAdmitAfterStop', 'DrainBeforeClose', 'RevCountsWrites', 'NoDeadlock']
 const INSTALL_HOLDS = ['TypeOK', 'GatesGuardHost', 'FailedReplaceKeepsOld', 'NeverRemoveLastGood', 'CommittedNotStandby', 'StateKept', 'BuiltInUntouched', 'OneBundlePerSlug', 'NewSeedSetsProgram',
@@ -41,6 +43,8 @@ const crashMutants = {
   no_blame_skip: 'BlamedCrashNeverCounts', safe_off_by_one: 'SafeModeAfterTwo', give_up_late: 'GiveUpAtFour',
   no_dispose: 'NoRestartAfterGiveUp', no_quarantine: 'QuarantinedNeverRuns', no_pid_check: 'RecordOnlyBlamesItsHost',
   keep_prov: 'ProvisionalGoneAfterBeat',
+  // widget.crash_records: each mutant is the code before that unit.
+  no_row_root: 'HashChangeLifts', prov_outlives_call: 'InnocentNeverQuarantined', keep_prov_unarmed: 'ProvisionalOnlyOnAbort',
 }
 const installMutants = {
   'M-builtinRow-BuiltInUntouched': 'BuiltInUntouched', 'M-builtinRow-OneBundlePerSlug': 'OneBundlePerSlug',
