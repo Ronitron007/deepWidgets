@@ -1,6 +1,8 @@
 /**
  * Check fixture of `widget.isolation_watchdog`: a host plugin, not a widget. It parses a large JSON text in one
  * synchronous step of host code. That step is busy but healthy, so the watchdog must not kill the host.
+ * `block` (widget.crash_records, safe_host.watchdog) holds the event loop in host code, with no widget in the
+ * running slot, for the given time.
  */
 export const name = 'deepwidgets-watchdoghost'
 export const inject = ['connection']
@@ -38,6 +40,17 @@ export function apply(ctx) {
       const value = JSON.parse(text)
       const parseMs = Math.round(performance.now() - start)
       return Promise.resolve(Response.json({ ok: true, items: value.length, mb: text.length / 1024 / 1024, parseMs }))
+    },
+  })
+  ctx.connection.fetch.register({
+    path: '/api/watchdoghost/block',
+    methods: ['POST'],
+    requestBody: 'buffered',
+    fetch: async (request) => {
+      const { ms = 1_000 } = await request.json().catch(() => ({}))
+      const end = performance.now() + ms
+      while (performance.now() < end) { /* host code holds the event loop */ }
+      return Response.json({ ok: true, ms })
     },
   })
 }

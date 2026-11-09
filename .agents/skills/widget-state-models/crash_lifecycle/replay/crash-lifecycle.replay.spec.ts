@@ -1,6 +1,6 @@
-// Replays of the TLC bug paths of crash_lifecycle.tla on the real code at aa7cd518.
+// Replays of the TLC bug paths of crash_lifecycle.tla on the real code. Since widget.crash_records they assert the fix.
 // Each host is a real child process; Electron main is the real DesktopHostSupervisor with
-// its real file readers; the next Host is the real createIsolation (ISO:167) in this process.
+// its real file readers; the next Host is the real createIsolation (ISO) in this process.
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -47,12 +47,15 @@ const raceHost = (mode: string, onMessage?: (m: unknown, kill: () => void) => vo
 const claimHost = (row: string, register: boolean, root = '') =>
   // node itself runs the host (tsx as a loader), so the child pid is the pid that writes crash.json
   host(process.execPath, ['--import', 'tsx', join(HERE, 'host-claim.ts'), row, register ? '1' : '0', root])
-/** The failure that DesktopHostProcess gives for a child exit (HP:274-275). */
+/** The failure that DesktopHostProcess gives for a child exit (HP, the `close` listener). */
 const exitFailure = (e: Exit) => Object.assign(new Error('dsh desktop host stopped'), { hostPid: e.pid, hostCode: e.code, hostSignal: e.signal })
+/** The failure that DesktopHostProcess gives for the IPC `fatal` event before the exit: it has the pid only (HP `fail`). */
+const fatalFailure = (e: Exit) => Object.assign(new Error('startup failed'), { hostPid: e.pid })
+const provisionalExists = () => existsSync(join(process.env.DSH_HOME!, 'deepwidgets', 'provisional.json'))
 /** The next Host: the real isolation start, then the Loader loads each widget row. */
 function nextHost(): { a1: string, sample: string, quarantine: unknown } {
-  const { ctx, load } = fakeCtx()
-  createIsolation(ctx, { hold: () => async () => {} })
+  const { ctx, load } = fakeCtx({ [A1]: join(R, 'pkg-a1'), [SAMPLE]: join(R, 'pkg-sample') })
+  createIsolation(ctx, { hold: () => async () => {}, failed: () => {} })
   const file = join(process.env.DSH_HOME!, 'deepwidgets', 'quarantine.json')
   return { a1: load(A1), sample: load(SAMPLE), quarantine: existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : [] }
 }
@@ -68,62 +71,78 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 afterEach(() => { vi.restoreAllMocks() })
 
 describe('crash_lifecycle replays', () => {
-  it('InnocentNeverQuarantined: a1 returns, host code aborts, a1 is quarantined', async () => {
+  // widget_fv.crash: these replays assert the fixed behavior. Each path is the TLC bug path of the code before the fix.
+  it('InnocentNeverQuarantined: a1 returns, host code aborts, a1 is not quarantined', async () => {
     home('innocent')
     const { supervisor, lines, restarted } = supervisorWithLog()
     supervisor.ready()                                          // the Host is ready
     const end = await raceHost('abort-after-return')           // a1 starts, stall, a1 returns, abort
-    expect(end.out).toContain('a1 code returns; slot = 0')
+    expect(end.out).toContain('provisional.json exists = true') // the watchdog saw the stall of a1
+    expect(end.out).toContain('a1 code returns; slot = 0 ; provisional.json exists = false')
     expect(end.signal).toBe('SIGABRT')
     expect(supervisor.failed(exitFailure(end), false)).toBe(true)  // Electron main sees the exit
-    expect(lines.find((l) => l.includes('host-failed'))).toContain('"blamed":"deepwidgets-widget-a1"')
+    expect(lines.find((l) => l.includes('host-failed'))).toContain('"blamed":null')
     await sleep(700)                                            // the restart timer fires (0.5 s)
     expect(restarted()).toBe(1)
     const next = nextHost()                                     // the Host applies the crash records
-    expect(next.a1).toBe('held')
-    console.warn('innocent replay', JSON.stringify({ end: { signal: end.signal }, log: lines.filter((l) => l.includes('host-failed')), quarantine: next.quarantine }))
+    expect(next.a1).toBe('ran')
   })
 
-  it('ProvisionalOnlyOnAbort (all-rules path): Host never ready, OS kills it mid-stall, relaunch quarantines a1', async () => {
+  it('ProvisionalOnlyOnAbort (all-rules path): Host never ready, OS kills it mid-stall, relaunch runs a1', async () => {
     home('prov-kill')
     const first = supervisorWithLog()                           // first app launch, never ready
     const end = await raceHost('stall-until-killed', (m, kill) => { if (m === 'stalled') kill() })  // the OS kills the Host
     expect(end.signal).toBe('SIGKILL')
-    expect(first.supervisor.failed(exitFailure(end), false)).toBe(false)   // fatal dialog, nothing discarded
-    expect(existsSync(join(process.env.DSH_HOME!, 'deepwidgets', 'provisional.json'))).toBe(true)
+    expect(provisionalExists()).toBe(true)
+    expect(first.supervisor.failed(exitFailure(end), false)).toBe(false)   // fatal dialog
+    expect(provisionalExists()).toBe(false)                    // the kill is no abort: the record is discarded
     supervisorWithLog()                                         // you start the app again
-    const next = nextHost()                                     // the Host applies the crash records
-    expect(next.a1).toBe('held')
-    console.warn('prov-kill replay', JSON.stringify(next.quarantine))
+    expect(nextHost().a1).toBe('ran')
   })
 
-  it('ProvisionalOnlyOnAbort (one-launch path): boot fails right after a1 returns, the failure has no pid', async () => {
+  it('ProvisionalOnlyOnAbort (one-launch path): boot fails right after a1 returns', async () => {
     home('prov-bootfail')
     const { supervisor } = supervisorWithLog()
     supervisor.ready()
-    // the boot fails: DesktopHostProcess reports the IPC 'fatal' error first, which has no hostPid (HP:254, HP:379-391)
     const end = await raceHost('boot-fail-after-return')
     expect(end.code).toBe(1)
-    expect(supervisor.failed(new Error('startup failed'), false)).toBe(true)
-    expect(existsSync(join(process.env.DSH_HOME!, 'deepwidgets', 'provisional.json'))).toBe(true)
+    expect(provisionalExists()).toBe(false)                    // a1 returned: its record went at once
+    expect(supervisor.failed(fatalFailure(end), false)).toBe(true)
     await sleep(700)
-    const next = nextHost()
-    expect(next.a1).toBe('held')
+    expect(nextHost().a1).toBe('ran')
   })
 
-  it('HashChangeLifts: a1 throws before it registers; a new version stays quarantined', async () => {
+  it('ProvisionalOnlyOnAbort (no exit code): boot fails during the a1 call; the fatal failure has the pid only', async () => {
+    home('prov-bootfail-stall')
+    const { supervisor, lines } = supervisorWithLog()
+    supervisor.ready()
+    const end = await raceHost('boot-fail-in-stall')
+    expect(end.code).toBe(1)
+    expect(provisionalExists()).toBe(true)
+    // DesktopHostProcess reports the IPC 'fatal' event first, with the pid and no code or signal (HP `fail`)
+    expect(supervisor.failed(fatalFailure(end), false)).toBe(true)
+    expect(provisionalExists()).toBe(false)
+    expect(lines.find((l) => l.includes('host-failed'))).toContain('"blamed":null')
+    await sleep(700)
+    expect(nextHost().a1).toBe('ran')
+  })
+
+  it('HashChangeLifts: a1 throws before it registers; the record has the root of its row; a new version runs', async () => {
     home('hash')
     const { supervisor, lines } = supervisorWithLog()
     supervisor.ready()
-    const end = await claimHost(A1, false)                      // a1 code starts, an uncaught error
+    const end = await claimHost(A1, false, join(R, 'pkg-a1'))   // a1 code starts, an uncaught error before track()
     expect(end.code).toBe(1)
+    const record = JSON.parse(readFileSync(join(process.env.DSH_HOME!, 'deepwidgets', 'crash.json'), 'utf8')) as { root: unknown, hash: unknown, slugs: unknown }
+    expect(record.root).toBe(join(R, 'pkg-a1'))
+    expect(typeof record.hash).toBe('string')
+    expect(record.slugs).toEqual(['a1'])
     expect(supervisor.failed(exitFailure(end), false)).toBe(true)
     expect(lines.find((l) => l.includes('host-failed'))).toContain('"blamed":"deepwidgets-widget-a1"')
+    expect(nextHost().a1).toBe('held')                          // same files: held
     writeFileSync(join(R, 'pkg-a1', 'index.js'), `v${Date.now()}`)  // a new version is installed
     await sleep(700)
-    const next = nextHost()
-    expect(next.a1).toBe('held')
-    console.warn('hash replay', JSON.stringify(next.quarantine))
+    expect(nextHost().a1).toBe('ran')
   })
 
   it('HashChangeLifts control: a1 throws after it registers; a new version runs again', async () => {
@@ -137,11 +156,23 @@ describe('crash_lifecycle replays', () => {
     expect(nextHost().a1).toBe('ran')                           // changed files: lifted
   })
 
+  it('safe_host.crash: a1 throws in its plugin body before it registers; its slug shows as failed with the reason', () => {
+    home('throw-first')
+    const { ctx, load } = fakeCtx({ [A1]: join(R, 'pkg-a1') })
+    const held: { slugs: string[], row: string, reason: string }[] = []
+    createIsolation(ctx, {
+      hold: (slugs, row, reason) => { held.push({ slugs, row, reason }); return async () => {} },
+      failed: () => {},
+    })
+    expect(load(A1, () => { throw new Error('a1: the body threw') })).toBe('threw')
+    expect(held).toEqual([{ slugs: ['a1'], row: A1, reason: expect.stringContaining('a1: the body threw') }])
+  })
+
   it('SampleNeverQuarantined / SampleLiveInSafeMode: sample throws, then 2 aborts, safe-mode Host holds sample', async () => {
     home('sample')
     const { supervisor, lines } = supervisorWithLog()
     supervisor.ready()
-    const end = await claimHost(SAMPLE, true, join(R, 'pkg-sample'))   // sample code starts, an uncaught error
+    const end = await claimHost(SAMPLE, true, join(R, 'pkg-sample'))   // sample code starts, an uncaught error (a known break of widget_fv.open)
     expect(supervisor.failed(exitFailure(end), false)).toBe(true)
     expect(lines.find((l) => l.includes('host-failed'))).toContain('"blamed":"deepwidgets-widget-sample"')
     await sleep(700)                                            // restart

@@ -308,15 +308,21 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
     // complete; SIGINT is a user interrupt and reports 130.
     process.on('SIGTERM', () => { interrupt(0) })
     process.on('SIGINT', () => { interrupt(130) })
-    // deepwidgets-trim: widget_phase2.isolation.blame. After the fail-loud diagnostic, the widget runtime writes the
-    // crash record and exits at once, without the slow fiber dispose. With no hook, the release is as before.
+    // deepwidgets-trim: widget_phase2.isolation.blame and safe_host.cleanup. After the fail-loud diagnostic, the widget
+    // runtime writes the crash record. Then the release disposes the plugin tree and exits with code 1. The watchdog
+    // thread of the widget runtime owns the deadline of that dispose, so the 2 s limit of installFailLoud does not end
+    // it. With no hook, the release is as before.
     // installFailLoud(NAME, process, async () => {
     //   await app.current?.fiber.dispose()
     // })
     const fatal = withFatalHooks(process)
     installFailLoud(NAME, fatal.process, async () => {
-      fatal.run()
-      await app.current?.fiber.dispose()
+      const claimed = fatal.run()
+      try {
+        await app.current?.fiber.dispose()
+      } finally {
+        if (claimed) process.exit(1)
+      }
     })
 
     const rootConfig = join(composed.profile.dir, PROFILE_ROOT_FILENAME)
@@ -362,16 +368,22 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
 }
 
 /**
- * deepWidgets (`widget_phase2.isolation.blame`): the process slice for `installFailLoud`, and a step for its release.
- * The slice keeps the error of the last fail-loud event. The release runs inside that event, after the filter of
- * `installFailLoud` and its diagnostic, so `run` gives each hook under `Symbol.for('deepwidgets.fatal.hooks')`
- * the error in its own async context. A hook may exit the process; a hook that throws does not stop the release.
+ * deepWidgets (`widget_phase2.isolation.blame`, `safe_host.cleanup`): the process slice for `installFailLoud`, and a
+ * step for its release. The slice keeps the error of the last fail-loud event. The release runs inside that event,
+ * after the filter of `installFailLoud` and its diagnostic, so `run` gives each hook under
+ * `Symbol.for('deepwidgets.fatal.hooks')` the error in its own async context. A hook that throws does not stop the
+ * release.
+ *
+ * A hook that ran owns the deadline of the dispose: `run` gives true, and the slice then ignores the exit of the
+ * release timeout of `installFailLoud`. The release exits when the dispose ends, and the hook kills the process when
+ * the dispose takes too long.
  */
-function withFatalHooks(proc: NodeJS.Process): { process: FailLoudProcess; run(): void } {
+function withFatalHooks(proc: NodeJS.Process): { process: FailLoudProcess; run(): boolean } {
   type Hook = (error: unknown, event: FailLoudEvent) => void
   const registry = globalThis as { [key: symbol]: Set<Hook> | undefined }
   const key = Symbol.for('deepwidgets.fatal.hooks')
   let last: { error: unknown; event: FailLoudEvent } | undefined
+  let claimed = false
   const wrapped = new Map<(error: unknown) => void, (error: unknown) => void>()
   return {
     process: {
@@ -387,17 +399,21 @@ function withFatalHooks(proc: NodeJS.Process): { process: FailLoudProcess; run()
         return proc.off(event, wrapped.get(handler) ?? handler)
       },
       stderr: proc.stderr,
-      exit: code => proc.exit(code),
+      exit: (code) => {
+        if (!claimed) proc.exit(code)
+      },
     },
     run() {
-      if (last === undefined) return
+      if (last === undefined) return false
       for (const hook of registry[key] ?? []) {
+        claimed = true
         try {
           hook(last.error, last.event)
         } catch (error) {
           proc.stderr.write(`${NAME}: a fatal hook failed: ${String(error)}\n`)
         }
       }
+      return claimed
     },
   }
 }
