@@ -90,6 +90,8 @@ function nativeBlame(): Blame {
   if (native === undefined) return NO_BLAME
   try {
     const main = native.captureStackTrace()[data.mainThread]
+    // The test hook: a read that waits as long as a read during a long native step of the main thread.
+    if (data.testReadDelayMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, data.testReadDelayMs)
     const frames = main?.frames ?? []
     const store = typeof main?.asyncState === 'string' ? main.asyncState : JSON.stringify(main?.asyncState ?? null)
     const stack = [`    store ${store}`, ...frames.slice(0, 20).map((frame) => `    at ${frame.function || '<anonymous>'} (${frame.filename}:${String(frame.lineno)}:${String(frame.colno)})`)].join('\n')

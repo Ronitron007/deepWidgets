@@ -72,6 +72,8 @@ export interface WatchdogData {
   nativeEntry: string | null
   /** The name under which the main thread registered with the native module. */
   mainThread: string
+  /** A test hook: the native stack read waits this long more, as when the main thread is in native code. 0 is off. */
+  testReadDelayMs: number
 }
 
 /** A message from the main thread: one widget row, its slot index, and what the record needs of it. */

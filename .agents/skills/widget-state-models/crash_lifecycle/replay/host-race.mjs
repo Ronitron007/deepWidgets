@@ -14,7 +14,7 @@ const slots = new Int32Array(new SharedArrayBuffer(5 * 4))
 const worker = new Worker(new URL('../../../../../deepwidgets/widgets/src/watchdog-worker.ts', import.meta.url), {
   execArgv: ['--experimental-strip-types', '--disable-warning=ExperimentalWarning'],
   workerData: { buffer: slots.buffer, thresholdMs: 2000, idleThresholdMs: 10000, suspendGapMs: 1000, disposeLimitMs: 3000,
-    pollMs: 50, crashFile: join(dir, 'crash.json'), provisionalFile, nativeEntry: null, mainThread: '0' },
+    pollMs: 50, crashFile: join(dir, 'crash.json'), provisionalFile, nativeEntry: null, mainThread: '0', testReadDelayMs: 0 },
 })
 worker.unref()
 worker.postMessage({ type: 'row', index: 1, row: 'deepwidgets-widget-a1', root: process.env.A1_ROOT, slugs: ['a1'] })

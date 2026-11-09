@@ -16,6 +16,9 @@
  *   widget with `native-stack`.
  * - native-off: the same loop on a host where a module hook refuses to load the module. The host dies after about
  *   10 s, and the record blames no widget.
+ * - native-slow: each native stack read takes 1.5 s more (the test hook DEEPWIDGETS_WATCHDOG_TEST_READ_DELAY_MS).
+ *   Host code holds the event loop with slot 0. The reads are not poll gaps, so the stall clock goes on, and the host
+ *   dies after about 10 s with no blame. A read that counts as a suspend would keep the host alive.
  * - host-await: a widget awaits host work that holds the event loop for 3 s. That work has the store of the widget,
  *   but its frames are host code. The host lives, and no record blames the widget.
  * - oom: a stall, then fast allocation. The out-of-memory abort (provisional record) and the stall kill (crash record)
@@ -53,7 +56,9 @@ const isRow = (row, id) => typeof row === 'string' && (row === id || row.endsWit
 /** The cases to run. All cases when WIDGETS_WATCHDOG_CASES is not set. */
 const CASES = process.env.WIDGETS_WATCHDOG_CASES?.split(',').map((name) => name.trim()).filter((name) => name !== '')
 const runs = (name) => CASES === undefined || CASES.length === 0 || CASES.includes(name)
-const CASE_NAMES = ['parse', 'suspend', 'stall', 'spin', 'idle', 'native', 'native-off', 'host-await', 'oom']
+const CASE_NAMES = ['parse', 'suspend', 'stall', 'spin', 'idle', 'native', 'native-off', 'native-slow', 'host-await', 'oom']
+/** native-slow: the reads add up to 6 s over the 10 s limit at most, so the kill comes in this window. */
+const SLOW_KILL_MAX_MS = 16_000
 /** safe_host.watchdog: a widget stall that the native stack finds kills the host in this time after the call. */
 const NATIVE_KILL_MAX_MS = 3_500
 /** safe_host.watchdog: a stall with no widget in the running slot kills the host after 10 s, in this window. */
@@ -86,12 +91,12 @@ function freePort() {
 
 // ---- host process ----
 
-async function startHost(port, inspectPort, nodeArgs = []) {
+async function startHost(port, inspectPort, nodeArgs = [], env = {}) {
   mkdirSync(home, { recursive: true })
   const out = createWriteStream(logPath, { flags: 'a' })
   const child = spawn(process.execPath, [...nodeArgs, `--inspect=127.0.0.1:${String(inspectPort)}`, BIN, '--profile', 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open'], {
     cwd: home,
-    env: { ...process.env, DSH_HOME: home },
+    env: { ...process.env, DSH_HOME: home, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   children.add(child)
@@ -402,6 +407,27 @@ async function main() {
         // An empty stack: the watchdog thread had no native module to read the stack with.
         check('native-off: the crash record blames no widget, and the watchdog read no native stack', record?.row === null && record?.method === null && record?.pid === pid && record?.error?.stack === '', detail)
       }
+    } finally {
+      await host.stop()
+    }
+  }
+
+  // native-slow: safe_host.watchdog, the time of the stack read is not a poll gap.
+  if (runs('native-slow')) {
+    clearState()
+    host = await startHost(port, inspectPort, [], { DEEPWIDGETS_WATCHDOG_TEST_READ_DELAY_MS: '1500' })
+    try {
+      await live(host)
+      const pid = host.child.pid
+      const sent = Date.now()
+      void host.post('/api/watchdoghost/block', { ms: 40_000 }).catch(() => undefined)
+      const exit = await Promise.race([host.exited, sleep(30_000).then(() => null)])
+      const record = readState('crash.json')
+      const ms = exit === null ? null : exit.at - sent
+      const detail = JSON.stringify({ exit: exit === null ? 'alive after 30 s' : exit.signal ?? exit.code, ms, row: record?.row, method: record?.method, message: record?.error?.message })
+      check(`native-slow: with reads of 1.5 s, a host stall still dies after ${String(IDLE_KILL_MIN_MS)} to ${String(SLOW_KILL_MAX_MS)} ms`,
+        exit?.signal === 'SIGKILL' && ms !== null && ms >= IDLE_KILL_MIN_MS && ms <= SLOW_KILL_MAX_MS, detail)
+      check('native-slow: the crash record blames no widget', record?.row === null && record?.method === null && record?.pid === pid, detail)
     } finally {
       await host.stop()
     }

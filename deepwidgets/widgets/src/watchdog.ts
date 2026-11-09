@@ -46,6 +46,8 @@ const BEAT_MS = Math.max(20, Math.min(100, Math.floor(WATCHDOG_THRESHOLD_MS / 5)
 /** The poll period of the watchdog thread. */
 const POLL_MS = Math.max(10, Math.floor(BEAT_MS / 2))
 const NATIVE_PACKAGE = '@sentry/node-native-stacktrace'
+/** A test hook of `tools/widgets-watchdog.mjs` (the case `native-slow`): extra milliseconds for each native stack read. */
+const TEST_READ_DELAY_ENV = 'DEEPWIDGETS_WATCHDOG_TEST_READ_DELAY_MS'
 
 /** The slots of the running watchdog, and the slot index of a widget row. */
 interface Active {
@@ -145,6 +147,7 @@ export function startWatchdog(ctx: Context, store: AsyncLocalStorage<string>, fi
     provisionalFile: files.provisionalFile,
     nativeEntry: loadNative(ctx, store),
     mainThread: String(threadId),
+    testReadDelayMs: Math.max(0, Number(process.env[TEST_READ_DELAY_ENV] ?? 0) || 0),
   }
   // The bundle puts the worker beside lib/index.js. A plain path, so the bundler does not treat it as an asset.
   const worker = new Worker(join(dirname(fileURLToPath(import.meta.url)), 'watchdog-worker.js'), { workerData: data })
