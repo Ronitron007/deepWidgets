@@ -563,6 +563,8 @@ async function main(): Promise<void> {
           segmentBytes: 256 * 1024, recordBytes: 4096, queuedBytes: 64 * 1024,
         })
         operationJournal.enqueue(JSON.stringify(record))
+      // deepwidgets-trim: safe_host.port. The Host sends the state of its MCP row to the link of this Host.
+      // })
       }, (mcp) => { mcpLink?.update(mcp) })
     return {
       start: async () => {
