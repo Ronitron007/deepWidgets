@@ -16,6 +16,12 @@ This spec is stage 1 of the build order. It makes the single host process safe b
 
 - When the running slot holds 0, a heartbeat stall of 10 s stops the host. The crash record blames no widget.
 
+- When the running slot holds 0 and the module `@sentry/node-native-stacktrace` loads, the watchdog reads the innermost frame of the stuck thread. If that frame is in the files of a widget row, the stall is a widget stall: 2 s, and the crash record blames that row with the method `native-stack`.
+
+- The blame store alone does not blame a widget. Host work that a widget waits for gets the store of that widget, so the store can name a widget that did nothing wrong.
+
+- The time that the watchdog takes to read the stack does not count as a poll gap.
+
 - The watchdog writes the provisional record at a quarter of 2 s. It does this only when the running slot holds a widget.
 
 - A poll gap of 1 s or more of the watchdog thread means that the process did not run. The stall clock starts again.
