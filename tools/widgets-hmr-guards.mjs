@@ -4,17 +4,26 @@
  * It ports the cases of the HMR safety spike (`plugins_spike.hmr`) that this unit closes. It boots the CLI host (web
  * profile) on free loopback ports, writes small agent bundles (`deepwidgets-agent-*`) into its work folder, and
  * installs and removes them over the host inspector with the plugin manager, as `widget_install` does after its gates.
- * - dispose-hang: a disposer that never ends. The remove ends after about 5 s, the row is quarantined, a no-op
- *   `hmr.runExclusive` and the install of another bundle run at once, and the same files show as failed.
- * - listener-blame: a `ctx.on` listener of a plain agent row (it registers no widget) starts a timer that throws a
- *   string. A host plugin that is not an agent row emits the event from its own timer. The string has no stack, so
- *   only the blame store of the row can blame it. At boot, the crash record blames the row with the method `store`,
- *   with its root and hash, and the next host quarantines the row.
+ * - dispose-hang: a disposer that never ends. The row fiber has the limit. The remove ends after about 5 s, the row
+ *   is quarantined, a no-op `hmr.runExclusive` and the install of another bundle run at once, and the same files show
+ *   as failed.
+ * - inflight-join: the plugin starts the dispose of its own effect before the unload. The unload waits for a dispose
+ *   that ends after 2 s, and a started dispose that never ends has the limit of 5 s.
+ * - late-write: a disposer writes the state after 6 s. After the limit, the host refuses the write, and the state of
+ *   the next install of the slug does not change.
+ * - listener-blame: a `ctx.on` listener of a plain agent row starts a timer that throws a string. A host plugin that is
+ *   not an agent row emits the event from its own timer. The string has no stack, so only the blame store of the row
+ *   can blame it. At boot, the crash record blames the row with `store`, with its root and hash, and the next host
+ *   quarantines the row.
  * - safe-mode: in safe mode, the top-level code and the plugin body of an agent row do not run, its slug shows as off,
  *   and `sample` is live. With no safe mode, both run again.
- * - boot-loop: the top-level code of an agent row loops at boot. The native stack module is refused, as on Electron,
- *   so only the running slot can blame. The watchdog kills the host, the record blames the row with `slot`, and the
- *   next host does not load the row and shows its slug as failed.
+ * - await-stall: an agent row awaits 6 s in its top-level code at boot, while a host plugin stalls the loop for 3 s.
+ *   The native stack module is refused. The slot does not hold the row across the await, so the host lives, and no
+ *   record blames the row.
+ * - boot-loop-native and boot-loop-blocked: the top-level code of an agent row loops at boot. With the native stack
+ *   module, the record blames the row with `native-stack`, and the next host shows its slug as failed. With the module
+ *   refused, the loop is a stall of 10 s with no blame.
+ * A failed case does not stop the run: each case runs and reports.
  * Environment: WIDGETS_HMR_GUARDS_CASES (comma list) runs only those cases.
  * Prints `widgets-hmr-guards: pass` and exits 0 only when every check passes.
  * Needs `corepack pnpm run build:artifacts` first.
@@ -43,7 +52,7 @@ const results = []
 const children = new Set()
 /** safe_host.provisional: the disposer limit. */
 const DISPOSER_LIMIT_MS = 5_000
-const CASE_NAMES = ['dispose-hang', 'listener-blame', 'safe-mode', 'boot-loop']
+const CASE_NAMES = ['dispose-hang', 'inflight-join', 'late-write', 'listener-blame', 'safe-mode', 'await-stall', 'boot-loop-native', 'boot-loop-blocked']
 const CASES = process.env.WIDGETS_HMR_GUARDS_CASES?.split(',').map((name) => name.trim()).filter((name) => name !== '')
 const runs = (name) => CASES === undefined || CASES.length === 0 || CASES.includes(name)
 const unknownCases = (CASES ?? []).filter((name) => !CASE_NAMES.includes(name))
@@ -156,6 +165,11 @@ async function inspector(host) {
     else if (message.result?.exceptionDetails) item.reject(new Error(message.result.exceptionDetails.exception?.description ?? 'evaluate failed'))
     else item.resolve(message.result)
   })
+  // A host that dies during a call ends the call with an error, so the case reports and the next case runs.
+  socket.addEventListener('close', () => {
+    for (const item of waiting.values()) item.reject(new Error('the inspector connection closed: the host ended'))
+    waiting.clear()
+  })
   const send = (method, params = {}) => new Promise((resolve, reject) => { next += 1; waiting.set(next, { resolve, reject }); socket.send(JSON.stringify({ id: next, method, params })) })
   const proto = await send('Runtime.evaluate', { expression: 'Function.prototype' })
   const functions = await send('Runtime.queryObjects', { prototypeObjectId: proto.result.objectId })
@@ -196,12 +210,37 @@ const readState = (file) => { try { return JSON.parse(readFileSync(join(state, f
 const clearState = () => { for (const file of ['crash.json', 'quarantine.json', 'provisional.json']) rmSync(join(state, file), { force: true }) }
 const alive = (host) => host.child.exitCode === null && host.child.signalCode === null
 
+/** The module hook that refuses the native stack module, as on Electron with no build for Electron. */
+function blockNativeArgs() {
+  const block = join(work, 'block-native.mjs')
+  writeFileSync(block, [
+    "import { registerHooks } from 'node:module'",
+    'registerHooks({ resolve(specifier, context, next) {',
+    '  const result = next(specifier, context)',
+    "  if (result.url.includes('/@sentry/node-native-stacktrace/')) throw new Error('the check refuses @sentry/node-native-stacktrace')",
+    '  return result',
+    '} })',
+  ].join('\n'))
+  return ['--import', pathToFileURL(block).href]
+}
+
+/** Write a host bundle with the row id `id`: a plugin that is not an agent row. */
+function hostBundle(id, code) {
+  const dir = join(work, 'bundles', id)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: id, version: '1.0.0', private: true, type: 'module', exports: './index.js', dsh: { bundle: { patch: './cordis.patch.yml' } } }, null, 2))
+  writeFileSync(join(dir, 'cordis.patch.yml'), `- insert:\n    - id: ${id}\n      name: ${id}\n`)
+  writeFileSync(join(dir, 'index.js'), code)
+  return { name: id, dir, slug: id }
+}
+
 async function main() {
   const port = await freePort()
   const inspectPort = await freePort()
   console.log(`widgets-hmr-guards: work folder ${work}, port ${String(port)}, inspector ${String(inspectPort)}`)
+  const cases = []
 
-  if (runs('dispose-hang')) {
+  cases.push(['dispose-hang', async () => {
     newHome('dispose-hang')
     const hang = bundle('hang', widgetCode('hang', "ctx.effect(() => () => new Promise(() => {}), 'hang: a disposer that never ends')"))
     const other = bundle('other', "export const name = 'agent-other'\nexport function apply() { globalThis.__hmrGuardsOther = 'ran' }\n")
@@ -210,6 +249,8 @@ async function main() {
       const ins = await inspector(host)
       check('dispose-hang: the hang bundle installs', (await install(ins, hang)).value === 'applied')
       check('dispose-hang: the hang widget is live', await waitFor(async () => (await host.widgets()).some((w) => w.slug === 'hang' && w.failed === undefined), 20_000))
+      const active = await ins.run(`const e = [...wc.loader.entries()].find((x) => x.options.id === ${JSON.stringify(hang.name)}); return typeof e?.fiber?.disposerLimit === 'function'`)
+      check('dispose-hang: the fiber of the row has the disposer limit', active === true, JSON.stringify(active))
       const removed = await remove(ins, hang, 30_000)
       check(`dispose-hang: the remove ends after about ${String(DISPOSER_LIMIT_MS)} ms`, removed.value === 'applied' && removed.ms >= DISPOSER_LIMIT_MS - 500 && removed.ms <= DISPOSER_LIMIT_MS + 7_000, JSON.stringify(removed))
       const item = (readState('quarantine.json') ?? []).find((q) => isRow(q.row, hang.name))
@@ -226,9 +267,9 @@ async function main() {
     } finally {
       await host.stop()
     }
-  }
+  }])
 
-  if (runs('listener-blame')) {
+  cases.push(['listener-blame', async () => {
     newHome('listener-blame')
     const listen = bundle('listen', "export const name = 'agent-listen'\nexport function apply(ctx) {\n  ctx.on('hmr-guards/ping', () => { setTimeout(() => { throw 'listen threw a string' }, 10) })\n}\n")
     // A host plugin, not an agent row, emits the event from its own timer, so the listener runs outside the agent code.
@@ -276,9 +317,9 @@ async function main() {
     } finally {
       await host.stop()
     }
-  }
+  }])
 
-  if (runs('safe-mode')) {
+  cases.push(['safe-mode', async () => {
     newHome('safe-mode')
     const marks = join(work, 'safe-marks')
     const safe = bundle('safe', `import { appendFileSync } from 'node:fs'
@@ -315,51 +356,172 @@ export function apply() { appendFileSync(${JSON.stringify(marks)}, 'apply\\n') }
     } finally {
       await host.stop()
     }
-  }
+  }])
 
-  if (runs('boot-loop')) {
-    newHome('boot-loop')
-    const flag = join(work, 'loop-flag')
-    rmSync(flag, { force: true })
-    const loop = bundle('loop', `import { existsSync } from 'node:fs'
-if (existsSync(${JSON.stringify(flag)})) { for (;;) {} }
-export const name = 'agent-loop'
-export function apply() {}
+  cases.push(['inflight-join', async () => {
+    newHome('inflight-join')
+    const marks = join(work, 'inflight-marks')
+    const readMarks = () => existsSync(marks) ? readFileSync(marks, 'utf8').split('\n').filter((line) => line !== '') : []
+    // The plugin starts the dispose of its own effects before the unload: one ends after 2 s, one never ends.
+    const slow = bundle('slow', `import { appendFileSync } from 'node:fs'
+export const name = 'agent-slow'
+export function apply(ctx) {
+  globalThis.__hmrGuardsSlow = ctx.effect(() => () => new Promise((resolve) => { setTimeout(() => { appendFileSync(${JSON.stringify(marks)}, 'slow ended\\n'); resolve() }, 2000) }), 'slow: ends after 2 s')
+}
 `)
-    // A module hook refuses the native stack module, as on Electron with no build for Electron.
-    const block = join(work, 'block-native.mjs')
-    writeFileSync(block, [
-      "import { registerHooks } from 'node:module'",
-      'registerHooks({ resolve(specifier, context, next) {',
-      '  const result = next(specifier, context)',
-      "  if (result.url.includes('/@sentry/node-native-stacktrace/')) throw new Error('the check refuses @sentry/node-native-stacktrace')",
-      '  return result',
-      '} })',
-    ].join('\n'))
-    const nodeArgs = ['--import', pathToFileURL(block).href]
-    let host = await startHost(port, inspectPort, { nodeArgs })
+    const stuck = bundle('stuck', `export const name = 'agent-stuck'
+export function apply(ctx) {
+  globalThis.__hmrGuardsStuck = ctx.effect(() => () => new Promise(() => {}), 'stuck: never ends')
+}
+`)
+    const host = await startHost(port, inspectPort)
     try {
       const ins = await inspector(host)
-      check('boot-loop: the loop bundle installs', (await install(ins, loop)).value === 'applied')
+      check('inflight-join: the bundles install', (await install(ins, slow)).value === 'applied' && (await install(ins, stuck)).value === 'applied')
+      await ins.run('void globalThis.__hmrGuardsSlow(); return 1')
+      const removed = await remove(ins, slow, 30_000)
+      check('inflight-join: the unload waits for a dispose that the plugin started', removed.value === 'applied' && readMarks().includes('slow ended'), JSON.stringify({ removed, marks: readMarks() }))
+      await ins.run('void globalThis.__hmrGuardsStuck(); return 1')
+      const stuckRemoved = await remove(ins, stuck, 30_000)
+      const item = (readState('quarantine.json') ?? []).find((q) => isRow(q.row, stuck.name))
+      check(`inflight-join: a started dispose that never ends has the limit of ${String(DISPOSER_LIMIT_MS)} ms`, stuckRemoved.value === 'applied' && stuckRemoved.ms >= DISPOSER_LIMIT_MS - 500 && stuckRemoved.ms <= DISPOSER_LIMIT_MS + 7_000 && item !== undefined, JSON.stringify({ stuckRemoved, item }))
       ins.close()
     } finally {
       await host.stop()
     }
-    writeFileSync(flag, '1')
-    host = await startHost(port, inspectPort, { nodeArgs, waitUrl: false })
-    const exit = await Promise.race([host.exited, sleep(60_000).then(() => null)])
-    if (exit === null) await host.stop()
-    const record = readState('crash.json')
-    const detail = JSON.stringify({ exit, ms: exit === null ? null : exit.at - host.startedAt, row: record?.row, method: record?.method, root: record?.root, hash: record?.hash })
-    check('boot-loop: the watchdog kills the host at boot', exit !== null && exit.signal === 'SIGKILL', detail)
-    check('boot-loop: the record blames the row by the running slot, with its root and hash', isRow(record?.row, loop.name) && record?.method === 'slot' && typeof record?.root === 'string' && typeof record?.hash === 'string', detail)
-    host = await startHost(port, inspectPort, { nodeArgs })
+  }])
+
+  cases.push(['late-write', async () => {
+    newHome('late-write')
+    const marks = join(work, 'late-marks')
+    const readMarks = () => existsSync(marks) ? readFileSync(marks, 'utf8').split('\n').filter((line) => line !== '') : []
+    // A disposer that writes the state after 6 s: after the limit of 5 s, the host refuses the write.
+    // The disposer keeps the service that it got in apply: Cordis already refuses `ctx.widgets` of an inactive context.
+    const late = bundle('late', widgetCode('late', `const widgets = ctx.widgets
+  ctx.effect(() => async () => {
+    await new Promise((resolve) => setTimeout(resolve, 6000))
+    try { await widgets.update('late', (s) => ({ ...s, late: true })); appendFileSync(${JSON.stringify(marks)}, 'late wrote\\n') } catch (error) { appendFileSync(${JSON.stringify(marks)}, 'late refused ' + String(error?.code) + ' ' + String(error?.message).split('\\n')[0] + '\\n') }
+  }, 'late: writes after 6 s')`).replace("export const name", "import { appendFileSync } from 'node:fs'\nexport const name"))
+    // The next install: other files and another name, with the same slug.
+    const next = bundle('late-next', widgetCode('late'))
+    const host = await startHost(port, inspectPort)
     try {
-      const failed = await waitFor(async () => (await host.widgets()).some((w) => w.slug === 'loop' && typeof w.failed === 'string'), 20_000)
-      await sleep(3_000)
-      check('boot-loop: the next host does not load the row and shows its slug as failed', failed && alive(host), JSON.stringify(await host.widgets().catch((error) => String(error))))
+      const ins = await inspector(host)
+      check('late-write: the late bundle installs', (await install(ins, late)).value === 'applied' && await waitFor(async () => (await host.widgets()).some((w) => w.slug === 'late' && w.failed === undefined), 20_000))
+      await remove(ins, late, 30_000)
+      check('late-write: the next install of the slug works', (await install(ins, next)).value === 'applied' && await waitFor(async () => (await host.widgets()).some((w) => w.slug === 'late' && w.failed === undefined), 20_000))
+      const before = await ins.run("return wc.ctx.get('widgets').get('late')")
+      await waitFor(async () => readMarks().length > 0, 10_000)
+      const after = await ins.run("return wc.ctx.get('widgets').get('late')")
+      check('late-write: the host refuses the late write, and the state of the next install does not change', readMarks().length === 1 && readMarks()[0].startsWith('late refused widget-failed') && JSON.stringify(before) === JSON.stringify(after) && after?.data?.late === undefined, JSON.stringify({ marks: readMarks(), before, after }))
+      ins.close()
     } finally {
       await host.stop()
+    }
+  }])
+
+  cases.push(['await-stall', async () => {
+    newHome('await-stall')
+    // The reviewer replay of `slot_spans_awaits`: an agent row awaits 6 s in its top-level code. During the wait, a host
+    // plugin that is not an agent row stalls the event loop for 3 s. The slot does not hold the agent row across the
+    // await, so the stall has no widget in the slot and its limit is 10 s. The native stack module is refused.
+    const waiter = bundle('waiter', `globalThis.__hmrGuardsWaiting = true
+await new Promise((resolve) => setTimeout(resolve, 6000))
+globalThis.__hmrGuardsWaiting = false
+export const name = 'agent-waiter'
+export function apply() {}
+`)
+    const staller = hostBundle('hmr-guards-staller', `export const name = 'hmr-guards-staller'
+export function apply() {
+  const poll = setInterval(() => {
+    if (globalThis.__hmrGuardsWaiting !== true) return
+    clearInterval(poll)
+    const end = Date.now() + 3000
+    while (Date.now() < end) {}
+    process.stderr.write('hmr-guards: the staller stalled 3 s during the agent wait\\n')
+  }, 100)
+}
+`)
+    const nodeArgs = blockNativeArgs()
+    let host = await startHost(port, inspectPort, { nodeArgs })
+    try {
+      const ins = await inspector(host)
+      check('await-stall: the bundles install', (await install(ins, staller)).value === 'applied' && (await install(ins, waiter, 60_000)).value === 'applied')
+      ins.close()
+    } finally {
+      await host.stop()
+    }
+    clearState()
+    host = await startHost(port, inspectPort, { nodeArgs, waitUrl: false })
+    try {
+      const exit = await Promise.race([host.exited, sleep(20_000).then(() => null)])
+      const stalled = readFileSync(logPath, 'utf8').includes('the staller stalled 3 s during the agent wait')
+      const record = readState('crash.json')
+      check('await-stall: the host lives through a host stall of 3 s during the top-level await of an agent row', exit === null && alive(host) && stalled, JSON.stringify({ exit, stalled }))
+      check('await-stall: no record blames the agent row', record === undefined || !isRow(record.row, waiter.name), JSON.stringify(record))
+    } finally {
+      await host.stop()
+    }
+  }])
+
+  // A loop in the top-level code of an agent row at boot. With the native stack module (the dev host), the record blames
+  // the row with `native-stack`, and the next host shows the slug as failed. With the module refused (as on Electron),
+  // the loop is a stall with no blame after 10 s.
+  for (const variant of ['native', 'blocked']) {
+    cases.push([`boot-loop-${variant}`, async () => {
+      newHome(`boot-loop-${variant}`)
+      const label = `boot-loop-${variant}`
+      const flag = join(work, `loop-flag-${variant}`)
+      rmSync(flag, { force: true })
+      const loop = bundle(`loop-${variant}`, `import { existsSync } from 'node:fs'
+if (existsSync(${JSON.stringify(flag)})) { for (;;) {} }
+export const name = 'agent-loop'
+export function apply() {}
+`)
+      const nodeArgs = variant === 'native' ? [] : blockNativeArgs()
+      let host = await startHost(port, inspectPort, { nodeArgs })
+      try {
+        const ins = await inspector(host)
+        check(`${label}: the loop bundle installs`, (await install(ins, loop)).value === 'applied')
+        ins.close()
+      } finally {
+        await host.stop()
+      }
+      writeFileSync(flag, '1')
+      clearState()
+      host = await startHost(port, inspectPort, { nodeArgs, waitUrl: false })
+      const exit = await Promise.race([host.exited, sleep(60_000).then(() => null)])
+      if (exit === null) await host.stop()
+      const record = readState('crash.json')
+      const ms = exit === null ? null : exit.at - host.startedAt
+      const detail = JSON.stringify({ exit, ms, row: record?.row, method: record?.method, root: record?.root, hash: record?.hash })
+      check(`${label}: the watchdog kills the host at boot`, exit !== null && exit.signal === 'SIGKILL', detail)
+      if (variant === 'native') {
+        check(`${label}: the record blames the row by the native stack, with its root and hash`, isRow(record?.row, loop.name) && record?.method === 'native-stack' && typeof record?.root === 'string' && typeof record?.hash === 'string', detail)
+        host = await startHost(port, inspectPort, { nodeArgs })
+        try {
+          const failed = await waitFor(async () => (await host.widgets()).some((w) => w.slug === `loop-${variant}` && typeof w.failed === 'string'), 20_000)
+          await sleep(3_000)
+          check(`${label}: the next host does not load the row and shows its slug as failed`, failed && alive(host), JSON.stringify(await host.widgets().catch((error) => String(error))))
+        } finally {
+          await host.stop()
+        }
+      } else {
+        check(`${label}: the loop is a stall of about 10 s with no blame`, record !== undefined && record.row === null && record.method === null && ms !== null && ms >= 9_500, detail)
+      }
+      rmSync(flag, { force: true })
+    }])
+  }
+
+  for (const [name, run] of cases) {
+    if (!runs(name)) continue
+    try {
+      await run(port, inspectPort)
+    } catch (error) {
+      check(`${name}: the case runs to its end`, false, error instanceof Error ? error.stack : String(error))
+    } finally {
+      for (const child of children) child.kill('SIGKILL')
+      await sleep(500)
     }
   }
 }

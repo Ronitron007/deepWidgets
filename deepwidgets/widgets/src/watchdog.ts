@@ -86,26 +86,6 @@ export function inSlot<T>(row: string, fn: () => T): T {
   }
 }
 
-/**
- * safe_host.hmr: put `row` in the running-widget slot until the returned function runs, also across awaits. The
- * agent-row gate loads one agent row at a time with it, so a loop in the top-level code of the row is blamed on it.
- * Host work that runs during the load also runs with the row in the slot.
- * @returns the function that puts the old value back. With no watchdog, it does nothing.
- */
-export function enterSlot(row: string): () => void {
-  const watch = active
-  if (watch === undefined) return () => {}
-  const previous = Atomics.exchange(watch.slots, RUNNING_SLOT, watch.index(row))
-  let done = false
-  return () => {
-    if (done) return
-    done = true
-    Atomics.store(watch.slots, RUNNING_SLOT, previous)
-    Atomics.add(watch.slots, CALLS_SLOT, 1)
-    if (Atomics.exchange(watch.slots, PROVISIONAL_SLOT, 0) !== 0) removeOwnProvisional(watch.provisionalFile)
-  }
-}
-
 /** The part of `@sentry/node-native-stacktrace` that the main thread uses. */
 interface NativeRegister {
   registerThread(storage: { asyncLocalStorage: AsyncLocalStorage<unknown> }, threadName: string): void

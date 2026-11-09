@@ -20,9 +20,9 @@
  * whose plugin body throws shows its slugs as failed with the reason.
  *
  * safe_host.hmr: each `ctx.on` listener of a widget or agent row runs in the store of the row. Each disposer of a row
- * fiber has a time limit of 5 s: when it passes, the row is quarantined, and the unload goes on. The agent rows load
- * through the agent-row gate (`gate.ts`) only after the watchdog starts, one at a time, in the store and the running
- * slot of the row. A quarantined agent row loads a stub in place of its module.
+ * fiber has a time limit of 5 s: when it passes, the row is quarantined, the fiber can not write, and the unload goes
+ * on. The agent rows load through the agent-row gate (`gate.ts`) only after the watchdog starts, in the store of the
+ * row. A quarantined agent row, and each agent row in safe mode, loads a stub in place of its module.
  *
  * The key is the Loader row, not the exported plugin `name`: a bundle can export any name, so a name key would let
  * one bundle get another widget quarantined.
@@ -36,8 +36,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { Context, Fiber } from '@deepseek-ai/cordis'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { packageHash, readJson, writeJsonSync, type CrashRecord } from './records.ts'
-import { openAgentGate, type GateEntry } from './gate.ts'
-import { CRASH_DISPOSE_LIMIT_MS, DISPOSER_LIMIT_MS, enterSlot, inSlot, startWatchdog } from './watchdog.ts'
+import { isGateStub, openAgentGate, type GateEntry } from './gate.ts'
+import { CRASH_DISPOSE_LIMIT_MS, DISPOSER_LIMIT_MS, inSlot, startWatchdog } from './watchdog.ts'
 
 export { packageHash, type BlameMethod, type CrashRecord } from './records.ts'
 
@@ -62,6 +62,20 @@ export interface Quarantine {
 
 /** The store: the id of the widget row whose code runs. */
 const blameStore = new AsyncLocalStorage<string>()
+/** safe_host.hmr: the fiber field that bounds each disposer (vendor/cordis/src/fiber.ts). */
+const DISPOSER_LIMIT_FIELD = 'disposerLimit'
+/** safe_host.hmr: the row fibers whose disposer passed the limit. The host refuses each later write of them. */
+const expired = new WeakSet<Fiber>()
+
+/** safe_host.hmr: whether `fiber` belongs to a row fiber whose disposer passed the limit. Such a fiber can not write. */
+export function expiredFiber(fiber: Fiber): boolean {
+  for (let current = fiber; current.runtime !== null; current = current.parent.fiber) {
+    if (expired.has(current)) return true
+    if (entryOf(current) !== undefined && entryOf(current.parent.fiber) !== entryOf(current)) return false
+  }
+  return false
+}
+
 /** safe_host.cleanup: set when the claimer wrote its crash record. The dispose that follows ends this process. */
 let crashed = false
 
@@ -241,8 +255,8 @@ export interface IsolationHost {
   hold(slugs: string[], row: string, reason: string, fiber?: Fiber): () => Promise<void>
   /** widget_fv.replace: the plugin body of the widget row `row` threw. */
   failed(row: string): void
-  /** safe_host.hmr: safe mode did not load the agent row `row`. Its slugs show as off. */
-  refused(row: string, slugs: string[]): void
+  /** safe_host.hmr: safe mode did not load these agent rows. Their slugs show as off. */
+  refused(rows: Array<{ row: string, slugs: string[] }>): void
 }
 
 /** The isolation of one runtime instance. */
@@ -264,6 +278,13 @@ export interface Isolation {
 export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
   const known = new Map<string, { root: string | undefined, slugs: Set<string> }>()
   const quarantine = new Map<string, Quarantine>()
+  /** safe_host.hmr: the row fibers that have a disposer limit, so the dispose of this runtime takes it off. */
+  const limitedFibers = new Set<Fiber>()
+  // A Cordis upgrade that drops the field must not leave the rows with no limit in silence.
+  const ownFiber = (ctx as { fiber?: object }).fiber
+  if (ownFiber !== undefined && !(DISPOSER_LIMIT_FIELD in ownFiber)) {
+    ctx.logger.error(`widgets: Cordis has no fiber field ${DISPOSER_LIMIT_FIELD}, so the disposers of widget and agent rows have no time limit (safe_host.hmr)`)
+  }
 
   // ---- quarantine at start: move a blame of the last host into the quarantine ----
   const stored = readJson(quarantineFile())
@@ -370,10 +391,12 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
   }
 
   /**
-   * safe_host.hmr: a disposer of `row` did not end in {@link DISPOSER_LIMIT_MS}. Quarantine the row with the hash of its
-   * files. The fiber unload goes on, so the next install works. When the row loads again, it shows as failed (`wrap`).
+   * safe_host.hmr: a disposer of the fiber of `row` did not end in {@link DISPOSER_LIMIT_MS}. Quarantine the row with the
+   * hash of its files, and refuse each later write of that fiber (`expiredFiber`). The unload goes on, so the next
+   * install works. When the row loads again with the same files, it shows as failed (`wrap`).
    */
-  function disposerHung(row: string, label: string): void {
+  function disposerHung(row: string, fiber: Fiber, label: string): void {
+    expired.add(fiber)
     if (crashed) return
     const root = known.get(row)?.root ?? null
     const reason = `quarantined: a disposer of the row ${rowId(row)} did not end in ${String(DISPOSER_LIMIT_MS)} ms (${label})`.slice(0, 500)
@@ -381,40 +404,33 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
     writeJsonSync(quarantineFile(), [...quarantine.values()])
     ctx.logger.error(`widgets: ${reason}`)
   }
-  /** The time limit of one disposer of `row`. A disposer that gives no promise runs as is. */
-  function limited(row: string, dispose: () => unknown): () => unknown {
-    const label = (dispose as unknown as { [key: symbol]: { label?: unknown } | undefined })[EFFECT_META]?.label
-    return () => {
-      const result = dispose()
-      if (result === null || typeof result !== 'object' || typeof (result as PromiseLike<unknown>).then !== 'function') return result
+  /**
+   * safe_host.hmr: the time limit of each disposer of the fiber of `row`. Cordis awaits each disposer in `_unload` with
+   * no limit, so the fiber field `disposerLimit` (a deepwidgets-trim edit of vendor/cordis/src/fiber.ts) gets the task
+   * of each one. That task also joins a dispose that the plugin code started before the unload.
+   * Only widget rows and agent rows get the limit. Built-in rows that are not widgets have no limit (safe_host.hmr):
+   * they are trusted code, and the drain of this runtime can take 11 s.
+   */
+  function limitDisposers(fiber: Fiber, row: string): void {
+    if (!(DISPOSER_LIMIT_FIELD in fiber)) {
+      ctx.logger.error(`widgets: the Cordis fiber of ${row} has no field ${DISPOSER_LIMIT_FIELD}, so its disposers have no time limit (safe_host.hmr)`)
+      return
+    }
+    fiber.disposerLimit = (task, dispose) => {
+      if (task === undefined) return task
+      const label = (dispose as unknown as { [key: symbol]: { label?: unknown } | undefined })[EFFECT_META]?.label
       let timer: ReturnType<typeof setTimeout> | undefined
       return Promise.race([
-        Promise.resolve(result).finally(() => { clearTimeout(timer) }),
+        Promise.resolve(task).finally(() => { clearTimeout(timer) }),
         new Promise<void>((resolve) => {
           timer = setTimeout(() => {
-            disposerHung(row, typeof label === 'string' ? label : 'anonymous')
+            disposerHung(row, fiber, typeof label === 'string' ? label : 'anonymous')
             resolve()
           }, DISPOSER_LIMIT_MS)
         }),
       ])
     }
-  }
-  /**
-   * safe_host.hmr: Cordis awaits each disposer of a fiber in `_unload` with no limit (vendor/cordis/src/fiber.ts). The
-   * list hands its disposers to `_unload` with `clear`, so the clear of the row fiber gives each one with a limit.
-   * Only the rows of the isolation get it: host plugins, such as this runtime with its drain, keep no limit. A disposer
-   * that the plugin code already started is not joined, because Cordis keeps that promise private.
-   */
-  type Clearable = { clear: () => Array<() => unknown> }
-  const clears = new Map<Clearable, Clearable['clear']>()
-  function limitDisposers(fiber: Fiber, row: string): void {
-    const list = (fiber as unknown as { _disposables?: Clearable })._disposables
-    if (list === undefined || clears.has(list)) return
-    const clear = list.clear
-    clears.set(list, clear)
-    list.clear = function (this: Clearable) {
-      return clear.call(this).map((dispose) => limited(row, dispose))
-    }
+    limitedFibers.add(fiber)
   }
   /**
    * safe_host.crash: the failed entries of each fiber whose plugin body threw. Cordis disposes the effects of a
@@ -468,6 +484,8 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
         ctx.logger.warn(`widgets: the row ${row} is quarantined: ${item.reason}`)
         return host.hold(item.slugs, row, item.reason, this)
       }
+      // safe_host.hmr: the stub of safe mode runs no code of the row, so it lifts no quarantine.
+      if (isGateStub(this.runtime?.callback)) return execute.call(this)
       noteRow(row, this)
       const failed = (error: unknown): never => {
         showFailed(row, this, error)
@@ -497,8 +515,8 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
   ctx.effect(() => () => {
     for (const [runner, execute] of originals) runner.execute = execute
     originals.clear()
-    for (const [list, clear] of clears) list.clear = clear
-    clears.clear()
+    for (const fiber of limitedFibers) fiber.disposerLimit = undefined
+    limitedFibers.clear()
     thrown.clear()
   }, 'widgets: restore the fiber runners')
   for (const runtime of ctx.registry.values()) for (const fiber of runtime.fibers) wrap(fiber)
@@ -582,23 +600,16 @@ export function createIsolation(ctx: Context, host: IsolationHost): Isolation {
     // A quarantined agent row loads a stub in place of its module: its top-level code is the code that crashed or
     // hung. The fiber of the stub runs the held branch of `wrap`, so the row shows as failed for the life of its entry.
     held: (entry) => held(entry.id)?.reason,
+    // The load runs in the blame store of the row, but not in the running slot: the slot never stays across an await,
+    // so a stall of other code is never blamed on the row (safe_host.hmr). The watchdog knows the package folder of
+    // the row first, so the native stack can blame a loop in its top-level code.
     run(entry, load) {
       const row = entry.id
       noteEntry(row, entry)
-      return blameStore.run(row, async () => {
-        const exit = enterSlot(row)
-        // A load that does not end leaves the slot after the load limit, so it does not blame later host work.
-        const timer = setTimeout(exit, DISPOSER_LIMIT_MS)
-        try {
-          await load()
-        } finally {
-          clearTimeout(timer)
-          exit()
-        }
-      })
+      return blameStore.run(row, load)
     },
-    refused(entry) {
-      host.refused(entry.id, slugsOf(entry.id))
+    refused(entries) {
+      host.refused(entries.map((entry) => ({ row: entry.id, slugs: slugsOf(entry.id) })))
     },
   }), 'widgets: the agent-row gate')
 
