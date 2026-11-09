@@ -32,6 +32,14 @@
  * timer throws 1 s after it loads. The host must restart, the blame-timer window must show failed with the reason,
  * and the sample page must stay live, with no safe mode and no second crash. Then the check changes a file of the
  * installed fixture and kills the host: blame-timer must come back (`widget.isolation_blame`).
+ * With DSH_SMOKE_HOST_RESTART=mcp-port, the check uses the MCP port of Electron main (`safe_host.port`). mcp.json has mode 0600. It names
+ * the port of Electron main (DEEPWIDGETS_MCP_PORT when it is not 0) and the pid of Electron main, not the host. A bridge
+ * (the handshake of deepwidgets/mcp/README.md, which reads mcp.json again at each handshake) lists the tools through
+ * Electron main. A request with Origin, with Sec-Fetch-Site, or with a Host that is not loopback gets 403 from Electron
+ * main, and a request straight to the host port gets 403 from the host. Then the check kills the host. In the gap, each
+ * request gets 503 with Retry-After: 1 from Electron main, then 200. A 502 may come only for a request that started
+ * before Electron main saw the host exit: its connect reached the dying host, so it may have run. After the restart, mcp.json has the same port and
+ * pid and a new nonce, and the bridge reconnects with a new handshake.
  * With DSH_SMOKE_HOST_RESTART=watchdog, the check installs the fixtures deepwidgets/widgets/fixtures/watchdog-host and
  * watchdog-widget. A 150 MB JSON.parse in host code must not end the host. Then the watchdog widget loops in an
  * action: the host must die within 2.5 s and come back, the watchdog window must show failed with the reason, and the
@@ -43,8 +51,9 @@
 
 import { spawn, execFile } from 'node:child_process'
 import { createHmac, randomBytes } from 'node:crypto'
-import { appendFileSync, cpSync, existsSync, openSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, openSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp } from 'node:fs/promises'
+import { request as httpRequest } from 'node:http'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -399,6 +408,8 @@ note(`group=${String(groupId)} renderer=${String(rendererPort)} hostInspect=${St
 child.unref()
 
 let hostPid
+/** The port of the host web server, as waitForHost found it. */
+let hostHttpPort
 let failed
 try {
   const deadline = Date.now() + timeoutMs
@@ -426,6 +437,7 @@ try {
         if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === 'give-up') failed = await checkHostGiveUp(deadline)
         if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === 'blame') failed = await checkHostBlame(deadline)
         if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === 'watchdog') failed = await checkHostWatchdog(deadline)
+        if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === 'mcp-port') failed = await checkMcpPortOwner(deadline)
         if (failed === undefined && (process.env.DSH_SMOKE_CREATE ?? '') !== '') failed = await checkCreate(deadline)
       }
     }
@@ -555,6 +567,7 @@ async function waitForHost(deadline) {
         try {
           const response = await fetch(`http://127.0.0.1:${String(port)}/`, { signal: AbortSignal.timeout(3000) })
           note(`hostHttp=${String(port)} status=${String(response.status)}`)
+          hostHttpPort = port
           await notePages()
           return true
         } catch {
@@ -1296,6 +1309,178 @@ async function mcpClient(deadline) {
     await delay(250)
   }
   throw new Error('create: no MCP token before the deadline')
+}
+
+/** One HTTP request with any headers (fetch cannot set Host) on a new connection. Gives status, headers, and text. */
+function rawRequest(port, path, { method = 'POST', headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: '127.0.0.1', port, path, method, agent: false, timeout: 10_000, headers: { connection: 'close', ...headers } }, (res) => {
+      let text = ''
+      res.setEncoding('utf8')
+      res.on('data', (chunk) => { text += chunk })
+      res.on('end', () => { resolve({ status: res.statusCode, headers: res.headers, text }) })
+    })
+    req.once('timeout', () => { req.destroy(new Error(`${method} ${path} timed out`)) })
+    req.once('error', reject)
+    req.end(body)
+  })
+}
+
+function tokenBody(agent) {
+  return JSON.stringify({ agent, challenge: randomBytes(16).toString('base64url') })
+}
+
+/**
+ * A stdio bridge as an agent runs it: each handshake reads mcp.json again and checks the nonce proof. After a 401
+ * or a connection error it does a new handshake and one retry. After a 503 it waits for Retry-After and retries.
+ */
+function mcpBridge(portFile, until) {
+  let session
+  let id = 0
+  const nonces = []
+  const statuses = []
+  const handshake = async () => {
+    const { port, nonce } = JSON.parse(readFileSync(portFile, 'utf8'))
+    const challenge = randomBytes(16).toString('base64url')
+    const answer = await rawRequest(port, '/mcp/token', { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agent: 'smoke bridge', challenge }) })
+    if (answer.status !== 200) throw new Error(`bridge: POST /mcp/token gave ${String(answer.status)}`)
+    const { token, proof } = JSON.parse(answer.text)
+    if (createHmac('sha256', nonce).update(challenge).digest('hex') !== proof) throw new Error('bridge: proof mismatch')
+    nonces.push(nonce)
+    return { port, token }
+  }
+  const post = async (body) => {
+    session ??= await handshake()
+    const answer = await rawRequest(session.port, '/mcp', {
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${session.token}`, 'mcp-protocol-version': '2025-06-18' },
+      body,
+    })
+    statuses.push(answer.status)
+    return answer
+  }
+  const rpc = async (method, params) => {
+    id += 1
+    const body = JSON.stringify({ jsonrpc: '2.0', id, method, params })
+    let answer
+    while (Date.now() < until) {
+      try {
+        answer = await post(body)
+        if (answer.status === 401) throw new Error('401')
+      } catch {
+        session = undefined
+        answer = await post(body)
+      }
+      if (answer.status !== 503) break
+      await delay(Number(answer.headers['retry-after'] ?? '1') * 1000)
+    }
+    const messages = String(answer?.headers['content-type'] ?? '').includes('text/event-stream')
+      ? answer.text.split('\n').filter((line) => line.startsWith('data:')).map((line) => JSON.parse(line.slice(5)))
+      : [JSON.parse(answer?.text ?? 'null')]
+    const reply = messages.find((message) => message?.id === id)
+    if (reply?.result === undefined) throw new Error(`bridge: ${method}: ${String(answer?.status)} ${String(answer?.text).slice(0, 200)}`)
+    return { result: reply.result, answer }
+  }
+  return {
+    nonces,
+    statuses,
+    async tools() {
+      await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'smoke-bridge', version: '0' } })
+      const listed = await rpc('tools/list', {})
+      return { names: listed.result.tools.map((tool) => tool.name), answer: listed.answer }
+    },
+  }
+}
+
+async function checkMcpPortOwner(deadline) {
+  const portFile = join(home, 'deepwidgets', 'mcp.json')
+  const want = Number(process.env.DEEPWIDGETS_MCP_PORT ?? '0')
+  const until = Math.min(deadline, Date.now() + 120_000)
+  const readFile = () => { try { return JSON.parse(readFileSync(portFile, 'utf8')) } catch { return undefined } }
+  let file
+  while (Date.now() < until && typeof (file = readFile())?.port !== 'number') await delay(250)
+  note(`mcp-port file=${JSON.stringify(file === undefined ? null : { ...file, nonce: '<set>' })} hostPid=${String(hostPid)} hostHttp=${String(hostHttpPort)}`)
+  if (file === undefined) return 'mcp-port: no mcp.json'
+  if (want !== 0 && file.port !== want) return `mcp-port: mcp.json names port ${String(file.port)}, not DEEPWIDGETS_MCP_PORT ${String(want)}`
+  if (file.port === hostHttpPort) return `mcp-port: the host listens on the port of mcp.json ${String(file.port)}`
+  if (String(file.pid) === String(hostPid)) return 'mcp-port: mcp.json names the host pid, not Electron main'
+  const owner = await commandOf(String(file.pid))
+  if (!/Electron/u.test(owner)) return `mcp-port: the pid of mcp.json is not Electron main: ${owner.slice(0, 120)}`
+  const mode = statSync(portFile).mode & 0o777
+  note(`mcp-port mode=${mode.toString(8)}`)
+  if (mode !== 0o600) return `mcp-port: Electron main wrote mcp.json with mode ${mode.toString(8)}, not 600`
+
+  const bridge = mcpBridge(portFile, until)
+  const first = await bridge.tools()
+  note(`mcp-port tools=${first.names.join(',')}`)
+  if (!first.names.includes('widget_list')) return `mcp-port: tools/list through Electron main has no widget_list: ${first.names.join(',')}`
+  if (first.answer.headers['x-deepwidgets-answer'] !== undefined) return 'mcp-port: the tools/list answer did not come from the host'
+
+  const refused = [
+    ['Origin', { origin: 'http://example.com' }],
+    ['Sec-Fetch-Site', { 'sec-fetch-site': 'cross-site' }],
+    ['a Host that is not loopback', { host: 'example.com' }],
+  ]
+  for (const [label, headers] of refused) {
+    const answer = await rawRequest(file.port, '/mcp/token', { headers: { 'content-type': 'application/json', ...headers }, body: tokenBody('smoke fence') })
+    note(`mcp-port fence ${label}: ${String(answer.status)} ${String(answer.headers['x-deepwidgets-answer'])}`)
+    if (answer.status !== 403 || answer.headers['x-deepwidgets-answer'] !== 'electron-main') return `mcp-port: a request with ${label} got ${String(answer.status)}, not 403 from Electron main`
+  }
+  const direct = await rawRequest(hostHttpPort, '/mcp/token', { headers: { 'content-type': 'application/json' }, body: tokenBody('smoke direct') })
+  note(`mcp-port direct: ${String(direct.status)} ${direct.text.slice(0, 120)}`)
+  if (direct.status !== 403 || direct.headers['x-deepwidgets-answer'] !== undefined) return `mcp-port: a request straight to the host port got ${String(direct.status)}, not 403 from the host`
+
+  const kill = await killHost('mcp-port')
+  const gap = { unavailable: 0, other: [], badRetry: 0, fileChanged: false, mayHaveRun: [] }
+  let back
+  while (Date.now() < until) {
+    let answer
+    const sent = Date.now()
+    try {
+      answer = await rawRequest(file.port, '/mcp/token', { headers: { 'content-type': 'application/json' }, body: tokenBody('smoke gap') })
+    } catch (error) {
+      gap.other.push(error instanceof Error ? error.message : 'request failed')
+      await delay(100)
+      continue
+    }
+    if (answer.status === 200) { back = Date.now(); break }
+    if (answer.status === 503) {
+      gap.unavailable += 1
+      if (answer.headers['retry-after'] !== '1' || answer.headers['x-deepwidgets-answer'] !== 'electron-main') gap.badRetry += 1
+      const now = readFile()
+      if (now?.port !== file.port || now?.pid !== file.pid) gap.fileChanged = true
+    } else if (answer.status === 502 && answer.headers['retry-after'] === undefined) {
+      gap.mayHaveRun.push(sent)
+    } else {
+      gap.other.push(String(answer.status))
+    }
+    await delay(50)
+  }
+  let gone
+  for (const match of readFileSync(logPath, 'utf8').matchAll(/deepwidgets-mcp-port (\{.*\})/g)) {
+    try {
+      const event = JSON.parse(match[1])
+      if (event.event === 'host-gone' && event.at >= kill.at) { gone = event.at; break }
+    } catch { /* a partial line */ }
+  }
+  note(`mcp-port gap=${JSON.stringify(gap)} host-gone after ${String(gone === undefined ? 'never' : gone - kill.at)} ms, back after ${String(back === undefined ? 'never' : back - kill.at)} ms`)
+  const late = gap.mayHaveRun.filter((at) => gone === undefined || at > gone)
+  if (late.length > 0) return `mcp-port: ${String(late.length)} requests got 502 after Electron main saw the host exit`
+  if (back === undefined) return 'mcp-port: no 200 after the host restart'
+  if (gap.unavailable === 0) return 'mcp-port: no 503 in the gap'
+  if (gap.badRetry > 0) return `mcp-port: ${String(gap.badRetry)} gap answers had no Retry-After: 1 from Electron main`
+  if (gap.other.length > 0) return `mcp-port: the gap gave other answers: ${gap.other.slice(0, 5).join(', ')}`
+  if (gap.fileChanged) return 'mcp-port: mcp.json changed its port or pid in the gap'
+  if (!await waitForNewHost(kill.pid, until)) return 'mcp-port: no new host'
+
+  const after = readFile()
+  note(`mcp-port after=${JSON.stringify(after === undefined ? null : { port: after.port, pid: after.pid, newNonce: after.nonce !== file.nonce })} hostPid=${String(hostPid)} hostHttp=${String(hostHttpPort)}`)
+  if (after?.port !== file.port || after?.pid !== file.pid) return `mcp-port: mcp.json changed across the restart: port ${String(after?.port)}, pid ${String(after?.pid)}`
+  if (after.nonce === file.nonce) return 'mcp-port: the nonce did not change at the new host start'
+  const again = await bridge.tools()
+  note(`mcp-port bridge statuses=${bridge.statuses.join(',')} handshakes=${String(bridge.nonces.length)}`)
+  if (!again.names.includes('widget_list')) return 'mcp-port: the bridge did not list the tools after the restart'
+  if (bridge.nonces.length !== 2 || bridge.nonces[1] !== after.nonce) return `mcp-port: the bridge did not reconnect with the new nonce (${String(bridge.nonces.length)} handshakes)`
+  return undefined
 }
 
 async function checkCreate(deadline) {

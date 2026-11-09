@@ -72,6 +72,8 @@ import { DesktopTraceSteps, openTraceWindow } from './deepwidgets-trace.ts'
 import { DesktopWidgetWindows } from './deepwidgets-windows.ts'
 // deepwidgets-trim: widget_phase2.isolation.supervisor restarts a Host that exits unexpectedly.
 import { DesktopHostSupervisor } from './deepwidgets-supervisor.ts'
+// deepwidgets-trim: safe_host.port. Electron main owns the MCP port and forwards each request to the current Host.
+import { MCP_FORWARDED_ENV, startMcpPortOwner, type McpHostLink, type McpPortOwner } from './deepwidgets-mcp-port.ts'
 
 /** deepWidgets trace: the start-up steps for `POST /api/trace` (`floating_widget.sources`). */
 const traceSteps = new DesktopTraceSteps()
@@ -541,22 +543,36 @@ async function main(): Promise<void> {
     owner => isMandatory() || updateOverlays.input(owner).blocked)
   // deepwidgets-trim: widget_phase2.isolation.supervisor. `restartHost` is set below, after the backend exists.
   const supervisor = new DesktopHostSupervisor(() => restartHost())
+  // deepwidgets-trim: safe_host.port. The first Host start opens the port; a taken port fails that start loudly.
+  let mcpPortStart: Promise<McpPortOwner> | undefined
+  let mcpPortOwner: McpPortOwner | undefined
+  app.on('will-quit', () => { mcpPortOwner?.close() })
   const backend = new DesktopBackendController((onFailure) => {
     const hostInspectPort = developmentHostInspectPort(development)
+    // deepwidgets-trim: safe_host.port. Each Host process gets its own link to the port owner.
+    let mcpLink: McpHostLink | undefined
     const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
       // deepwidgets-trim: widget_phase2.isolation.supervisor passes safe mode to the Host in its environment.
       // hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion() }, onFailure,
-      hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion(), ...supervisor.hostEnvironment() }, onFailure,
+      // deepwidgets-trim: safe_host.port. The MCP row of the Host sends its route to Electron main and takes only forwarded requests.
+      // hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion(), ...supervisor.hostEnvironment() }, onFailure,
+      hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion(), ...supervisor.hostEnvironment(), [MCP_FORWARDED_ENV]: '1' }, onFailure,
       primaryRuntime,
       resources, (next) => { platformView.setSession(next) }, (record) => {
         operationJournal ??= new OperationJournal(join(app.getPath('userData'), 'plugin-operations'), {
           segmentBytes: 256 * 1024, recordBytes: 4096, queuedBytes: 64 * 1024,
         })
         operationJournal.enqueue(JSON.stringify(record))
-      })
+      // deepwidgets-trim: safe_host.port. The Host sends the state of its MCP row to the link of this Host.
+      // })
+      }, (mcp) => { mcpLink?.update(mcp) })
     return {
       start: async () => {
         traceSteps.step('host-started')
+        // deepwidgets-trim: safe_host.port; added lines.
+        mcpPortStart ??= startMcpPortOwner(hostEnvironment, activeProject)
+        mcpPortOwner = await mcpPortStart
+        mcpLink = mcpPortOwner.link()
         const ready = await host.start()
         hostCookie = await authenticateWebHost(ready.url)
         hostUrl = ready.url
@@ -1437,7 +1453,13 @@ async function main(): Promise<void> {
     updateDialog.dispose()
     mandatoryUI?.dispose()
     void Promise.all([stopOperationReports(), Promise.resolve(mandatoryPolicy?.dispose()).then(() => policyAuth?.dispose()),
-      backend.close().then(async () => { await operationJournal?.drain(500) }, async (error: unknown) => {
+      // deepwidgets-trim: safe_host.port closes the MCP port and removes its port file after the Host stops.
+      // backend.close().then(async () => { await operationJournal?.drain(500) }, async (error: unknown) => {
+      //   await operationJournal?.drain(500)
+      //   throw error
+      // }),
+      backend.close().then(async () => { mcpPortOwner?.close(); await operationJournal?.drain(500) }, async (error: unknown) => {
+        mcpPortOwner?.close()
         await operationJournal?.drain(500)
         throw error
       }),

@@ -7,10 +7,15 @@
  * nonce. The nonce never leaves the file: `POST /mcp/token { agent, challenge }` answers
  * `proof = HMAC-SHA256(nonce, challenge)`, so an agent that checks the proof refuses a server on
  * the port that is not this host (`standing.hard.port_squat`). See README.md.
+ *
+ * In the desktop app, Electron main owns the port and the port file (`safe_host.port`). Electron
+ * main sets `DEEPWIDGETS_MCP_FORWARDED=1` for the host. The row then writes no port file. It sends
+ * `{ port, nonce, secret }` to Electron main over IPC, and it refuses each request without the
+ * secret in `x-deepwidgets-forward`. A CLI host binds its port and writes the file itself.
  * @module @deepwidgets/mcp
  */
 import { execFile } from 'node:child_process'
-import { createHash, createHmac, randomBytes } from 'node:crypto'
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createRequire } from 'node:module'
@@ -34,6 +39,10 @@ export const name = 'deepwidgets-mcp'
 export const inject = ['webServer', 'widgets', 'widgetRecords']
 
 const TOKEN_BODY_LIMIT = 4_096
+/** Electron main sets this in the host environment (`safe_host.port`). Same name as `apps/desktop/src/deepwidgets-mcp-port.ts`. */
+const FORWARDED_ENV = 'DEEPWIDGETS_MCP_FORWARDED'
+/** The request header that carries the forward secret. Same name as `apps/desktop/src/deepwidgets-mcp-port.ts`. */
+const FORWARD_HEADER = 'x-deepwidgets-forward'
 const execFileAsync = promisify(execFile)
 /** The token file keeps the newest agents up to this count; a new token drops the oldest (decision `widget.agent_identity`: tokens only name the caller). */
 const MAX_AGENTS = 64
@@ -200,6 +209,32 @@ export interface Config {
   tokenFile?: string
   /** The port file `{ port, nonce, pid }` for agents. Defaults to `$DSH_HOME/deepwidgets/mcp.json`. */
   portFile?: string
+  /**
+   * Electron main forwards each request (`safe_host.port`). Defaults to `DEEPWIDGETS_MCP_FORWARDED=1`
+   * with an IPC channel to the parent process.
+   */
+  forwarded?: boolean
+}
+
+/** The IPC message to Electron main: the route of this host start, or null when the row disposes. */
+interface ForwardMessage {
+  type: 'deepwidgets-mcp'
+  mcp: { port: number; nonce: string; secret: string } | null
+}
+
+function sendToMain(message: ForwardMessage): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (!process.connected || process.send === undefined) { resolve(); return }
+    process.send(message, (error: Error | null) => { if (error === null) resolve(); else reject(error) })
+  })
+}
+
+/** True when `value` is the forward secret, in constant time. */
+function sameSecret(value: string | string[] | undefined, secret: string): boolean {
+  if (typeof value !== 'string') return false
+  const got = Buffer.from(value)
+  const want = Buffer.from(secret)
+  return got.length === want.length && timingSafeEqual(got, want)
 }
 
 /** The port file: the port of the host web server, the nonce of this host start, the host process id, and its start time. */
@@ -316,6 +351,9 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const portFile = config.portFile ?? dshHomePath('deepwidgets', 'mcp.json')
   /** New for each host start (each plugin start), so a stale port file or another server does not match. */
   const nonce = randomBytes(16).toString('base64url')
+  const forwarded = config.forwarded ?? (process.env[FORWARDED_ENV] === '1' && process.connected)
+  /** Electron main adds this to each request it forwards; it is new for each host start and never leaves the IPC channel. */
+  const secret = randomBytes(32).toString('base64url')
   /** Names this host start in the token rows. It is not secret; the nonce stays only in the port file. */
   const epoch = randomBytes(16).toString('hex')
   const tokens = await loadTokens(tokenFile)
@@ -472,12 +510,17 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
 
   /**
    * The fence, for each request on `/mcp` and `/mcp/token`:
+   * - In the desktop app, a request without the forward secret gets 403: only Electron main may call this port.
    * - A peer that is not loopback gets 403, also when the web server binds a wider address.
    * - An MCP client is never a browser, so a request with `Origin` or `Sec-Fetch-Site` gets 403.
    * - A `Host` that is not exactly loopback gets 403, then the SDK guard checks it again.
    * @returns true when the request may go on; false when the fence answered it.
    */
   function fence(req: IncomingMessage, res: ServerResponse): boolean {
+    if (forwarded && !sameSecret(req.headers[FORWARD_HEADER], secret)) {
+      send(res, 403, { error: 'use the port of mcp.json; this port takes only requests that the desktop app forwards' })
+      return false
+    }
     if (!isLoopbackAddress(req.socket.remoteAddress)) {
       send(res, 403, { error: 'only loopback clients may use /mcp' })
       return false
@@ -581,6 +624,17 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   await ctx.effect(async () => {
     const port = ctx.webServer.port
     if (port === undefined) throw new Error('mcp: the web server has no listening port; the port file was not written')
+    if (forwarded) {
+      // Electron main writes the port file with its own port and this nonce, then forwards to this port.
+      await sendToMain({ type: 'deepwidgets-mcp', mcp: { port, nonce, secret } })
+      return async () => {
+        try {
+          await sendToMain({ type: 'deepwidgets-mcp', mcp: null })
+        } catch (error) {
+          ctx.logger.warn('mcp: Electron main did not get the end of the route', error)
+        }
+      }
+    }
     // A live host owns the file (for example the desktop app while a CLI host starts); do not take it.
     const owner = await otherOwner(portFile)
     if (owner !== undefined) {

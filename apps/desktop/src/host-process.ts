@@ -5,7 +5,9 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import type { PlatformSession } from '@deepseek-ai/dsh-deepseek-account'
 import { desktopNodeEnvironment } from './node-environment.ts'
-import { removeDeadMcpPortFile } from './deepwidgets-port-file.ts'
+// deepwidgets-trim: safe_host.port. Electron main owns the MCP port file now, so a Host exit does not remove it.
+// import { removeDeadMcpPortFile } from './deepwidgets-port-file.ts'
+import { isHostMcp, type HostMcp } from './deepwidgets-mcp-port.ts'
 import { parsePluginOperationRecord, type PluginOperationRecord, type PluginOperationRunId } from '@deepseek-ai/dsh-plugin-manager/diagnostic'
 
 interface ReadyEvent {
@@ -26,7 +28,9 @@ interface PlatformSessionEvent {
   readonly session: PlatformSession | null
 }
 
-type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | {
+// deepwidgets-trim: safe_host.port. The MCP row tells Electron main its port, nonce, and forward secret, or null when it goes.
+// type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | {
+type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | { readonly type: 'deepwidgets-mcp'; readonly mcp: HostMcp | null } | {
   readonly type: 'starting'
   readonly runId: PluginOperationRunId
 } | { readonly type: 'shutdown-complete' } | {
@@ -70,6 +74,9 @@ function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
       return runIdSchema.safeParse(candidate.runId).success
     case 'shutdown-complete':
       return true
+    // deepwidgets-trim: added case; safe_host.port.
+    case 'deepwidgets-mcp':
+      return candidate.mcp === null || isHostMcp(candidate.mcp)
     case 'ready':
       return typeof candidate.url === 'string'
     case 'platform-session': {
@@ -188,6 +195,7 @@ export class DesktopHostProcess {
    * @param packageManager - Bundled pnpm entry and Node launcher directory, scoped to package operations.
    * @param onPlatformSession - Private credential updates for embedded Platform views.
    * @param onPluginOperation - Optional diagnostic sink; malformed records are ignored without failing the Host.
+   * @param onMcp - deepWidgets `safe_host.port`: the MCP row state of this Host, and null when the Host exits.
    */
   constructor(
     private readonly node: string,
@@ -201,6 +209,8 @@ export class DesktopHostProcess {
 
     private readonly onPlatformSession?: (session: PlatformSession | null) => void,
     private readonly onPluginOperation?: (record: PluginOperationRecord) => void,
+    // deepwidgets-trim: added parameter; safe_host.port. Receives the MCP row state of this Host, and null at its exit.
+    private readonly onMcp?: (mcp: HostMcp | null) => void,
   ) {}
 
   /**
@@ -247,6 +257,8 @@ export class DesktopHostProcess {
       if (message.type === 'starting') this.runId = message.runId
       else if (message.type === 'ready') this.readyResolve({ url: message.url, injections: message.injections })
       else if (message.type === 'platform-session') this.onPlatformSession?.(message.session)
+      // deepwidgets-trim: added branch; safe_host.port.
+      else if (message.type === 'deepwidgets-mcp') this.onMcp?.(message.mcp)
       else if (message.type === 'shutdown-complete') {
         if (this.stopping) this.shutdownCompleted = true
         else this.fail(new Error('dsh desktop host acknowledged an unrequested shutdown'))
@@ -264,8 +276,9 @@ export class DesktopHostProcess {
       // supervisor can tell an out-of-memory abort from another exit.
       // child.once('close', (code) => {
       child.once('close', (code, signal) => {
-        // deepwidgets-trim: added line; a crashed or failed Host leaves no MCP port file behind (widget_phase2.mcp_port).
-        removeDeadMcpPortFile(child.pid, this.environment)
+        // deepwidgets-trim: safe_host.port. Electron main keeps the port file across a Host restart; the gap answers 503.
+        // removeDeadMcpPortFile(child.pid, this.environment)
+        this.onMcp?.(null)
         const suffix = this.stderr.trim() === '' ? '' : `: ${this.stderr.trim()}`
         // deepwidgets-trim: widget_phase2.isolation.blame. The exit failure carries the child pid, so the supervisor
         // matches only the crash record of this Host.
