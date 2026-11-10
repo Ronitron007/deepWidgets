@@ -32,8 +32,8 @@ Code without a comment can still be off. A plugin row is off when a patch layer 
 |---|---|
 | Rows that deepWidgets turns off | `deepwidgets/trim/cordis.patch.yml` turns off 161 of the 201 rows. The rows `hmr` and `timer` are on again for the widget system (`widget_rows`). Some kept rows stay pending, because the agent rows are off. |
 | Our packages | `deepwidgets/probe` and `deepwidgets/trace` (TypeScript). `deepwidgets/trim`: the trim patch, the row lists, and the test bundle `fixtures/widget-rows-install`. The widget MVP (spec `widget_mvp`) adds these packages: `deepwidgets/widgets` (the runtime, service `widgets`), `deepwidgets/widget-sample` (the `sample` counter), `deepwidgets/shell` (the widget page, built with Vite), `deepwidgets/mcp` (the MCP server for agents, see its `README.md`). Electron main opens one floating window for each widget (`apps/desktop/src/deepwidgets-windows.ts`). |
-| MCP port | In the desktop app, Electron main binds the fixed port `DEEPWIDGETS_MCP_PORT` (default 47615). It forwards each request to the loopback port of the host, which the OS picks. Electron main writes `$DSH_HOME/deepwidgets/mcp.json` (spec `safe_host`, `apps/desktop/src/deepwidgets-mcp-port.ts`). A CLI host binds the port and writes the file itself. Smoke runs use port 0. |
-| MCP modes | The MCP server groups its tools in modes (spec `modes`). The settings file `$DSH_HOME/deepwidgets/settings.json` can turn a gated mode off. A missing file means that each mode is on. |
+| MCP port | In the desktop app, Electron main binds the fixed port `DEEPWIDGETS_MCP_PORT` (default 47615). It forwards each request to the loopback port of the host, which the OS picks. Electron main writes `$DSH_HOME/deepwidgets/mcp.json` (spec `safe_host`, `apps/desktop/src/deepwidgets-mcp-port.ts`). A CLI host (`apps/cli`) does not read `DEEPWIDGETS_MCP_PORT`. It binds the port of its own `--port` option and writes the file itself. Smoke runs use port 0. |
+| MCP modes | The MCP server groups its tools in modes (spec `modes`). The settings file `$DSH_HOME/deepwidgets/settings.json` can turn a mode off, except `interact`, which is always on. A missing file means that each mode is on. |
 | Main window | The app opens the main window at once, with no welcome window. The main window shows only `hello` and the probe text. |
 | Checks | The scripts in `tools/` check the app, the host, and the widgets. `head.checks` lists each script and each smoke flag. |
 
@@ -97,7 +97,7 @@ These scripts run with no app, unless the item says otherwise:
 
 - `tools/widgets-hmr-guards.mjs` checks the HMR guards of `safe_host` with a host.
 
-- `tools/widgets-crash-replay.mjs` checks the crash records and the cleanup at a crash of `safe_host` with a host.
+- `tools/widgets-crash-replay.mjs` checks the crash records of `widget_fv.crash` and `safe_host`, and the cleanup at a crash. First it runs the replays and the specs with vitest and no host. Then it runs the crash cases with a host.
 
 - `tools/in-host-pin.mjs` checks the pin wrappers of `tools/in-host.mjs` with no host.
 
