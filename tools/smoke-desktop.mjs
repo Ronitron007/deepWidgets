@@ -59,7 +59,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { linuxGroupWatcherSource, linuxListenPorts } from './smoke-desktop-linux.mjs'
-import { pinnedExpression, pinnedFunction } from './lib/in-host.mjs'
+import { pinnedExpression, pinnedFunction } from './in-host.mjs'
 
 const root = join(import.meta.dirname, '..')
 const timeoutMs = positiveInteger(process.env.DSH_SMOKE_TIMEOUT_MS, 240_000)

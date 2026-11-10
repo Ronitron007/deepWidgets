@@ -7,7 +7,7 @@ import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { pinnedExpression } from '../../../../../tools/lib/in-host.mjs'
+import { pinnedExpression } from '../../../../../tools/in-host.mjs'
 
 // The checkout that holds this skill: replay -> widget_install -> widget-state-models -> skills -> .agents -> root.
 export const ROOT = fileURLToPath(new URL('../../../../../', import.meta.url))
