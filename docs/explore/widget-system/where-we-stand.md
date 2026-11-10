@@ -133,7 +133,9 @@ The full service is `register`, `list`, `inspect`, `get`, `update`, `call`, `set
 
 With seven tools, `tools/list` costs 769 tokens for 1, 10, or 50 widgets (verified).
 
-The agent learns about user changes from `widget_changes({since})`. MCP clients do not show push messages to the model today (inferred from client docs).
+The agent learns about user changes from `widget_changes({since})`. Most MCP clients do not show server push messages to the model. Claude Code can, through channels. A stdio server declares the `claude/channel` capability and sends `notifications/claude/channel` events. The model gets each event as a `<channel>` block (read in the Claude Code channels reference on 2026-11-10, not tested).
+
+Channels are a research preview. A custom channel needs the flag `--dangerously-load-development-channels` at each launch, and it does not register with `-p` or the Agent SDK. Thus `widget_changes` stays the path for all clients. A channel push through the stdio bridge is for later, not for the modes skeleton (operator, 2026-11-10).
 
 ## The flows `standing.flows`
 
