@@ -1,8 +1,8 @@
 /**
- * The page channel of the shell (`widget_mvp.provisional`, page channel): every request and the
+ * The page channel of the widget page (`widget_mvp.provisional`, page channel): every request and the
  * stream go through this module. The MVP transport is `fetch` and server-sent events through
  * Electron main. A later transport (for example a MessagePort) replaces this module only.
- * @module @deepwidgets/shell/channel
+ * @module @deepwidgets/widget-kit/channel
  */
 import type { McpClientLike } from '@openuidev/react-lang'
 
@@ -10,7 +10,7 @@ import type { McpClientLike } from '@openuidev/react-lang'
 const BACKOFF_MS = 250
 const BACKOFF_CAP_MS = 8000
 
-/** The answer of the program route. `catalog` is optional; the default is the shell's own set. */
+/** The answer of the program route. `catalog` is optional; the default is the first catalog of the page. */
 export interface ProgramAnswer {
   rev: number
   text: string
