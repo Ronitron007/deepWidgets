@@ -15,6 +15,9 @@
  * - a bundle whose apply throws is refused by the test run gate;
  * - widget_remove removes the widget, and a new install gets the old state back and sets its new seed program;
  * - a host restart loads the agent widget again.
+ * Modes (spec modes): widget_describe gives source for an installed widget; with modes.create false in the settings
+ * file, widget_install, widget_reload, and widget_remove return mode-off and change no widget; true again works with
+ * no restart; a file that does not parse turns no mode off.
  * Row names (unit widget.agent_rows, spec widget_phase2.creation.rows), read from the Loader over the host inspector:
  * - an agent bundle gets the row id deepwidgets-agent-<slug>;
  * - an install of the slug `sample` is refused with slug-taken, and the built-in sample stays live;
@@ -228,10 +231,10 @@ async function hostPart() {
   const slugs = async () => (await call('widget_list')).body?.widgets?.map((widget) => widget.slug) ?? []
   try {
     const tools = (await client.listTools()).tools.map((tool) => tool.name).sort()
-    const want = ['widget_call', 'widget_changes', 'widget_describe', 'widget_guide', 'widget_install', 'widget_list', 'widget_reload', 'widget_remove', 'widget_template']
-    check('tools/list has the four interact tools and the five create tools', JSON.stringify(tools) === JSON.stringify(want), JSON.stringify(tools))
+    const want = ['deepwidgets_modes', 'widget_call', 'widget_changes', 'widget_describe', 'widget_guide', 'widget_install', 'widget_list', 'widget_reload', 'widget_remove', 'widget_template']
+    check('tools/list has deepwidgets_modes, the four interact tools, and the five create tools', JSON.stringify(tools) === JSON.stringify(want), JSON.stringify(tools))
 
-    const guide = await call('widget_guide')
+    const guide = await call('widget_guide', { mode: 'create' })
     const text = guide.body?.guide ?? ''
     check('widget_guide gives the widget API types and the OpenUI guide of the component set', !guide.isError && text.includes('interface WidgetContext') && text.includes('Card(') && text.includes('shadcn-widgets@1'), `${String(text.length)} characters`)
     const chat = ['@ToAssistant', '@OpenUrl', 'ENTIRE response'].filter((part) => text.includes(part))
@@ -240,6 +243,8 @@ async function hostPart() {
     const template = await call('widget_template', { slug: SLUG, title: 'Create Check' })
     const files = template.body?.files ?? []
     check('widget_template gives src/index.ts with the slug filled in', !template.isError && files.length === 1 && files[0].path === 'src/index.ts' && files[0].text.includes(`'${SLUG}'`), JSON.stringify(files.map((file) => file.path)))
+
+    check('widget_template and its src/index.ts name the create mode for widget_guide', /widget_guide with mode "create"/.test(template.body?.nextStep ?? '') && /widget_guide with mode "create"/.test(files[0]?.text ?? ''), JSON.stringify(template.body?.nextStep))
 
     const dir = writeWidget(SLUG, files)
     const started = Date.now()
@@ -263,6 +268,8 @@ async function hostPart() {
     const added = await call('widget_call', { slug: SLUG, action: 'add', args: { by: 2 }, requestId: 'create-1' })
     const read = await call('widget_call', { slug: SLUG, action: 'get' })
     check('widget_call add and get work on the installed widget', !added.isError && read.body?.result?.count === 2, JSON.stringify([added.body, read.body]))
+    check('widget_describe gives source, the absolute install folder, for an installed widget', described.body?.source === dir, JSON.stringify(described.body?.source))
+    await modesPart(call, slugs, files, dir)
 
     // A second install of the slug: a new action and a new seed program. The state stays.
     const replaced = await call('widget_install', { dir: writeWidget(`${SLUG}-v2`, files, (text) => addAction("{ name: 'double', kind: 'mutation', handler: (_args, w) => w.update((state) => ({ count: state.count * 2 })) }")(text).replace('"A counter"', '"A counter v2"')) })
@@ -377,6 +384,69 @@ async function hostPart() {
   }
   await stopHost()
   return readFileSync(join(work, 'agent', `${SLUG}-v3`, 'src', 'index.ts'), 'utf8')
+}
+
+const GATED = 'create-gated'
+
+/**
+ * The gate of the mode create (spec modes, modes.refusal). With `{ "modes": { "create": false } }`, widget_install,
+ * widget_reload, and widget_remove return mode-off and change no widget. widget_template and widget_guide still answer.
+ * After the file goes back to true, widget_install works with no restart. A file that does not parse turns no mode off.
+ */
+async function modesPart(call, slugs, files, dir) {
+  const settingsFile = join(home, 'deepwidgets', 'settings.json')
+  const gatedDir = writeWidget(GATED, files, (text) => text.replaceAll(`'${SLUG}'`, `'${GATED}'`))
+  const snapshot = async () => ({
+    slugs: (await slugs()).sort(),
+    rows: await rowsOf(SLUG),
+    state: (await call('widget_call', { slug: SLUG, action: 'get' })).body?.result,
+    actions: (await call('widget_describe', { slug: SLUG })).body?.actions?.map((action) => action.name),
+  })
+  const before = await snapshot()
+
+  writeFileSync(settingsFile, `${JSON.stringify({ modes: { create: false } })}\n`)
+  const modes = (await call('deepwidgets_modes')).body
+  check('with modes.create false, deepwidgets_modes shows create off', modes?.modes?.find((mode) => mode.name === 'create')?.on === false, JSON.stringify(modes?.modes))
+  const refused = {
+    install: await call('widget_install', { dir: gatedDir }),
+    reinstall: await call('widget_install', { dir }),
+    reload: await call('widget_reload', { slug: SLUG }),
+    remove: await call('widget_remove', { slug: SLUG }),
+  }
+  for (const [name, answer] of Object.entries(refused)) {
+    const error = answer.body?.error
+    check(`with create off, ${name} returns mode-off naming the mode, the setting, and the settings file`,
+      answer.isError && error?.code === 'mode-off' && error.mode === 'create' && error.setting === 'modes.create' && error.settingsFile === settingsFile
+        && error.message.includes('create') && error.message.includes('modes.create') && error.message.includes(settingsFile) && /ask the user/i.test(error.nextStep ?? ''),
+      JSON.stringify(answer.body))
+  }
+  const after = await snapshot()
+  check('with create off, no widget changes', JSON.stringify(after) === JSON.stringify(before) && !after.slugs.includes(GATED), `before=${JSON.stringify(before)} after=${JSON.stringify(after)}`)
+  const template = await call('widget_template', { slug: GATED })
+  const guide = await call('widget_guide', { mode: 'create' })
+  check('with create off, widget_template and widget_guide still answer', !template.isError && template.body?.files?.length === 1 && !guide.isError && typeof guide.body?.guide === 'string', JSON.stringify([template.isError, guide.isError]))
+
+  writeFileSync(settingsFile, `${JSON.stringify({ modes: { create: true } })}\n`)
+  const back = await call('widget_install', { dir: gatedDir })
+  check('after modes.create goes back to true, widget_install works with no restart', !back.isError && back.body?.slug === GATED && (await slugs()).includes(GATED), JSON.stringify(back.body?.error ?? back.body?.application))
+
+  // modes.settings: a missing key means that each mode is on.
+  for (const content of [{}, { modes: {} }]) {
+    writeFileSync(settingsFile, `${JSON.stringify(content)}\n`)
+    const shown = (await call('deepwidgets_modes')).body
+    const again = await call('widget_install', { dir: gatedDir })
+    check(`with the settings file ${JSON.stringify(content)}, create is on and widget_install is not refused`,
+      shown?.modes?.find((mode) => mode.name === 'create')?.on === true && shown?.settingsError === undefined && !again.isError && again.body?.slug === GATED,
+      JSON.stringify([shown?.modes?.find((mode) => mode.name === 'create'), again.body?.error ?? again.body?.application]))
+  }
+
+  writeFileSync(settingsFile, '{ "modes": { "create": false')
+  const broken = (await call('deepwidgets_modes')).body
+  const removed = await call('widget_remove', { slug: GATED })
+  check('a settings file that does not parse turns no mode off: deepwidgets_modes reports the error, and widget_remove works',
+    broken?.modes?.every((mode) => mode.on === true) === true && typeof broken?.settingsError === 'string' && !removed.isError && !(await slugs()).includes(GATED),
+    JSON.stringify([broken, removed.body]))
+  rmSync(settingsFile)
 }
 
 const LEGACY = 'create-legacy'

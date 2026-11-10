@@ -3,7 +3,7 @@
  * the actions, and the program. Keep `name`, `inject`, and `apply`.
  * - A timer uses ctx.interval or ctx.timeout, never setTimeout or setInterval.
  * - Await each promise, or end it with .catch().
- * - The program is OpenUI Lang. Call widget_guide for the components.
+ * - The program is OpenUI Lang. Call widget_guide with mode "create" for the components.
  */
 import type { WidgetContext } from 'deepwidgets:widget'
 import { z } from 'zod'
