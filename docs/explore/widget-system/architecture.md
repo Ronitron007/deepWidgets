@@ -137,7 +137,7 @@ The shell spike measured 114 to 126 ms from navigation to first content, against
 
 3. The agent calls `widget_call({slug, action, args, requestId})`. The MCP server calls `ctx.widgets.call` in the same process. It does not use HTTP, because the `/call` routes admit only the owner principal (verified).
 
-4. To learn what the user changed, the agent calls `widget_changes({since})`. MCP clients do not show push notifications to the model today (inferred from client docs, not tested).
+4. To learn what the user changed, the agent calls `widget_changes({since})`. Most MCP clients do not show push notifications to the model. Claude Code channels can (a research preview, see `standing.design.agent` in `where-we-stand.md`).
 
 ### An agent creates a widget `explore.widget.flows.create`
 
