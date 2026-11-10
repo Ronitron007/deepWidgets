@@ -4,6 +4,7 @@
  * The inspector holds the awaited promise only weakly. When V8 collects it before it settles, the call fails with
  * "Promise was collected". The wrappers keep each awaited promise in a Set on `globalThis` until `PIN_MS` after it
  * settles. Put any `hmr.executing.exit` wrapping inside the wrapped source, as before.
+ * A line break follows the wrapped source, so a trailing `//` comment in it does not hide the closing parens.
  */
 
 /** How long a settled promise stays pinned, in milliseconds. */
@@ -25,7 +26,7 @@ const pin = `((value) => {
  * @returns Function source whose value is pinned.
  */
 export function pinnedFunction(declaration) {
-  return `function (...args) { return ${pin}((${declaration}).apply(this, args)) }`
+  return `function (...args) { return ${pin}((${declaration}\n).apply(this, args)) }`
 }
 
 /**
@@ -34,5 +35,5 @@ export function pinnedFunction(declaration) {
  * @returns Expression source whose value is pinned.
  */
 export function pinnedExpression(expression) {
-  return `${pin}((${expression}))`
+  return `${pin}((${expression}\n))`
 }
