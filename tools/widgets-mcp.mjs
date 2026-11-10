@@ -268,6 +268,13 @@ async function main() {
     check('a settings file with a value that is not a boolean turns no mode off, and deepwidgets_modes reports the error',
       wrongType?.modes?.every((mode) => mode.on === true) === true && /modes\.create|create/.test(wrongType?.settingsError ?? ''),
       JSON.stringify(wrongType))
+    for (const content of [{}, { modes: {} }]) {
+      writeFileSync(settingsFile, JSON.stringify(content))
+      const missingKey = body(await client.callTool({ name: 'deepwidgets_modes', arguments: {} }))
+      check(`a settings file ${JSON.stringify(content)} with no create key turns no mode off and reports no error`,
+        missingKey?.modes?.every((mode) => mode.on === true) === true && missingKey?.settingsError === undefined,
+        JSON.stringify(missingKey))
+    }
     writeFileSync(settingsFile, JSON.stringify({ modes: { create: false } }))
     const off = body(await client.callTool({ name: 'deepwidgets_modes', arguments: {} }))
     const offByName = new Map((off?.modes ?? []).map((mode) => [mode.name, mode]))

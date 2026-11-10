@@ -244,6 +244,8 @@ async function hostPart() {
     const files = template.body?.files ?? []
     check('widget_template gives src/index.ts with the slug filled in', !template.isError && files.length === 1 && files[0].path === 'src/index.ts' && files[0].text.includes(`'${SLUG}'`), JSON.stringify(files.map((file) => file.path)))
 
+    check('widget_template and its src/index.ts name the create mode for widget_guide', /widget_guide with mode "create"/.test(template.body?.nextStep ?? '') && /widget_guide with mode "create"/.test(files[0]?.text ?? ''), JSON.stringify(template.body?.nextStep))
+
     const dir = writeWidget(SLUG, files)
     const started = Date.now()
     const installed = await call('widget_install', { dir })
@@ -427,6 +429,16 @@ async function modesPart(call, slugs, files, dir) {
   writeFileSync(settingsFile, `${JSON.stringify({ modes: { create: true } })}\n`)
   const back = await call('widget_install', { dir: gatedDir })
   check('after modes.create goes back to true, widget_install works with no restart', !back.isError && back.body?.slug === GATED && (await slugs()).includes(GATED), JSON.stringify(back.body?.error ?? back.body?.application))
+
+  // modes.settings: a missing key means that each mode is on.
+  for (const content of [{}, { modes: {} }]) {
+    writeFileSync(settingsFile, `${JSON.stringify(content)}\n`)
+    const shown = (await call('deepwidgets_modes')).body
+    const again = await call('widget_install', { dir: gatedDir })
+    check(`with the settings file ${JSON.stringify(content)}, create is on and widget_install is not refused`,
+      shown?.modes?.find((mode) => mode.name === 'create')?.on === true && shown?.settingsError === undefined && !again.isError && again.body?.slug === GATED,
+      JSON.stringify([shown?.modes?.find((mode) => mode.name === 'create'), again.body?.error ?? again.body?.application]))
+  }
 
   writeFileSync(settingsFile, '{ "modes": { "create": false')
   const broken = (await call('deepwidgets_modes')).body

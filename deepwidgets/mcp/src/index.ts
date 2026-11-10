@@ -97,30 +97,35 @@ interface ToolError {
   gate?: GateName
   diagnostics?: string[]
   /** For `mode-off`: the mode that is off, its setting, and the settings file. */
-  mode?: ModeName
+  mode?: GatedMode
   setting?: string
   settingsFile?: string
 }
 
-/** A mode of the server (`modes.list`). `kit`, `library`, and `plugin` join this list when their stage ships. */
-type ModeName = 'interact' | 'create'
-/** A mode that a setting can turn off (`modes.terms`). */
-type GatedMode = Exclude<ModeName, 'interact'>
-
 interface ModeSpec {
-  name: ModeName
-  goal: string
+  readonly name: string
+  readonly goal: string
   /** The dotted key in the settings file that turns the mode off, or null when the mode is always on. */
-  setting: string | null
-  tools: string[]
+  readonly setting: string | null
+  readonly tools: readonly string[]
 }
 
-/** The modes, in the order of `modes.list`. `widget_list` and `widget_guide` are shared and belong to no mode. */
-const MODES: readonly ModeSpec[] = [
+/**
+ * The modes, in the order of `modes.list`. `kit`, `library`, and `plugin` join this list when their stage ships.
+ * `widget_list` and `widget_guide` are shared and belong to no mode.
+ */
+const MODES = [
   { name: 'interact', goal: 'Use widgets that exist', setting: null, tools: ['widget_describe', 'widget_call', 'widget_changes'] },
   { name: 'create', goal: 'Write, change, or remove a widget', setting: 'modes.create', tools: ['widget_template', 'widget_install', 'widget_reload', 'widget_remove'] },
-]
-const MODE_NAMES = ['interact', 'create'] as const satisfies readonly ModeName[]
+] as const satisfies readonly ModeSpec[]
+type Mode = (typeof MODES)[number]
+type ModeName = Mode['name']
+/** A mode that a setting can turn off (`modes.terms`). */
+type GatedSpec = Extract<Mode, { setting: string }>
+type GatedMode = GatedSpec['name']
+const MODE_NAMES = MODES.map((mode) => mode.name) as [ModeName, ...ModeName[]]
+/** The setting of each gated mode, from {@link MODES}. */
+const SETTING_OF = Object.fromEntries(MODES.filter((mode): mode is GatedSpec => mode.setting !== null).map((mode) => [mode.name, mode.setting])) as Record<GatedMode, string>
 
 /** The settings file (`modes.settings`). Other keys are for later stages; this stage ignores them. */
 const settingsSchema = z.object({ modes: z.object({ create: z.boolean().optional() }).optional() })
@@ -252,7 +257,7 @@ function toolOk(body: Record<string, unknown>): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(body) }], structuredContent: body }
 }
 
-function toolError(code: ToolErrorCode, message: string, extra: { rev?: number | undefined, gate?: GateName | undefined, diagnostics?: string[], nextStep?: string | undefined, mode?: ModeName, setting?: string, settingsFile?: string } = {}): CallToolResult {
+function toolError(code: ToolErrorCode, message: string, extra: { rev?: number | undefined, gate?: GateName | undefined, diagnostics?: string[], nextStep?: string | undefined, mode?: GatedMode, setting?: string, settingsFile?: string } = {}): CallToolResult {
   const error: ToolError = { code, message, nextStep: extra.nextStep ?? NEXT_STEP[code] }
   if (extra.rev !== undefined) error.rev = extra.rev
   if (extra.gate !== undefined) error.gate = extra.gate
@@ -475,7 +480,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     return async (input) => {
       const { mode } = options
       if (mode !== undefined && !(await readSettings(settingsFile)).on[mode]) {
-        const setting = `modes.${mode}`
+        const setting = SETTING_OF[mode]
         return toolError('mode-off', `the mode ${mode} is off: the setting ${setting} is false in ${settingsFile}`, { mode, setting, settingsFile })
       }
       const parsed = schema.safeParse(input ?? {})
@@ -490,7 +495,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     const modes = MODES.map((mode) => ({
       name: mode.name,
       goal: mode.goal,
-      on: mode.name === 'interact' ? true : settings.on[mode.name],
+      on: mode.setting === null ? true : settings.on[mode.name],
       setting: mode.setting,
       tools: mode.tools,
       guide: { tool: 'widget_guide', args: { mode: mode.name } },
@@ -571,7 +576,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       annotations: { readOnlyHint: true },
     }, tool(templateInput, async ({ slug, title }) => {
       const files = await templateFiles(slug ?? 'my-widget', title ?? 'My widget')
-      return { files, nextStep: 'Write each file under one empty folder (src/index.ts), change it, then call widget_install with the absolute folder path. Call widget_guide for the API and the components.' }
+      return { files, nextStep: 'Write each file under one empty folder (src/index.ts), change it, then call widget_install with the absolute folder path. Call widget_guide with mode "create" for the API and the components.' }
     }))
 
     mcp.registerTool('widget_guide', {
