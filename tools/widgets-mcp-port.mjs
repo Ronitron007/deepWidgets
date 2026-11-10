@@ -48,7 +48,12 @@ const BIN = join(ROOT, 'apps/cli/lib/bin.js')
 const requireFromMcp = createRequire(join(ROOT, 'deepwidgets/mcp/package.json'))
 const { Client, StreamableHTTPClientTransport } = await import(pathToFileURL(requireFromMcp.resolve('@modelcontextprotocol/client')).href)
 
-const work = await mkdtemp(join(process.env.WIDGETS_MCP_PORT_TMP ?? tmpdir(), 'widgets-mcp-port-'))
+// A smoke run sets TMPDIR to work/<label>, and tsx puts its IPC socket at $TMPDIR/tsx-<uid>/<pid>.pipe.
+// macOS limits a socket path to 103 bytes, so a long default temp folder falls back to /tmp.
+// WIDGETS_MCP_PORT_TMP sets the root as it is.
+const SOCKET_TAIL = '/widgets-mcp-port-XXXXXX/second-instance/tsx-4294967295/4194304.pipe'
+const tempRoot = process.env.WIDGETS_MCP_PORT_TMP ?? (tmpdir().length + SOCKET_TAIL.length <= 103 ? tmpdir() : '/tmp')
+const work = await mkdtemp(join(tempRoot, 'widgets-mcp-port-'))
 const home = join(work, 'home')
 const logPath = join(work, 'host.log')
 const portFile = join(home, 'deepwidgets', 'mcp.json')
