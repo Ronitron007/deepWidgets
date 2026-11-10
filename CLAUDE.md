@@ -28,11 +28,12 @@ Code without a comment can still be off. A plugin row is off when a patch layer 
 
 ## Status `head.status`
 
-| Item | State on 2026-11-04 |
+| Item | State on 2026-11-10 |
 |---|---|
 | Rows that deepWidgets turns off | `deepwidgets/trim/cordis.patch.yml` turns off 161 of the 201 rows. The rows `hmr` and `timer` are on again for the widget system (`widget_rows`). Some kept rows stay pending, because the agent rows are off. |
 | Our packages | `deepwidgets/probe` and `deepwidgets/trace` (TypeScript). `deepwidgets/trim`: the trim patch, the row lists, and the test bundle `fixtures/widget-rows-install`. The widget MVP (spec `widget_mvp`) adds these packages: `deepwidgets/widgets` (the runtime, service `widgets`), `deepwidgets/widget-sample` (the `sample` counter), `deepwidgets/shell` (the widget page, built with Vite), `deepwidgets/mcp` (the MCP server for agents, see its `README.md`). Electron main opens one floating window for each widget (`apps/desktop/src/deepwidgets-windows.ts`). |
-| MCP port | The desktop host binds the fixed port `DEEPWIDGETS_MCP_PORT` (default 47615). It writes `$DSH_HOME/deepwidgets/mcp.json`. Smoke runs use port 0. |
+| MCP port | In the desktop app, Electron main binds the fixed port `DEEPWIDGETS_MCP_PORT` (default 47615). It forwards each request to the loopback port of the host, which the OS picks. Electron main writes `$DSH_HOME/deepwidgets/mcp.json` (spec `safe_host`, `apps/desktop/src/deepwidgets-mcp-port.ts`). A CLI host (`apps/cli`) does not read `DEEPWIDGETS_MCP_PORT`. It binds the port of its own `--port` option and writes the file itself. Smoke runs use port 0. |
+| MCP modes | The MCP server groups its tools in modes (spec `modes`). The settings file `$DSH_HOME/deepwidgets/settings.json` can turn a mode off, except `interact`, which is always on. A missing file means that each mode is on. |
 | Main window | The app opens the main window at once, with no welcome window. The main window shows only `hello` and the probe text. |
 | Checks | The scripts in `tools/` check the app, the host, and the widgets. `head.checks` lists each script and each smoke flag. |
 
@@ -70,6 +71,8 @@ The smoke check `tools/smoke-desktop.mjs` boots the app. Each flag below adds a 
 
 - `DSH_SMOKE_HOST_RESTART=watchdog` checks that the watchdog stops a looping widget.
 
+- `DSH_SMOKE_HOST_RESTART=mcp-port` checks the MCP port of Electron main through a host restart. `tools/widgets-mcp-port.mjs` runs this mode.
+
 - `DSH_SMOKE_TIMEOUT_MS` sets the time limit of the run in milliseconds. The default is 240000.
 
 These scripts run with no app, unless the item says otherwise:
@@ -92,17 +95,25 @@ These scripts run with no app, unless the item says otherwise:
 
 - `tools/widgets-install-replay.mjs` runs the `widget_install` replays of the `widget-state-models` skill on a host.
 
+- `tools/widgets-hmr-guards.mjs` checks the HMR guards of `safe_host` with a host.
+
+- `tools/widgets-crash-replay.mjs` checks the crash records of `widget_fv.crash` and `safe_host`, and the cleanup at a crash. First it runs the replays and the specs with vitest and no host. Then it runs the crash cases with a host.
+
+- `tools/in-host-pin.mjs` checks the pin wrappers of `tools/in-host.mjs` with no host.
+
 - `tools/dsh-upstream-check.sh` lists the upstream DSH changes in the parts that deepWidgets uses, and the merge conflicts.
 
 - `tools/verify-import.sh` compares the import commit with the upstream commit in `UPSTREAM.md`.
 
 The file `tools/smoke-desktop-linux.mjs` is not a check. It gives the Linux helpers of `tools/smoke-desktop.mjs`.
 
+The file `tools/in-host.mjs` is not a check. It gives the pin wrappers for inspector calls that wait for a promise.
+
 ## Where things are `head.map`
 
 | Path | Content |
 |---|---|
-| `docs/specs/` | `fork-trim.md` (`fork_trim`), `floating-widget.md` (`floating_widget`), `ts-move.md` (`ts_move`), `widget-rows.md` (`widget_rows`), `widget-mvp.md` (`widget_mvp`), `widget-phase2.md` (`widget_phase2`), `handoff.md` (`handoff`, proposed), `handoff-evidence.md` (`handoff_evidence`), `widget-fv.md` (`widget_fv`), `mcp-consent.md` (`mcp_consent`), `modes.md` (`modes`) |
+| `docs/specs/` | `fork-trim.md` (`fork_trim`), `floating-widget.md` (`floating_widget`), `ts-move.md` (`ts_move`), `widget-rows.md` (`widget_rows`), `widget-mvp.md` (`widget_mvp`), `widget-phase2.md` (`widget_phase2`), `handoff.md` (`handoff`, proposed), `handoff-evidence.md` (`handoff_evidence`), `widget-fv.md` (`widget_fv`), `mcp-consent.md` (`mcp_consent`), `modes.md` (`modes`), `safe-host.md` (`safe_host`) |
 | `docs/explore/widget-system/` | The widget decisions (`where-we-stand.md`, `standing.decided`), the checked facts, the open points, and the spikes `widget-kit-spike.md` (`kit_spike`) and `plugins-spike.md` (`plugins_spike`) |
 | `docs/plans/` | The plans of the specs. Each plan unit is one PR. |
 | `docs/canvas/` | JSON Canvas boards that show how a system works, such as `floating-widget-processes.canvas`. |
@@ -170,6 +181,7 @@ DSH_SMOKE_HOST_RESTART=boot node tools/smoke-desktop.mjs
 DSH_SMOKE_HOST_RESTART=give-up node tools/smoke-desktop.mjs
 DSH_SMOKE_HOST_RESTART=blame node tools/smoke-desktop.mjs
 DSH_SMOKE_HOST_RESTART=watchdog node tools/smoke-desktop.mjs
+DSH_SMOKE_HOST_RESTART=mcp-port node tools/smoke-desktop.mjs
 DSH_SMOKE_ROWS=deepwidgets/trim DSH_SMOKE_ROWS_SAVE="${TMPDIR:-/tmp}/rows.json" node tools/smoke-desktop.mjs
 DSH_SMOKE_ROWS=deepwidgets/trim DSH_SMOKE_ROWS_SNAPSHOT="${TMPDIR:-/tmp}/rows.json" node tools/smoke-desktop.mjs
 node tools/widgets-blame.mjs
@@ -177,6 +189,9 @@ node tools/widgets-watchdog.mjs
 node tools/widgets-create.mjs
 node tools/widgets-action-replay.mjs
 node tools/widgets-install-replay.mjs
+node tools/widgets-hmr-guards.mjs
+node tools/widgets-crash-replay.mjs
+node tools/in-host-pin.mjs
 tools/dsh-upstream-check.sh
 tools/verify-import.sh d15b5ec5
 node tools/trace-late-row.mjs
