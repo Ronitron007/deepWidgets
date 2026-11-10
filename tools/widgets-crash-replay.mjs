@@ -34,6 +34,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
+import { pinnedFunction } from './in-host.mjs'
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const BIN = join(ROOT, 'apps/cli/lib/bin.js')
@@ -171,14 +172,14 @@ async function installBundle(inspectPort, folder) {
       awaitPromise: true,
       returnByValue: true,
       arguments: [{ value: `file:${folder}` }],
-      functionDeclaration: `async function (spec) {
+      functionDeclaration: pinnedFunction(`async function (spec) {
         if (this.length !== 1) throw new Error("Loader instances " + this.length);
         const manager = this[0].ctx?.get?.("pluginManager");
         if (manager === undefined) throw new Error("no pluginManager on the Loader ctx");
         // The inspector call can inherit the hmr transaction store of host work in flight; leave it, as hmr.watchConfig does.
         const hmr = this[0].ctx?.get?.("hmr");
         return await (hmr === undefined ? manager.installBundle(spec) : hmr.executing.exit(() => manager.installBundle(spec)));
-      }`,
+      }`),
     })
     return reply.result.value
   } finally {

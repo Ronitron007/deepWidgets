@@ -18,6 +18,7 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pinnedExpression } from './in-host.mjs'
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const BIN = join(ROOT, 'apps/cli/lib/bin.js')
@@ -104,7 +105,7 @@ async function connectInspector(inspectPort) {
   return {
     /** Evaluate an async function body in the host; `mc` is the check scratch object. */
     async run(body) {
-      const reply = await session.send('Runtime.evaluate', { expression: `(async (mc) => { ${body} })(globalThis.__mcpCheck)`, awaitPromise: true, returnByValue: true })
+      const reply = await session.send('Runtime.evaluate', { expression: pinnedExpression(`(async (mc) => { ${body} })(globalThis.__mcpCheck)`), awaitPromise: true, returnByValue: true })
       return reply.result.value
     },
     close() { session.close() },

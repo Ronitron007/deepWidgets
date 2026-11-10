@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
+import { pinnedExpression } from './in-host.mjs'
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const BIN = join(ROOT, 'apps/cli/lib/bin.js')
@@ -150,7 +151,7 @@ async function connectInspector(inspectPort) {
     /** Evaluate an async function body in the host; `wc` is the check scratch object. */
     async run(body) {
       const reply = await session.send('Runtime.evaluate', {
-        expression: `(async (wc) => { ${body} })(globalThis.__widgetsCheck)`,
+        expression: pinnedExpression(`(async (wc) => { ${body} })(globalThis.__widgetsCheck)`),
         awaitPromise: true,
         returnByValue: true,
       })

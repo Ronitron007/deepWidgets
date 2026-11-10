@@ -59,6 +59,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { linuxGroupWatcherSource, linuxListenPorts } from './smoke-desktop-linux.mjs'
+import { pinnedExpression, pinnedFunction } from './in-host.mjs'
 
 const root = join(import.meta.dirname, '..')
 const timeoutMs = positiveInteger(process.env.DSH_SMOKE_TIMEOUT_MS, 240_000)
@@ -510,7 +511,7 @@ function evaluate(url, expression, deadline, awaitPromise = false) {
       socket.send(JSON.stringify({
         id,
         method: 'Runtime.evaluate',
-        params: { expression, returnByValue: true, awaitPromise },
+        params: { expression: awaitPromise ? pinnedExpression(expression) : expression, returnByValue: true, awaitPromise },
       }))
     })
     socket.addEventListener('message', (event) => {
@@ -623,12 +624,12 @@ async function hostWidgets(deadline, declaration, args) {
       awaitPromise: true,
       returnByValue: true,
       arguments: args.map((value) => ({ value })),
-      functionDeclaration: `async function (...args) {
+      functionDeclaration: pinnedFunction(`async function (...args) {
         if (this.length !== 1) throw new Error("Loader instances " + this.length);
         const widgets = this[0].ctx?.get?.("widgets");
         if (widgets === undefined) throw new Error("no widgets service on Loader ctx");
         return (${declaration})(widgets, ...args);
-      }`,
+      }`),
     })
     if (call?.exceptionDetails) {
       throw new Error(String(call.exceptionDetails.exception?.description ?? call.exceptionDetails.text ?? 'host call failed'))
@@ -691,7 +692,7 @@ async function setHostPlugin(moduleName, enabled, deadline) {
       awaitPromise: true,
       returnByValue: true,
       arguments: [{ value: moduleName }, { value: enabled }],
-      functionDeclaration: `async function (moduleName, enabled) {
+      functionDeclaration: pinnedFunction(`async function (moduleName, enabled) {
         if (this.length !== 1) throw new Error("Loader instances " + this.length);
         const loader = this[0];
         const manager = loader.ctx?.get?.("pluginManager") ?? loader.ctx?.pluginManager;
@@ -702,7 +703,7 @@ async function setHostPlugin(moduleName, enabled, deadline) {
         const hmr = loader.ctx?.get?.("hmr");
         const change = () => manager.setPluginEnabled(rows[0].entryId, enabled);
         return await (hmr === undefined ? change() : hmr.executing.exit(change));
-      }`,
+      }`),
     })
     if (call?.exceptionDetails) {
       throw new Error(String(call.exceptionDetails.exception?.description ?? call.exceptionDetails.text ?? 'setPluginEnabled failed'))
@@ -732,7 +733,7 @@ async function withWidgetWindows(deadline, declaration) {
       objectId: instances?.objects?.objectId,
       awaitPromise: true,
       returnByValue: true,
-      functionDeclaration: `function () { if (this.length !== 1) throw new Error("DesktopWidgetWindows instances " + this.length); return (${declaration}).call(this[0]) }`,
+      functionDeclaration: pinnedFunction(`function () { if (this.length !== 1) throw new Error("DesktopWidgetWindows instances " + this.length); return (${declaration}).call(this[0]) }`),
     })
     if (call?.exceptionDetails) throw new Error(String(call.exceptionDetails.exception?.description ?? call.exceptionDetails.text ?? 'main call failed'))
     return call?.result?.value
@@ -1036,14 +1037,14 @@ async function installBundle(folder, deadline) {
       awaitPromise: true,
       returnByValue: true,
       arguments: [{ value: `file:${folder}` }],
-      functionDeclaration: `async function (spec) {
+      functionDeclaration: pinnedFunction(`async function (spec) {
         if (this.length !== 1) throw new Error("Loader instances " + this.length);
         const manager = this[0].ctx?.get?.("pluginManager") ?? this[0].ctx?.pluginManager;
         if (manager === undefined || typeof manager.installBundle !== "function") throw new Error("no pluginManager on Loader ctx");
         // The inspector call can inherit the hmr transaction store of host work in flight; leave it, as hmr.watchConfig does.
         const hmr = this[0].ctx?.get?.("hmr");
         return await (hmr === undefined ? manager.installBundle(spec) : hmr.executing.exit(() => manager.installBundle(spec)));
-      }`,
+      }`),
     })
     if (call?.exceptionDetails) throw new Error(String(call.exceptionDetails.exception?.description ?? call.exceptionDetails.text ?? 'install failed'))
     return call?.result?.value
@@ -1979,7 +1980,7 @@ async function checkInstall(deadline) {
       awaitPromise: true,
       returnByValue: true,
       arguments: [{ value: spec }],
-      functionDeclaration: `async function (spec) {
+      functionDeclaration: pinnedFunction(`async function (spec) {
         if (this.length !== 1) throw new Error("Loader instances " + this.length);
         const loader = this[0];
         const manager = loader.ctx?.get?.("pluginManager") ?? loader.ctx?.pluginManager;
@@ -1991,7 +1992,7 @@ async function checkInstall(deadline) {
         const install = await (hmr === undefined ? manager.installBundle(spec) : hmr.executing.exit(() => manager.installBundle(spec)));
         const marker = loader.ctx?.get?.("widgetRowsInstallMarker");
         return { install, marker: marker === undefined ? null : marker };
-      }`,
+      }`),
     })
     if (call?.exceptionDetails) {
       const text = call.exceptionDetails.exception?.description

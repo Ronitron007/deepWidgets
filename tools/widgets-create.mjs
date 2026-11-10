@@ -37,6 +37,7 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pinnedFunction } from './in-host.mjs'
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const BIN = join(ROOT, 'apps/cli/lib/bin.js')
@@ -142,7 +143,7 @@ async function inHost(body, arg = null) {
       awaitPromise: true,
       returnByValue: true,
       arguments: [{ value: arg }],
-      functionDeclaration: `async function (arg) { if (this.length !== 1) throw new Error("Loader instances " + this.length); const loader = this[0]; ${body} }`,
+      functionDeclaration: pinnedFunction(`async function (arg) { if (this.length !== 1) throw new Error("Loader instances " + this.length); const loader = this[0]; ${body} }`),
     })
     return reply.result.value
   } finally {
