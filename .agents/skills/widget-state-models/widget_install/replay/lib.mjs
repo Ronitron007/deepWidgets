@@ -7,6 +7,7 @@ import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pinnedExpression } from '../../../../../tools/lib/in-host.mjs'
 
 // The checkout that holds this skill: replay -> widget_install -> widget-state-models -> skills -> .agents -> root.
 export const ROOT = fileURLToPath(new URL('../../../../../', import.meta.url))
@@ -87,7 +88,7 @@ export class Host {
     const loaders = await send('Runtime.queryObjects', { prototypeObjectId: lp.result.objectId })
     await send('Runtime.callFunctionOn', { objectId: loaders.objects.objectId, functionDeclaration: 'function () { globalThis.__fv = { loader: this[0], ctx: this[0].ctx } }' })
     this.ws = ws
-    return { send, run: async (body) => (await send('Runtime.evaluate', { expression: `(async (wc) => { ${body} })(globalThis.__fv)`, awaitPromise: true, returnByValue: true })).result.value, close: () => ws.close() }
+    return { send, run: async (body) => (await send('Runtime.evaluate', { expression: pinnedExpression(`(async (wc) => { ${body} })(globalThis.__fv)`), awaitPromise: true, returnByValue: true })).result.value, close: () => ws.close() }
   }
   async stop() {
     try { await this.client?.close() } catch {}

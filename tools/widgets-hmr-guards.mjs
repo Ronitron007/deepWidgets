@@ -36,6 +36,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pinnedExpression } from './lib/in-host.mjs'
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const BIN = join(ROOT, 'apps/cli/lib/bin.js')
@@ -179,7 +180,7 @@ async function inspector(host) {
   })
   const loaders = await send('Runtime.queryObjects', { prototypeObjectId: loaderProto.result.objectId })
   await send('Runtime.callFunctionOn', { objectId: loaders.objects.objectId, functionDeclaration: 'function () { globalThis.__hmrGuards = { loader: this[0], ctx: this[0].ctx } }' })
-  const run = async (body) => (await send('Runtime.evaluate', { expression: `(async (wc) => { ${body} })(globalThis.__hmrGuards)`, awaitPromise: true, returnByValue: true })).result.value
+  const run = async (body) => (await send('Runtime.evaluate', { expression: pinnedExpression(`(async (wc) => { ${body} })(globalThis.__hmrGuards)`), awaitPromise: true, returnByValue: true })).result.value
   return { run, close: () => socket.close() }
 }
 
