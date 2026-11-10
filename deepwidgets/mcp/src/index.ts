@@ -12,6 +12,10 @@
  * main sets `DEEPWIDGETS_MCP_FORWARDED=1` for the host. The row then writes no port file. It sends
  * `{ port, nonce, secret }` to Electron main over IPC, and it refuses each request without the
  * secret in `x-deepwidgets-forward`. A CLI host binds its port and writes the file itself.
+ *
+ * The tools are grouped in modes (spec `modes`). `deepwidgets_modes` lists them, and the settings
+ * file `$DSH_HOME/deepwidgets/settings.json` can turn a gated mode off. The server reads that file
+ * at each call of a tool that needs it, so an edit takes effect with no restart.
  * @module @deepwidgets/mcp
  */
 import { execFile } from 'node:child_process'
@@ -55,7 +59,7 @@ const CHALLENGE = /^[A-Za-z0-9_-]{22,256}$/
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/
 
 /** An error code of a tool answer: a runtime code, or a code of this package. */
-type ToolErrorCode = WidgetErrorCode | CreationErrorCode | 'stale-cursor' | 'internal-error'
+type ToolErrorCode = WidgetErrorCode | CreationErrorCode | 'stale-cursor' | 'internal-error' | 'mode-off'
 
 /** What the agent does next, for each error code. */
 const NEXT_STEP: Record<ToolErrorCode, string> = {
@@ -80,6 +84,7 @@ const NEXT_STEP: Record<ToolErrorCode, string> = {
   'install-failed': 'Read the diagnostics. Fix the code and call widget_install again. If the diagnostics name the plugin manager or pnpm, tell the user.',
   'not-installed': 'Call widget_list. Only a widget that widget_install installed can be reloaded or removed.',
   'creation-unavailable': 'This host has no plugin manager, so it cannot install widgets. Tell the user.',
+  'mode-off': 'This mode is off, and the call did nothing. Ask the user to turn the mode on: set the setting to true in the settings file. Do not change the file yourself. The next call reads the file again, with no restart.',
 }
 
 interface ToolError {
@@ -91,7 +96,75 @@ interface ToolError {
   /** The creation gate that refused the code. */
   gate?: GateName
   diagnostics?: string[]
+  /** For `mode-off`: the mode that is off, its setting, and the settings file. */
+  mode?: ModeName
+  setting?: string
+  settingsFile?: string
 }
+
+/** A mode of the server (`modes.list`). `kit`, `library`, and `plugin` join this list when their stage ships. */
+type ModeName = 'interact' | 'create'
+/** A mode that a setting can turn off (`modes.terms`). */
+type GatedMode = Exclude<ModeName, 'interact'>
+
+interface ModeSpec {
+  name: ModeName
+  goal: string
+  /** The dotted key in the settings file that turns the mode off, or null when the mode is always on. */
+  setting: string | null
+  tools: string[]
+}
+
+/** The modes, in the order of `modes.list`. `widget_list` and `widget_guide` are shared and belong to no mode. */
+const MODES: readonly ModeSpec[] = [
+  { name: 'interact', goal: 'Use widgets that exist', setting: null, tools: ['widget_describe', 'widget_call', 'widget_changes'] },
+  { name: 'create', goal: 'Write, change, or remove a widget', setting: 'modes.create', tools: ['widget_template', 'widget_install', 'widget_reload', 'widget_remove'] },
+]
+const MODE_NAMES = ['interact', 'create'] as const satisfies readonly ModeName[]
+
+/** The settings file (`modes.settings`). Other keys are for later stages; this stage ignores them. */
+const settingsSchema = z.object({ modes: z.object({ create: z.boolean().optional() }).optional() })
+
+/** The settings at one tool call. `error` is set when the file exists and does not parse; then each mode is on. */
+interface Settings {
+  on: Record<GatedMode, boolean>
+  error?: string
+}
+
+/**
+ * Read the settings file. A missing file or key means that each mode is on. A file that can not be read or parsed
+ * also turns no mode off, so a broken file never locks the agent out; `deepwidgets_modes` reports its error.
+ */
+async function readSettings(file: string): Promise<Settings> {
+  const allOn: Settings['on'] = { create: true }
+  let text: string
+  try {
+    text = await readFile(file, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { on: allOn }
+    return { on: allOn, error: `the settings file could not be read: ${error instanceof Error ? error.message : String(error)}` }
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    return { on: allOn, error: `the settings file is not JSON: ${error instanceof Error ? error.message : String(error)}` }
+  }
+  const checked = settingsSchema.safeParse(parsed)
+  if (!checked.success) return { on: allOn, error: `the settings file does not match { "modes": { "create": true } }: ${z.prettifyError(checked.error)}` }
+  return { on: { create: checked.data.modes?.create ?? true } }
+}
+
+/** The guide of the mode `interact` (`modes.guide`): the rules that the server instructions held before the modes. */
+const INTERACT_GUIDE = `# Using widgets
+
+1. Call widget_list. It gives the live widgets and a cursor for widget_changes.
+2. Call widget_describe with a slug before you call an action of that widget. It gives the actions, their args JSON Schema, and the state.
+3. Call widget_call to run one action. Pass a new requestId on each mutation. After a timeout, retry with the same requestId.
+4. Call widget_changes with the last cursor, from widget_list or from the last widget_changes, to see what changed. Each change names who made it in \`by\`.
+5. A tool error gives code, message, and nextStep. Do what nextStep says.
+6. widget_describe gives \`source\` for a widget that widget_install installed: the folder of its files. To change that widget, use the mode create.
+`
 
 /** The text of `widget_guide` before the OpenUI guide: the widget API (`widget_phase2.creation.tools`). */
 const WIDGET_API_GUIDE = `# Writing a widget
@@ -179,11 +252,14 @@ function toolOk(body: Record<string, unknown>): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(body) }], structuredContent: body }
 }
 
-function toolError(code: ToolErrorCode, message: string, extra: { rev?: number | undefined, gate?: GateName | undefined, diagnostics?: string[], nextStep?: string | undefined } = {}): CallToolResult {
+function toolError(code: ToolErrorCode, message: string, extra: { rev?: number | undefined, gate?: GateName | undefined, diagnostics?: string[], nextStep?: string | undefined, mode?: ModeName, setting?: string, settingsFile?: string } = {}): CallToolResult {
   const error: ToolError = { code, message, nextStep: extra.nextStep ?? NEXT_STEP[code] }
   if (extra.rev !== undefined) error.rev = extra.rev
   if (extra.gate !== undefined) error.gate = extra.gate
   if (extra.diagnostics !== undefined) error.diagnostics = extra.diagnostics
+  if (extra.mode !== undefined) error.mode = extra.mode
+  if (extra.setting !== undefined) error.setting = extra.setting
+  if (extra.settingsFile !== undefined) error.settingsFile = extra.settingsFile
   return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error }) }], structuredContent: { error } }
 }
 
@@ -209,6 +285,8 @@ export interface Config {
   tokenFile?: string
   /** The port file `{ port, nonce, pid }` for agents. Defaults to `$DSH_HOME/deepwidgets/mcp.json`. */
   portFile?: string
+  /** The settings file of the modes (`modes.settings`). Defaults to `$DSH_HOME/deepwidgets/settings.json`. */
+  settingsFile?: string
   /**
    * Electron main forwards each request (`safe_host.port`). Defaults to `DEEPWIDGETS_MCP_FORWARDED=1`
    * with an IPC channel to the parent process.
@@ -349,6 +427,7 @@ async function loadTokens(tokenFile: string): Promise<Map<string, TokenRow>> {
 export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const tokenFile = config.tokenFile ?? dshHomePath('deepwidgets', 'mcp-tokens.json')
   const portFile = config.portFile ?? dshHomePath('deepwidgets', 'mcp.json')
+  const settingsFile = config.settingsFile ?? dshHomePath('deepwidgets', 'settings.json')
   /** New for each host start (each plugin start), so a stale port file or another server does not match. */
   const nonce = randomBytes(16).toString('base64url')
   const forwarded = config.forwarded ?? (process.env[FORWARDED_ENV] === '1' && process.connected)
@@ -388,18 +467,41 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     }
   }
 
-  /** Parse the tool input with `schema`, then run the tool body through {@link guarded}. */
-  function tool<S extends z.ZodType>(schema: S, run: (input: z.infer<S>) => Record<string, unknown> | Promise<Record<string, unknown>>): (input: unknown) => Promise<CallToolResult> {
+  /**
+   * Parse the tool input with `schema`, then run the tool body through {@link guarded}. With `mode`, the call first
+   * reads the settings file and does nothing when that mode is off (`modes.refusal`).
+   */
+  function tool<S extends z.ZodType>(schema: S, run: (input: z.infer<S>) => Record<string, unknown> | Promise<Record<string, unknown>>, options: { mode?: GatedMode, invalidNextStep?: string } = {}): (input: unknown) => Promise<CallToolResult> {
     return async (input) => {
+      const { mode } = options
+      if (mode !== undefined && !(await readSettings(settingsFile)).on[mode]) {
+        const setting = `modes.${mode}`
+        return toolError('mode-off', `the mode ${mode} is off: the setting ${setting} is false in ${settingsFile}`, { mode, setting, settingsFile })
+      }
       const parsed = schema.safeParse(input ?? {})
-      if (!parsed.success) return toolError('invalid-args', z.prettifyError(parsed.error))
+      if (!parsed.success) return toolError('invalid-args', z.prettifyError(parsed.error), { nextStep: options.invalidNextStep })
       return guarded(() => run(parsed.data))
     }
+  }
+
+  /** The answer of `deepwidgets_modes`, made from the settings file as it is at this call (`modes.tool`). */
+  async function modesAnswer(): Promise<Record<string, unknown>> {
+    const settings = await readSettings(settingsFile)
+    const modes = MODES.map((mode) => ({
+      name: mode.name,
+      goal: mode.goal,
+      on: mode.name === 'interact' ? true : settings.on[mode.name],
+      setting: mode.setting,
+      tools: mode.tools,
+      guide: { tool: 'widget_guide', args: { mode: mode.name } },
+    }))
+    return settings.error === undefined ? { modes, settingsFile } : { modes, settingsFile, settingsError: settings.error }
   }
 
   function buildServer(agentId: string): McpServer {
     const widgets = ctx.widgets
     const listInput = z.object({})
+    const guideInput = z.object({ mode: z.enum(MODE_NAMES) })
     const describeInput = z.object({ slug: z.string() })
     const callInput = z.object({
       slug: z.string(),
@@ -413,8 +515,15 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     const slugInput = z.object({ slug: z.string().regex(SLUG) })
     const mcp = new McpServer(
       { name: 'deepwidgets', version: '0.0.0' },
-      { instructions: 'deepWidgets: desktop widgets. Call widget_list, then widget_describe, then widget_call. Pass a new requestId on each mutation. Call widget_changes with the last cursor to see what changed. To create a widget, call widget_guide and widget_template, write the files, then call widget_install.' },
+      // modes.instructions: Claude Code reads this text once, at connect, so it holds no fact that can go stale.
+      { instructions: 'Call deepwidgets_modes first.' },
     )
+    mcp.registerTool('deepwidgets_modes', {
+      description: 'List the modes of this server: for each mode its goal, whether it is on, the setting that turns it off, its tools, and its guide. Also gives the path of the settings file. Call it first.',
+      inputSchema: lenient(listInput),
+      annotations: { readOnlyHint: true },
+    }, tool(listInput, modesAnswer))
+
     mcp.registerTool('widget_list', {
       description: 'List the live widgets: slug, title, state revision, program revision. Also gives a cursor for widget_changes.',
       inputSchema: lenient(listInput),
@@ -422,15 +531,18 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     }, tool(listInput, () => ({ cursor: widgets.cursor(), widgets: widgets.list() })))
 
     mcp.registerTool('widget_describe', {
-      description: 'Describe one widget: its actions (name, kind, args JSON Schema, timeoutMs) and its current state. Call it before widget_call on a widget you have not described.',
+      description: 'Describe one widget: its actions (name, kind, args JSON Schema, timeoutMs) and its current state. For a widget that widget_install installed, `source` is the absolute folder of its files. Call it before widget_call on a widget you have not described.',
       inputSchema: lenient(describeInput),
       annotations: { readOnlyHint: true },
-    }, tool(describeInput, ({ slug }) => {
+    }, tool(describeInput, async ({ slug }) => {
       const description = widgets.describe(slug)
+      // modes.source: only an agent bundle has a source folder; a built-in widget such as sample has none.
+      const source = await installer?.source(slug)
+      const located = source === undefined ? { ...description } : { ...description, source }
       // A widget that is off has no state to read; `off` gives the reason.
-      if (description.off !== undefined) return { ...description }
+      if (description.off !== undefined) return located
       const state = widgets.get(slug)
-      return { ...description, rev: state.rev, state: state.data }
+      return { ...located, rev: state.rev, state: state.data }
     }))
 
     mcp.registerTool('widget_call', {
@@ -463,25 +575,27 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     }))
 
     mcp.registerTool('widget_guide', {
-      description: 'Give the guide for writing a widget: the widget API types, the rules that the install gates check, and the OpenUI Lang guide of the component set for the program.',
-      inputSchema: lenient(listInput),
+      description: 'Give the guide of one mode. interact: how to list, describe, call, and follow widgets. create: the widget API types, the rules that the install gates check, and the OpenUI Lang guide of the component set for the program.',
+      inputSchema: lenient(guideInput),
       annotations: { readOnlyHint: true },
-    }, tool(listInput, async () => ({ guide: await guideText() })))
+    }, tool(guideInput, async ({ mode }) => ({ mode, guide: mode === 'interact' ? INTERACT_GUIDE : await guideText() }), {
+      invalidNextStep: 'Pass mode: interact or create. deepwidgets_modes lists the modes.',
+    }))
 
     mcp.registerTool('widget_install', {
       description: 'Install the widget in a folder (absolute path, with src/index.ts). The gates compile, lint, type-check, and test-run the code first; code that fails a gate is not installed. A second install of the same slug replaces the bundle; the state stays.',
       inputSchema: lenient(installInput),
-    }, tool(installInput, async ({ dir }) => ({ ...await creator().install(dir), nextStep: 'Call widget_describe with the slug, then widget_call each action to check it.' })))
+    }, tool(installInput, async ({ dir }) => ({ ...await creator().install(dir), nextStep: 'Call widget_describe with the slug, then widget_call each action to check it.' }), { mode: 'create' }))
 
     mcp.registerTool('widget_reload', {
       description: 'Run the gates again on the folder that the widget was installed from, and replace the bundle. Use it after you edit the files. The state stays.',
       inputSchema: lenient(slugInput),
-    }, tool(slugInput, async ({ slug }) => ({ ...await creator().reload(slug), nextStep: 'Call widget_describe with the slug, then widget_call the changed actions.' })))
+    }, tool(slugInput, async ({ slug }) => ({ ...await creator().reload(slug), nextStep: 'Call widget_describe with the slug, then widget_call the changed actions.' }), { mode: 'create' }))
 
     mcp.registerTool('widget_remove', {
       description: 'Remove the bundle of a widget that widget_install installed. Its window closes. The state stays, so a later install of the slug gets it back.',
       inputSchema: lenient(slugInput),
-    }, tool(slugInput, async ({ slug }) => ({ ...await creator().remove(slug) })))
+    }, tool(slugInput, async ({ slug }) => ({ ...await creator().remove(slug) }), { mode: 'create' }))
     return mcp
   }
 

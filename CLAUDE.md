@@ -102,7 +102,7 @@ The file `tools/smoke-desktop-linux.mjs` is not a check. It gives the Linux help
 
 | Path | Content |
 |---|---|
-| `docs/specs/` | `fork-trim.md` (`fork_trim`), `floating-widget.md` (`floating_widget`), `ts-move.md` (`ts_move`), `widget-rows.md` (`widget_rows`), `widget-mvp.md` (`widget_mvp`), `widget-phase2.md` (`widget_phase2`), `handoff.md` (`handoff`, proposed), `handoff-evidence.md` (`handoff_evidence`), `widget-fv.md` (`widget_fv`), `mcp-consent.md` (`mcp_consent`) |
+| `docs/specs/` | `fork-trim.md` (`fork_trim`), `floating-widget.md` (`floating_widget`), `ts-move.md` (`ts_move`), `widget-rows.md` (`widget_rows`), `widget-mvp.md` (`widget_mvp`), `widget-phase2.md` (`widget_phase2`), `handoff.md` (`handoff`, proposed), `handoff-evidence.md` (`handoff_evidence`), `widget-fv.md` (`widget_fv`), `mcp-consent.md` (`mcp_consent`), `modes.md` (`modes`) |
 | `docs/explore/widget-system/` | The widget decisions (`where-we-stand.md`, `standing.decided`), the checked facts, the open points, and the spikes `widget-kit-spike.md` (`kit_spike`) and `plugins-spike.md` (`plugins_spike`) |
 | `docs/plans/` | The plans of the specs. Each plan unit is one PR. |
 | `docs/canvas/` | JSON Canvas boards that show how a system works, such as `floating-widget-processes.canvas`. |

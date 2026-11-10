@@ -727,4 +727,14 @@ export class WidgetInstaller {
     if (old !== undefined) diagnostics.push(`the previous bundle ${old} was not removed, and it stays`)
     throw new CreationError('install-failed', `the plugin manager did not apply ${name}`, { diagnostics })
   }
+
+  /**
+   * modes.source: the folder that the installed agent bundle of `slug` came from, the folder that `widget_reload` reads.
+   * Undefined for a slug with no agent bundle, such as a built-in widget. It only reads, so it does not wait in the queue.
+   */
+  async source(slug: string): Promise<string | undefined> {
+    const names = await this.installedNames(slug)
+    if (names.length === 0) return undefined
+    return (await this.meta(slug, names))?.source
+  }
 }

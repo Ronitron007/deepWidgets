@@ -74,19 +74,47 @@ The host keeps the 64 newest tokens.
 
 ## Tools `mcp_readme.tools`
 
-| Tool | Use |
-|---|---|
-| `widget_list` | Gives the live widgets and a cursor for `widget_changes`. |
-| `widget_describe` | Gives the actions of one widget, the argument schemas, and the state. |
-| `widget_call` | Runs one action. For a change, send a new `requestId`. |
-| `widget_changes` | Gives the changes after a cursor. |
-| `widget_template` | Gives the files of the TypeScript widget template. |
-| `widget_guide` | Gives the widget API types, the gate rules, and the OpenUI guide of the component set. |
-| `widget_install` | Runs the gates on a widget folder and installs the widget. A second install of one slug replaces the bundle. The state stays. |
-| `widget_reload` | Runs the gates on the install folder of a widget again and replaces the bundle. |
-| `widget_remove` | Removes the bundle of a widget. The state stays. |
+The server `instructions` text is one line: "Call deepwidgets_modes first." An MCP client reads that text only when it connects. Thus the text holds no facts that can change.
+
+| Tool | Mode | Use |
+|---|---|---|
+| `deepwidgets_modes` | all | Gives each mode, with its goal, `on`, its setting, its tools, and its guide. It also gives the path of the settings file, and the parse error of that file. |
+| `widget_list` | shared | Gives the live widgets and a cursor for `widget_changes`. |
+| `widget_guide` | shared | Gives the guide of one mode. Send `mode` with the value `interact` or `create`. |
+| `widget_describe` | `interact` | Gives the actions of one widget, the argument schemas, and the state. For a widget that `widget_install` installed, it also gives `source`, the absolute path of the install folder. |
+| `widget_call` | `interact` | Runs one action. For a change, send a new `requestId`. |
+| `widget_changes` | `interact` | Gives the changes after a cursor. |
+| `widget_template` | `create` | Gives the files of the TypeScript widget template. |
+| `widget_install` | `create` | Runs the gates on a widget folder and installs the widget. A second install of one slug replaces the bundle. The state stays. |
+| `widget_reload` | `create` | Runs the gates on the install folder of a widget again and replaces the bundle. |
+| `widget_remove` | `create` | Removes the bundle of a widget. The state stays. |
 
 Each tool error gives `code`, `message`, and `nextStep`. A creation error also gives `gate` and `diagnostics`.
+
+## Modes `mcp_readme.modes`
+
+A mode is one type of job that an agent does through this server. The spec is `docs/specs/modes.md`.
+
+| Mode | Goal | Setting |
+|---|---|---|
+| `interact` | Use widgets that exist. | None. This mode is always on. |
+| `create` | Write, change, or remove a widget. | `modes.create` |
+
+The settings file is `$DSH_HOME/deepwidgets/settings.json`. This is the content:
+
+```json
+{ "modes": { "create": true } }
+```
+
+- The value `false` turns the mode `create` off.
+
+- The server reads the file at each call of a tool. Thus a change to the file has an effect at the next call. You do not restart the app.
+
+- If the file or the key is missing, each mode is on.
+
+- If the file does not parse, each mode is on. `deepwidgets_modes` gives the error in `settingsError`.
+
+When a mode is off, its tools stay in the tool list. A call of `widget_install`, `widget_reload`, or `widget_remove` then does nothing. It gives the error code `mode-off`, with the fields `mode`, `setting`, and `settingsFile`. `widget_template` and `widget_guide` still answer, because they only read.
 
 ## Gates `mcp_readme.gates`
 

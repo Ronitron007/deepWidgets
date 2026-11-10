@@ -5,12 +5,14 @@
  * widget_list names sample, widget_call add adds 1, widget_changes shows the change with `by` set
  * to the agent, a request with an Origin header gets 403, a request with no token gets 401, and a
  * bad token gets 401. It also checks the token file mode.
+ * Modes (spec modes): the instructions line, deepwidgets_modes with interact and create only, the settings file
+ * read at each call (an unparseable file turns no mode off), a guide for each mode, and no source for sample.
  * Prints `widgets-mcp: pass` and exits 0 only when every check passes.
  * Needs `corepack pnpm run build:artifacts` first.
  */
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { createWriteStream, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { createWriteStream, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { request as httpRequest } from 'node:http'
@@ -235,7 +237,56 @@ async function main() {
     check('tools/list advertises the input schema of widget_call', callSchema?.properties?.slug?.type === 'string' && callSchema?.properties?.args?.type === 'object' && callSchema?.required?.includes('action'), JSON.stringify(callSchema))
     const interact = ['widget_call', 'widget_changes', 'widget_describe', 'widget_list']
     const create = ['widget_guide', 'widget_install', 'widget_reload', 'widget_remove', 'widget_template']
-    check('tools are the interact tools widget_call, widget_changes, widget_describe, widget_list and the create tools of widget.creation', JSON.stringify(tools) === JSON.stringify([...interact, ...create].sort()), JSON.stringify(tools))
+    check('tools are deepwidgets_modes, the interact tools widget_call, widget_changes, widget_describe, widget_list, and the create tools of widget.creation', JSON.stringify(tools) === JSON.stringify(['deepwidgets_modes', ...interact, ...create].sort()), JSON.stringify(tools))
+
+    // modes.instructions, modes.tool, modes.guide, modes.source, modes.settings.
+    check('the server instructions are exactly "Call deepwidgets_modes first."', client.getInstructions() === 'Call deepwidgets_modes first.', JSON.stringify(client.getInstructions()))
+    const modesTool = listed.find((tool) => tool.name === 'deepwidgets_modes')
+    check('deepwidgets_modes has readOnlyHint and takes no arguments', modesTool?.annotations?.readOnlyHint === true && Object.keys(modesTool?.inputSchema?.properties ?? {}).length === 0, JSON.stringify(modesTool))
+    const settingsFile = join(home, 'deepwidgets', 'settings.json')
+    const modes = body(await client.callTool({ name: 'deepwidgets_modes', arguments: {} }))
+    const byName = new Map((modes?.modes ?? []).map((mode) => [mode.name, mode]))
+    check('deepwidgets_modes lists interact and create only, both on with no settings file, and the settings file path',
+      JSON.stringify((modes?.modes ?? []).map((mode) => mode.name)) === JSON.stringify(['interact', 'create']) && byName.get('interact')?.on === true && byName.get('create')?.on === true && modes?.settingsFile === settingsFile && modes?.settingsError === undefined,
+      JSON.stringify(modes))
+    const interactMode = byName.get('interact')
+    const createMode = byName.get('create')
+    check('each mode gives its goal, setting, tools, and guide',
+      typeof interactMode?.goal === 'string' && interactMode?.setting === null && JSON.stringify(interactMode?.tools) === JSON.stringify(['widget_describe', 'widget_call', 'widget_changes']) && interactMode?.guide?.tool === 'widget_guide' && interactMode?.guide?.args?.mode === 'interact'
+        && typeof createMode?.goal === 'string' && createMode?.setting === 'modes.create' && JSON.stringify(createMode?.tools) === JSON.stringify(['widget_template', 'widget_install', 'widget_reload', 'widget_remove']) && createMode?.guide?.args?.mode === 'create',
+      JSON.stringify(modes?.modes))
+
+    // The settings file is read at each call: an unparseable file turns no mode off, and the error is reported.
+    mkdirSync(join(home, 'deepwidgets'), { recursive: true })
+    writeFileSync(settingsFile, '{ "modes": { "create": fal')
+    const broken = body(await client.callTool({ name: 'deepwidgets_modes', arguments: {} }))
+    check('a settings file that does not parse turns no mode off, and deepwidgets_modes reports the error',
+      broken?.modes?.every((mode) => mode.on === true) === true && typeof broken?.settingsError === 'string' && broken.settingsError !== '',
+      JSON.stringify(broken))
+    writeFileSync(settingsFile, JSON.stringify({ modes: { create: 'no' } }))
+    const wrongType = body(await client.callTool({ name: 'deepwidgets_modes', arguments: {} }))
+    check('a settings file with a value that is not a boolean turns no mode off, and deepwidgets_modes reports the error',
+      wrongType?.modes?.every((mode) => mode.on === true) === true && /modes\.create|create/.test(wrongType?.settingsError ?? ''),
+      JSON.stringify(wrongType))
+    writeFileSync(settingsFile, JSON.stringify({ modes: { create: false } }))
+    const off = body(await client.callTool({ name: 'deepwidgets_modes', arguments: {} }))
+    const offByName = new Map((off?.modes ?? []).map((mode) => [mode.name, mode]))
+    check('with modes.create false, deepwidgets_modes shows create off and interact on, with no restart',
+      offByName.get('create')?.on === false && offByName.get('interact')?.on === true && off?.settingsError === undefined,
+      JSON.stringify(off?.modes))
+    const offTools = (await client.listTools()).tools.map((tool) => tool.name).sort()
+    check('the create tools stay listed when create is off', JSON.stringify(offTools) === JSON.stringify(tools), JSON.stringify(offTools))
+    rmSync(settingsFile)
+
+    const interactGuide = body(await client.callTool({ name: 'widget_guide', arguments: { mode: 'interact' } }))
+    const createGuide = body(await client.callTool({ name: 'widget_guide', arguments: { mode: 'create' } }))
+    const iText = interactGuide?.guide ?? ''
+    const cText = createGuide?.guide ?? ''
+    check('widget_guide gives a different guide for each mode: interact has the requestId and cursor rules, create has the widget API',
+      iText !== '' && cText !== '' && iText !== cText && /requestId/.test(iText) && /widget_changes/.test(iText) && /cursor/.test(iText) && !iText.includes('interface WidgetContext') && cText.includes('interface WidgetContext'),
+      `interact ${String(iText.length)} characters, create ${String(cText.length)} characters`)
+    const noMode = await client.callTool({ name: 'widget_guide', arguments: {} })
+    check('widget_guide with no mode gives invalid-args with a nextStep that names the modes', noMode.isError === true && body(noMode)?.error?.code === 'invalid-args' && /interact/.test(body(noMode)?.error?.nextStep ?? ''), JSON.stringify(body(noMode)))
 
     const list = body(await client.callTool({ name: 'widget_list', arguments: {} }))
     check('widget_list names sample', list?.widgets?.some((widget) => widget.slug === 'sample'), JSON.stringify(list?.widgets))
@@ -246,6 +297,7 @@ async function main() {
     check('widget_describe sample lists get and add with the args schema of add',
       actions.get('get')?.kind === 'query' && actions.get('add')?.kind === 'mutation' && addArgs?.type === 'object' && addArgs?.properties?.by?.type === 'number' && typeof described?.state?.count === 'number',
       JSON.stringify(described?.actions))
+    check('widget_describe gives no source for the built-in widget sample', described !== null && !Object.hasOwn(described, 'source'), JSON.stringify(described?.source))
 
     const before = body(await client.callTool({ name: 'widget_call', arguments: { slug: 'sample', action: 'get' } }))
     const added = body(await client.callTool({ name: 'widget_call', arguments: { slug: 'sample', action: 'add', args: { by: 1 }, requestId: 'mcp-check-1' } }))
