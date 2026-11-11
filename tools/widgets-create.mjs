@@ -31,8 +31,9 @@
  *   /widget/<slug>/;
  * - a replace with the same sources keeps the build; new sources get a new build, and a slug keeps its last 3 builds;
  * - the install refuses a page with a type error, an import of a package that is not on the list, an import of a file
- *   outside the page folder, a changed fixed file, a changed dw-core block, a stylesheet @import outside the page
- *   folder, an @plugin, a postcss.config.mjs, and a symbolic link. The old bundle and its page link stay, and no
+ *   outside the page folder, a changed fixed file, a changed dw-core block, an @plugin, a postcss.config.mjs, and a
+ *   symbolic link. The output fence refuses each page that pulls a secret file from outside page/: a stylesheet
+ *   @import, also with no space and with a comment, a bare image-set() string, and new URL in a .tsx file. The old bundle and its page link stay, and no
  *   .tmp build or staging copy stays;
  * - a bundle with no page/ installs with the host gates only. The page link goes, and the builds stay.
  * Window part: it runs tools/smoke-desktop.mjs with DSH_SMOKE_CREATE set to a bundle with a good page and
@@ -587,7 +588,12 @@ async function pagePart(call, slugs) {
 
   const outside = join(work, 'outside.ts')
   writeFileSync(outside, 'export const outside = 1\n')
-  writeFileSync(join(work, 'outside.css'), '.leak { color: red; }\n')
+  // Secret files in the widget root. From the staging copy of page/, ../../../ is the widget root.
+  const widgetRoot = join(profileDir, 'deepwidgets-widgets')
+  writeFileSync(join(widgetRoot, 'secret-page.css'), '.secret-leak { color: red; }\n')
+  writeFileSync(join(widgetRoot, 'secret-page.txt'), 'SECRET-PAGE-TEXT')
+  const pulls = (line) => line.includes('outside the page folder') && line.includes('secret-page.')
+  const sheet = (text) => ({ 'page/extra.css': `${text}\n.extra { color: blue; }\n`, 'page/child.tsx': `import './extra.css'\n${CHILD}` })
   const styles = templateText('styles.css')
   const refused = [
     { name: 'a page with a type error', gate: 'page-types', files: { 'page/child.tsx': `${CHILD}\nexport const wrong: number = 'text'\n` }, find: (line) => line.startsWith('page/child.tsx:') && line.includes('TS2322') },
@@ -595,7 +601,11 @@ async function pagePart(call, slugs) {
     { name: 'a page that imports a file outside the page folder', gate: 'page-build', files: { 'page/child.tsx': `import { outside } from '${outside}'\n${CHILD}\nexport const value = outside\n` }, find: (line) => line.includes('outside the page folder') },
     { name: 'a page with a changed fixed file', gate: 'page-files', files: { 'page/main.tsx': `${templateText('main.tsx')}// changed\n` }, find: (line) => line.startsWith('page/main.tsx:') },
     { name: 'a page with a changed dw-core block', gate: 'page-files', files: { 'page/styles.css': styles.replace('padding: 12px !important; box-sizing', 'padding: 0 !important; box-sizing') }, find: (line) => line.startsWith('page/styles.css:') && line.includes('dw-core') },
-    { name: 'a stylesheet @import outside the page folder', gate: 'page-build', files: { 'page/extra.css': '@import "../../outside.css";\n', 'page/styles.css': `${styles}@import "./extra.css";\n` }, find: (line) => line.startsWith('page/extra.css:') && line.includes('outside the page folder') },
+    { name: 'a stylesheet @import of a secret file', gate: 'page-build', files: sheet('@import "../../../secret-page.css";'), find: pulls },
+    { name: 'a stylesheet @import of a secret file with no space', gate: 'page-build', files: sheet('@import"../../../secret-page.css";'), find: pulls },
+    { name: 'a stylesheet @import of a secret file with a comment', gate: 'page-build', files: sheet('@import/**/"../../../secret-page.css";'), find: pulls },
+    { name: 'a bare image-set() string of a secret file', gate: 'page-build', files: { 'page/styles.css': `${styles}.leak { background-image: image-set("../../../secret-page.txt" 1x); }\n` }, find: pulls },
+    { name: 'new URL of a secret file in a .tsx file', gate: 'page-build', files: { 'page/child.tsx': `${CHILD}\nexport const leak = new URL('../../../secret-page.txt', import.meta.url).href\n` }, find: pulls },
     { name: 'an @plugin in a page stylesheet', gate: 'page-build', files: { 'page/styles.css': `${styles}@plugin "@tailwindcss/typography";\n` }, find: (line) => line.startsWith('page/styles.css:') && line.includes('@plugin') },
     { name: 'a page with a postcss.config.mjs', gate: 'page-build', files: { 'page/postcss.config.mjs': 'export default { plugins: {} }\n' }, find: (line) => line.startsWith('page/postcss.config.mjs:') },
   ]
