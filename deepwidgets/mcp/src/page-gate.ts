@@ -12,15 +12,15 @@
  * 4. `page-render`: Electron main loads the built page in a hidden window, with the program and the query answers
  *    of the test run. A CLI host has no Electron main, so the check does not run there, and the gate gives a warning.
  *
- * The built page stays in a staging folder until the install applies. Then the installer moves it into the profile.
+ * Vite builds into `<profile>/deepwidgets-widgets/<slug>/page-<hash>.tmp`, and the gates rename it to `page-<hash>`
+ * when they pass. The installer points the link `<slug>/page` at it after the install applies.
  * @module @deepwidgets/mcp/page-gate
  */
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync } from 'node:fs'
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { existsSync, realpathSync } from 'node:fs'
+import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, rmdir, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import type { GateReport } from './creation.ts'
 import type { PageBuildJob, PageBuildReport } from './page-build-child.ts'
@@ -44,11 +44,18 @@ const ALLOWED = [
   'react-dom/client',
   '@openuidev/react-lang',
   '@deepwidgets/widget-kit',
+  // The props schemas of `defineComponent`. The page gets the copy of `@openuidev/react-lang`.
+  'zod',
   // Vite adds this import to the entry of the page itself.
   'vite/modulepreload-polyfill',
 ]
 /** The shadcn pieces of the shell: `@deepwidgets/shell/ui/<file>` and `@deepwidgets/shell/components/<file>`. */
 const ALLOWED_PREFIXES = ['@deepwidgets/shell/ui/', '@deepwidgets/shell/components/']
+/** The bare `@import` names of a page stylesheet: the base sheet of the shell. */
+const ALLOWED_STYLES = ['@deepwidgets/shell/page.css']
+/** A built page in the folder of its slug: `page-<hash>`, and `page-<hash>.tmp` while the gates run. */
+export const PAGE_BUILD = /^page-[0-9a-f]{16}$/
+export const PAGE_BUILD_TMP = /^page-[0-9a-f]{16}\.tmp$/
 
 const LINT_LIMIT_MS = 60_000
 const BUILD_LIMIT_MS = 90_000
@@ -96,17 +103,26 @@ export interface PageTools {
   tsgolint: string
 }
 
-/** The outcome of the page gates. `built` is the folder of the built page when every gate passed. */
+/** Where the page gates work, in the profile. */
+export interface PageFolders {
+  /** The folder of the slug, `<profile>/deepwidgets-widgets/<slug>`. The build goes into it. */
+  slugDir: string
+  /** The folder of the staging copies, `<profile>/deepwidgets-widgets/.page-staging`. The host start empties it. */
+  stagingRoot: string
+}
+
+/**
+ * The outcome of the page gates. When every gate passed, `build` is the name of the built page in the folder of the
+ * slug, `page-<hash>`, and `reused` is true when a build of the same sources was there before.
+ */
 export interface PageOutcome {
   gates: GateReport[]
-  built?: string
-  /** Removes the staging folder, with the built page. The installer calls it after it moved the page. */
-  cleanup: () => Promise<void>
+  build?: { name: string, reused: boolean }
 }
 
 /** The next step of each page gate. */
 export const PAGE_NEXT_STEP: Record<PageGateName, string> = {
-  'page-files': 'Restore page/index.html, page/main.tsx, and the dw-core block of page/styles.css from the template. Write your styles below the block. Then call widget_install again. Nothing was installed.',
+  'page-files': 'Restore page/index.html, page/main.tsx, and the dw-core block of page/styles.css from the template, and replace each symbolic link in page/ with a file. Write your styles below the block. Then call widget_install again. Nothing was installed.',
   'page-types': `Fix the type error at each diagnostic, then call widget_install again. A page may import only: ${ALLOWED_TEXT}, and files in page/. Nothing was installed.`,
   'page-build': `Fix the build error at each diagnostic, then call widget_install again. A page may import only: ${ALLOWED_TEXT}, and files in page/. Nothing was installed.`,
   'page-render': 'The page failed in the render check with the program and the query answers of the test run. Fix the component or the styles at each diagnostic, then call widget_install again. Nothing was installed.',
@@ -141,6 +157,33 @@ async function templateCore(): Promise<string> {
   return block
 }
 
+/** The symbolic links in `dir`, at any depth. A `node_modules` folder is not copied, so it is not read. */
+async function pageLinks(dir: string): Promise<string[]> {
+  const links: string[] = []
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name)
+    if (entry.isSymbolicLink()) links.push(path)
+    else if (entry.isDirectory() && entry.name !== 'node_modules') links.push(...await pageLinks(path))
+  }
+  return links
+}
+
+/** The hash of the sources of a page: the relative path and the text of each file, sorted. It names the build. */
+async function sourceHash(page: string): Promise<string> {
+  const files: string[] = []
+  const walk = async (dir: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) await walk(path)
+      else if (entry.isFile()) files.push(path)
+    }
+  }
+  await walk(page)
+  const hash = createHash('sha256')
+  for (const file of files.sort()) hash.update(relative(page, file)).update('\0').update(await readFile(file)).update('\0')
+  return hash.digest('hex').slice(0, 16)
+}
+
 /** Gate `page-files`. */
 async function filesGate(page: string): Promise<GateReport> {
   const started = performance.now()
@@ -154,6 +197,8 @@ async function filesGate(page: string): Promise<GateReport> {
     if (have === undefined) diagnostics.push(`page/${name}: the file is missing. Copy it from the template.`)
     else if (hashText(have) !== hashText(want)) diagnostics.push(`page/${name}: the file differs from the template. It is fixed: restore it from the template.`)
   }
+  // A link in page/ could name a file outside it, so the page may have no links.
+  for (const link of await pageLinks(page)) diagnostics.push(`page/${relative(page, link)}: a page may not have a symbolic link. Copy the file into page/.`)
   const styles = await read(join(page, 'styles.css'))
   if (styles === undefined) diagnostics.push('page/styles.css: the file is missing. Copy it from the template.')
   else {
@@ -174,10 +219,13 @@ function packageFolders(): Record<string, string> {
     if (found === undefined) throw new Error(`the page gates did not find the package ${name}`)
     return found
   }
+  // zod is a peer of OpenUI: the page gets the copy that OpenUI resolves, from its real folder.
+  const lang = realpathSync(folder(kitRequire, '@openuidev/react-lang'))
   return {
     'react': folder(kitRequire, 'react'),
     'react-dom': folder(kitRequire, 'react-dom'),
-    '@openuidev/react-lang': folder(kitRequire, '@openuidev/react-lang'),
+    '@openuidev/react-lang': lang,
+    'zod': folder(createRequire(join(lang, 'package.json')), 'zod'),
     '@types/react': folder(kitRequire, '@types/react'),
     '@types/react-dom': folder(kitRequire, '@types/react-dom'),
     '@deepwidgets/widget-kit': kit,
@@ -189,8 +237,9 @@ function packageFolders(): Record<string, string> {
  * Copy `dir/page` into a new staging folder: `<staging>/page`, next to `<staging>/node_modules` with links to the allowed packages only,
  * and the configs of the type gate.
  */
-async function stagePage(dir: string): Promise<{ staging: string, page: string }> {
-  const staging = await realpath(await mkdtemp(join(tmpdir(), 'deepwidgets-page-')))
+async function stagePage(dir: string, stagingRoot: string): Promise<{ staging: string, page: string }> {
+  await mkdir(stagingRoot, { recursive: true })
+  const staging = await realpath(await mkdtemp(join(stagingRoot, 'stage-')))
   const page = join(staging, 'page')
   await cp(join(dir, 'page'), page, { recursive: true, filter: (source) => !relative(dir, source).split(/[\\/]/).includes('node_modules') })
   for (const [name, target] of Object.entries(packageFolders())) {
@@ -250,9 +299,8 @@ async function typesGate(staging: string, tools: PageTools): Promise<GateReport>
 }
 
 /** Gate `page-build`: Vite in a child process. */
-async function buildGate(staging: string, slug: string): Promise<{ report: GateReport, built?: string }> {
+async function buildGate(staging: string, slug: string, outDir: string): Promise<{ report: GateReport, built?: string }> {
   const started = performance.now()
-  const outDir = join(staging, 'out')
   const emptyDir = join(staging, 'env')
   await mkdir(emptyDir, { recursive: true })
   const job: PageBuildJob = {
@@ -263,6 +311,7 @@ async function buildGate(staging: string, slug: string): Promise<{ report: GateR
     cacheDir: join(staging, 'vite-cache'),
     allowed: ALLOWED,
     allowedPrefixes: ALLOWED_PREFIXES,
+    allowedStyles: ALLOWED_STYLES,
   }
   const jobFile = join(staging, 'build-job.json')
   await writeFile(jobFile, JSON.stringify(job))
@@ -311,29 +360,48 @@ async function renderGate(built: string, input: PageInput, renderCheck: RenderCh
 }
 
 /**
- * Run the page gates on `dir/page`. The first failed gate stops the run. When each gate passes, `built` is the folder
- * of the built page; it stays until the caller calls `cleanup`.
+ * Run the page gates on `dir/page`. The first failed gate stops the run. Vite builds into
+ * `<slugDir>/page-<hash>.tmp`, and the render check loads that folder. When each gate passes, the folder becomes
+ * `page-<hash>`. When a gate fails, it goes. The staging copy goes in each case.
  */
-export async function runPageGates(dir: string, input: PageInput, tools: PageTools, renderCheck: RenderCheck | undefined): Promise<PageOutcome> {
+export async function runPageGates(dir: string, input: PageInput, tools: PageTools, renderCheck: RenderCheck | undefined, folders: PageFolders): Promise<PageOutcome> {
   const gates: GateReport[] = []
   const files = await filesGate(join(dir, 'page'))
   gates.push(files)
-  if (!files.ok) return { gates, cleanup: () => Promise.resolve() }
-  const { staging } = await stagePage(dir)
-  const cleanup = (): Promise<void> => rm(staging, { recursive: true, force: true })
+  if (!files.ok) return { gates }
+  const { staging, page } = await stagePage(dir, folders.stagingRoot)
+  const name = `page-${await sourceHash(page)}`
+  const made = !existsSync(folders.slugDir)
+  await mkdir(folders.slugDir, { recursive: true })
+  const slugDir = await realpath(folders.slugDir)
+  const tmp = join(slugDir, `${name}.tmp`)
+  const final = join(slugDir, name)
+  let build: PageOutcome['build']
   try {
+    await rm(tmp, { recursive: true, force: true })
     const types = await typesGate(staging, tools)
     gates.push(types)
-    if (!types.ok) { await cleanup(); return { gates, cleanup } }
-    const { report, built } = await buildGate(staging, input.slug)
+    if (!types.ok) return { gates }
+    const { report, built } = await buildGate(staging, input.slug, tmp)
     gates.push(report)
-    if (built === undefined) { await cleanup(); return { gates, cleanup } }
+    if (built === undefined) return { gates }
     const render = await renderGate(built, input, renderCheck)
     gates.push(render)
-    if (!render.ok) { await cleanup(); return { gates, cleanup } }
-    return { gates, built, cleanup }
-  } catch (error) {
-    await cleanup()
-    throw error
+    if (!render.ok) return { gates }
+    // A build of the same sources is there: it stays, and it counts as the newest build.
+    const reused = existsSync(final)
+    if (reused) {
+      const now = new Date()
+      await utimes(final, now, now)
+    } else {
+      await rename(tmp, final)
+    }
+    build = { name, reused }
+    return { gates, build }
+  } finally {
+    await rm(tmp, { recursive: true, force: true })
+    await rm(staging, { recursive: true, force: true })
+    // The first page of a slug that failed a gate leaves no empty folder.
+    if (build === undefined && made) await rmdir(slugDir).catch(() => undefined)
   }
 }

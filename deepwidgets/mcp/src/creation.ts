@@ -12,13 +12,14 @@
  * a slug is in the runtime storage, so it stays across a replace and a remove.
  *
  * A bundle with a folder `page/` also runs the page gates after the host gates (`agent_library.build_gate`,
- * `page-gate.ts`). The built page goes into `<profile>/deepwidgets-widgets/<slug>/page/` only after the install
- * applies, so a failed install keeps the old page. The `page` folder stays in the folder of the slug across a replace.
+ * `page-gate.ts`). Each build is a folder `<profile>/deepwidgets-widgets/<slug>/page-<hash>`. Only after the install
+ * applies, the link `<slug>/page` swaps to the new build in one rename, so a failed install keeps the old page. The
+ * last builds of a slug stay across a replace (`PAGE_BUILDS_KEPT`).
  * @module @deepwidgets/mcp/creation
  */
 import { execFile, spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from 'node:fs/promises'
+import { createHash, randomBytes } from 'node:crypto'
+import { cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, rmdir, stat, symlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -26,7 +27,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { BundleInfo, ChangeResult } from '@deepseek-ai/dsh-plugin-manager/types'
 import type { ProgramRecord } from '@deepwidgets/widgets'
 import { endlessLoops } from './loop-check.ts'
-import { hasPage, PAGE_NEXT_STEP, runPageGates } from './page-gate.ts'
+import { hasPage, PAGE_BUILD, PAGE_BUILD_TMP, PAGE_NEXT_STEP, runPageGates } from './page-gate.ts'
 import type { PageGateName, RenderAnswer, RenderCheck } from './page-gate.ts'
 import type { TestRunReport, TestRunWidget } from './testrun-child.ts'
 
@@ -54,8 +55,14 @@ const META_FILE = 'deepwidgets-widget.json'
 const LEGACY_SEEDS_DIR = '.seeds'
 /** The source files that the loop rule reads: each kind that esbuild bundles. */
 const SOURCE_FILE = /\.(?:[cm]?[jt]s|[jt]sx)$/
-/** The folder of the built page in the folder of a slug (`agent_library.build_gate.gates`). */
+/** The link to the current built page in the folder of a slug (`agent_library.build_gate.gates`). */
 const PAGE_DIR = 'page'
+/** The builds `page-<hash>` that each slug keeps, the current one with them. */
+const PAGE_BUILDS_KEPT = 3
+/** The folder of the staging copies of the page gates, under the widget root. The host start empties it. */
+const PAGE_STAGING = '.page-staging'
+/** A link under a temporary name, before the rename over `page`. */
+const PAGE_LINK_TMP = /^\.page-link-/
 
 /** One gate of `widget_phase2.creation.gates`, in order, then the page gates of `agent_library.build_gate.gates`. */
 export type GateName = 'compile' | 'lint' | 'test' | PageGateName
@@ -401,8 +408,14 @@ export interface GatesOutcome {
   gates: GateReport[]
   code?: string
   widget?: TestRunWidget
-  /** The built page of a bundle with `page/`. The caller moves it, then calls `cleanup`. */
-  page?: { built: string, cleanup: () => Promise<void> }
+  /** The build `page-<hash>` of a bundle with `page/`, in the folder of the slug. */
+  page?: { name: string, reused: boolean }
+}
+
+/** Where the page gates build: the folder of a slug, and the staging root. */
+export interface PageRoots {
+  slugDir: (slug: string) => string
+  stagingRoot: string
 }
 
 /**
@@ -410,7 +423,7 @@ export interface GatesOutcome {
  * the run. `renderCheck` runs the render check of the page; without it, that check is skipped with a warning.
  * @throws {CreationError} `bad-source` when the folder has no `src/index.ts`.
  */
-export async function runGates(dir: string, renderCheck?: RenderCheck): Promise<GatesOutcome> {
+export async function runGates(dir: string, pages: PageRoots, renderCheck?: RenderCheck): Promise<GatesOutcome> {
   const staging = await stage(dir)
   try {
     const configs = await writeConfigs(staging)
@@ -428,10 +441,11 @@ export async function runGates(dir: string, renderCheck?: RenderCheck): Promise<
     if (widget === undefined) return { gates }
     if (!await hasPage(dir)) return { gates, code, widget }
     const t = tools()
-    const page = await runPageGates(dir, { slug: widget.slug, program: widget.program, answers }, { oxlint: t.oxlint, tsgolint: t.tsgolint }, renderCheck)
+    const page = await runPageGates(dir, { slug: widget.slug, program: widget.program, answers }, { oxlint: t.oxlint, tsgolint: t.tsgolint }, renderCheck,
+      { slugDir: pages.slugDir(widget.slug), stagingRoot: pages.stagingRoot })
     gates.push(...page.gates)
-    if (page.built === undefined) return { gates }
-    return { gates, code, widget, page: { built: page.built, cleanup: page.cleanup } }
+    if (page.build === undefined) return { gates }
+    return { gates, code, widget, page: page.build }
   } finally {
     await rm(staging, { recursive: true, force: true })
   }
@@ -445,9 +459,12 @@ function patchText(name: string): string {
   return ['- insert:', `    - id: ${name}`, `      name: ${name}`, ''].join('\n')
 }
 
+/** True for an entry of the folder of a slug that belongs to its pages: the link `page` and the builds `page-<hash>`. */
+const isPageEntry = (entry: string): boolean => entry === PAGE_DIR || PAGE_BUILD.test(entry)
+
 /**
- * Empty `folder`, or remove it. With `keepPage`, the built page of the slug in `folder/page` stays
- * (`agent_library.build_gate`): it changes only when an install applies.
+ * Empty `folder`, or remove it. With `keepPage`, the page link and the builds of the slug stay
+ * (`agent_library.build_gate`): the link changes only when an install applies.
  */
 async function clearFolder(folder: string, keepPage: boolean): Promise<void> {
   if (!keepPage) {
@@ -455,12 +472,12 @@ async function clearFolder(folder: string, keepPage: boolean): Promise<void> {
     return
   }
   const entries = await readdir(folder).catch((): string[] => [])
-  for (const entry of entries) if (entry !== PAGE_DIR) await rm(join(folder, entry), { recursive: true, force: true })
+  for (const entry of entries) if (!isPageEntry(entry)) await rm(join(folder, entry), { recursive: true, force: true })
   // The folder goes when no page is in it.
-  if (!entries.includes(PAGE_DIR)) await rmdir(folder).catch(() => undefined)
+  if (!entries.some(isPageEntry)) await rmdir(folder).catch(() => undefined)
 }
 
-/** Write a complete bundle folder. With `keepPage`, `folder/page` stays. */
+/** Write a complete bundle folder. With `keepPage`, the pages of the slug stay. */
 async function writeBundle(folder: string, name: string, widget: TestRunWidget, code: string, source: string, keepPage: boolean): Promise<void> {
   await clearFolder(folder, keepPage)
   await mkdir(folder, { recursive: true })
@@ -499,6 +516,22 @@ export class WidgetInstaller {
 
   constructor(private readonly services: CreationServices) {
     this.root = join(services.profileDir, 'deepwidgets-widgets')
+    // The first job of the queue: a host that stopped during the page gates left their folders.
+    void this.serial(() => this.sweepPages())
+  }
+
+  /**
+   * agent_library.build_gate: remove what a stopped host left of the page gates: the staging copies, the folders
+   * `page-<hash>.tmp`, and a link under its temporary name. A failed removal stays for the next host start.
+   */
+  private async sweepPages(): Promise<void> {
+    await rm(join(this.root, PAGE_STAGING), { recursive: true, force: true }).catch(() => undefined)
+    for (const slug of await readdir(this.root).catch((): string[] => [])) {
+      const folder = join(this.root, slug)
+      for (const entry of await readdir(folder).catch((): string[] => [])) {
+        if (PAGE_BUILD_TMP.test(entry) || PAGE_LINK_TMP.test(entry)) await rm(join(folder, entry), { recursive: true, force: true }).catch(() => undefined)
+      }
+    }
   }
 
   private serial<T>(job: () => Promise<T>): Promise<T> {
@@ -524,19 +557,47 @@ export class WidgetInstaller {
   }
 
   /**
-   * agent_library.build_gate: put the built page of an applied install at `<root>/<slug>/page`, in place of the
-   * page of the old version. A bundle with no page removes the old page. Gives the page folder, or undefined.
+   * agent_library.build_gate: point `<root>/<slug>/page` at the build of an applied install. The new link gets a
+   * temporary name, then a rename puts it over `page`, so a reader sees the old page or the new page, never none.
+   * A bundle with no page removes the link, and the builds stay. Gives the link, or undefined.
    */
-  private async placePage(slug: string, built: string | undefined): Promise<string | undefined> {
-    const target = join(this.folderOf(slug), PAGE_DIR)
-    await rm(target, { recursive: true, force: true })
-    if (built === undefined) {
-      await rmdir(this.folderOf(slug)).catch(() => undefined)
+  private async linkPage(slug: string, build: string | undefined): Promise<string | undefined> {
+    const folder = this.folderOf(slug)
+    const link = join(folder, PAGE_DIR)
+    const current = await lstat(link).catch(() => undefined)
+    if (build === undefined) {
+      if (current !== undefined) await rm(link, { recursive: !current.isSymbolicLink(), force: true })
       return undefined
     }
-    await mkdir(this.folderOf(slug), { recursive: true })
-    await cp(built, target, { recursive: true })
-    return target
+    // A page folder of an older install is not a link, and a rename can not replace a folder with a link.
+    if (current !== undefined && !current.isSymbolicLink()) await rm(link, { recursive: true, force: true })
+    const temp = join(folder, `.page-link-${randomBytes(6).toString('hex')}`)
+    await symlink(build, temp, 'dir')
+    await rename(temp, link)
+    await this.prunePages(slug, build)
+    return link
+  }
+
+  /** Keep the current build and the newest other builds of `slug`, {@link PAGE_BUILDS_KEPT} in all. */
+  private async prunePages(slug: string, current: string): Promise<void> {
+    const folder = this.folderOf(slug)
+    const builds: { name: string, at: number }[] = []
+    for (const name of await readdir(folder)) {
+      if (!PAGE_BUILD.test(name) || name === current) continue
+      const info = await stat(join(folder, name)).catch(() => undefined)
+      if (info !== undefined) builds.push({ name, at: info.mtimeMs })
+    }
+    builds.sort((a, b) => b.at - a.at)
+    for (const { name } of builds.slice(PAGE_BUILDS_KEPT - 1)) await rm(join(folder, name), { recursive: true, force: true })
+  }
+
+  /** Remove a build that this install made, when the install did not apply and no link names it. */
+  private async dropBuild(slug: string, build: string): Promise<void> {
+    const folder = this.folderOf(slug)
+    const target = await readlink(join(folder, PAGE_DIR)).catch(() => undefined)
+    if (target === build) return
+    await rm(join(folder, build), { recursive: true, force: true })
+    await rmdir(folder).catch(() => undefined)
   }
 
   /**
@@ -672,11 +733,14 @@ export class WidgetInstaller {
   }
 
   private async installNow(dir: string, expected: string | undefined): Promise<InstallOutcome> {
-    const outcome = await runGates(dir, this.services.renderCheck)
+    const pages: PageRoots = { slugDir: (slug) => this.folderOf(slug), stagingRoot: join(this.root, PAGE_STAGING) }
+    const outcome = await runGates(dir, pages, this.services.renderCheck)
     try {
       return await this.installGated(dir, expected, outcome)
-    } finally {
-      await outcome.page?.cleanup()
+    } catch (error) {
+      // A new build of an install that did not apply goes. An older build of the same sources stays.
+      if (outcome.page !== undefined && !outcome.page.reused && outcome.widget !== undefined) await this.dropBuild(outcome.widget.slug, outcome.page.name)
+      throw error
     }
   }
 
@@ -735,9 +799,9 @@ export class WidgetInstaller {
     this.services.records.holdLift(slug)
     try {
       const done = await this.loadNew({ slug, widget, folder, name, old, replaced, before, gates: outcome.gates, warnings })
-      // The bundle is live from here, so a failed page write is a warning, not a failed install.
-      const page = await this.placePage(slug, outcome.page?.built).catch((error: unknown) => {
-        done.warnings.push(`the built page was not written into the profile: ${errorText(error)}`)
+      // The bundle is live from here, so a failed link is a warning, not a failed install.
+      const page = await this.linkPage(slug, outcome.page?.name).catch((error: unknown) => {
+        done.warnings.push(`the page link of the built page was not written into the profile: ${errorText(error)}`)
         return undefined
       })
       return page === undefined ? done : { ...done, page }
