@@ -25,15 +25,23 @@
  *   reinstall of the slug, and the state stays;
  * - a bundle named deepwidgets-widget-<slug> from another folder is not the agent bundle: widget_remove keeps it;
  * - a crash in an agent widget is blamed on its deepwidgets-agent-<slug> row, and the next host start quarantines it.
- * Window part: it runs tools/smoke-desktop.mjs with DSH_SMOKE_CREATE set to a template folder. The
- * smoke installs it over MCP into the desktop app and finds its window. Skip it with
+ * Page gates (agent_library.build_gate), with the fixtures of tools/fixtures/page-widget.mjs:
+ * - a bundle with a good page installs in the CLI host with the warning that the render check was skipped, and its
+ *   built page is in <profile>/deepwidgets-widgets/<slug>/page with the base /widget/<slug>/;
+ * - a replace keeps the page in the folder of the slug;
+ * - the install refuses a page with a type error, an import of a package that is not on the list, an import of a file
+ *   outside the page folder, a changed fixed file, and a changed dw-core block. The old bundle and its page stay;
+ * - a bundle with no page/ installs with the host gates only, and the page of the old version goes.
+ * Window part: it runs tools/smoke-desktop.mjs with DSH_SMOKE_CREATE set to a bundle with a good page and
+ * DSH_SMOKE_CREATE_REFUSE set to a bundle whose page component throws. The smoke installs the first over MCP into the
+ * desktop app: it passes the render check and its window opens. The render check refuses the second. Skip it with
  * WIDGETS_CREATE_DESKTOP=0. The window part needs the machine lock of the smoke checks.
  * Prints `widgets-create: pass` and exits 0 only when every check passes.
  * Needs `corepack pnpm run build:artifacts` (and the desktop build for the window part) first.
  */
 import { spawn } from 'node:child_process'
 import { createHmac, randomBytes } from 'node:crypto'
-import { cpSync, createWriteStream, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
@@ -41,6 +49,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { pinnedFunction } from './in-host.mjs'
+import { CHILD, THROWING_LIBRARY, templateText, writePageWidget } from './fixtures/page-widget.mjs'
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const BIN = join(ROOT, 'apps/cli/lib/bin.js')
@@ -346,6 +355,7 @@ async function hostPart() {
 
     await legacyPart(call, slugs)
     await foreignPart(call)
+    await pagePart(call, slugs)
   } finally {
     await client.close()
   }
@@ -522,24 +532,81 @@ async function foreignPart(call) {
     `remove=${JSON.stringify(removed.body)} rows=${JSON.stringify(rows)} dependencies=${JSON.stringify(dependencies)}`)
 }
 
-/** Window part: the desktop smoke installs a template copy over MCP and finds its window. */
-async function desktopPart(templateText) {
-  const dir = join(work, 'agent', 'create-window')
-  mkdirSync(join(dir, 'src'), { recursive: true })
-  writeFileSync(join(dir, 'src', 'index.ts'), templateText.replaceAll(`'${SLUG}'`, "'create-window'"))
-  const smoke = spawn(process.execPath, [join(ROOT, 'tools/smoke-desktop.mjs')], { env: { ...process.env, DSH_SMOKE_CREATE: dir }, stdio: ['ignore', 'pipe', 'pipe'] })
+const PAGE = 'create-page'
+const PAGE_GATES = 'compile,lint,test,page-files,page-types,page-build,page-render'
+
+/**
+ * The page gates (agent_library.build_gate) in the CLI host. The render check does not run here: the install answer
+ * has the warning that it was skipped. The window part checks the render check in the desktop app.
+ */
+async function pagePart(call, slugs) {
+  const profileDir = await inHost("return loader.ctx.get('pluginManager').profile.dir")
+  const pageDir = join(profileDir, 'deepwidgets-widgets', PAGE, 'page')
+  const good = await call('widget_install', { dir: writePageWidget(join(work, 'agent', PAGE), PAGE) })
+  const index = existsSync(join(pageDir, 'index.html')) ? readFileSync(join(pageDir, 'index.html'), 'utf8') : ''
+  check('a bundle with a good page passes the page gates in the CLI host', !good.isError && good.body?.application === 'applied' && good.body?.gates?.map((gate) => gate.gate).join() === PAGE_GATES && (await slugs()).includes(PAGE),
+    JSON.stringify(good.body?.error ?? good.body?.gates?.map((gate) => [gate.gate, gate.ok, gate.diagnostics])))
+  check('in a CLI host, the install answer has the warning that the render check was skipped', good.body?.warnings?.some((line) => line.includes('render check') && line.includes('skipped')) === true, JSON.stringify(good.body?.warnings))
+  check('the built page is in <profile>/deepwidgets-widgets/<slug>/page with the base /widget/<slug>/', good.body?.page === pageDir && index.includes(`/widget/${PAGE}/assets/`),
+    `page=${JSON.stringify(good.body?.page)} index=${index.slice(0, 300)}`)
+
+  // A replace puts the new version under the second name, in <slug>.b. The page stays in the folder of the slug.
+  const again = await call('widget_install', { dir: join(work, 'agent', PAGE) })
+  check('a replace of a bundle with a page keeps the page in the folder of the slug', !again.isError && again.body?.replaced === true && again.body?.page === pageDir && existsSync(join(pageDir, 'index.html')) && !existsSync(join(`${dirname(pageDir)}.b`, 'page')),
+    JSON.stringify(again.body?.error ?? again.body?.page))
+  const before = readFileSync(join(pageDir, 'index.html'), 'utf8')
+
+  const outside = join(work, 'outside.ts')
+  writeFileSync(outside, 'export const outside = 1\n')
+  const refused = [
+    { name: 'a page with a type error', gate: 'page-types', files: { 'page/child.tsx': `${CHILD}\nexport const wrong: number = 'text'\n` }, find: (line) => line.startsWith('page/child.tsx:') && line.includes('TS2322') },
+    { name: 'a page that imports a package that is not on the list', gate: 'page-types', files: { 'page/child.tsx': `import { z } from 'zod'\n${CHILD}\nexport const schema = z.string()\n` }, find: (line) => line.includes("'zod'") && line.includes('TS2307') },
+    { name: 'a page that imports a file outside the page folder', gate: 'page-build', files: { 'page/child.tsx': `import { outside } from '${outside}'\n${CHILD}\nexport const value = outside\n` }, find: (line) => line.includes('outside the page folder') },
+    { name: 'a page with a changed fixed file', gate: 'page-files', files: { 'page/main.tsx': `${templateText('main.tsx')}// changed\n` }, find: (line) => line.startsWith('page/main.tsx:') },
+    { name: 'a page with a changed dw-core block', gate: 'page-files', files: { 'page/styles.css': templateText('styles.css').replace('padding: 12px !important; box-sizing', 'padding: 0 !important; box-sizing') }, find: (line) => line.startsWith('page/styles.css:') && line.includes('dw-core') },
+  ]
+  for (const [index, item] of refused.entries()) {
+    const answer = await call('widget_install', { dir: writePageWidget(join(work, 'agent', `${PAGE}-bad-${String(index)}`), PAGE, item.files) })
+    const error = answer.body?.error
+    check(`the install refuses ${item.name} (gate ${item.gate})`, answer.isError && error?.code === 'gate-failed' && error?.gate === item.gate && error?.diagnostics?.some(item.find) === true && typeof error?.nextStep === 'string',
+      JSON.stringify(error))
+  }
+  const kept = existsSync(join(pageDir, 'index.html')) ? readFileSync(join(pageDir, 'index.html'), 'utf8') : ''
+  const read = await call('widget_call', { slug: PAGE, action: 'get' })
+  check('after the refused installs, the old bundle and its page stay', kept === before && read.body?.result?.note === 'ready from the test run', JSON.stringify(read.body))
+  const offList = (await call('widget_install', { dir: join(work, 'agent', `${PAGE}-bad-1`) })).body?.error?.nextStep ?? ''
+  check('the next step of a refused page names the allowed imports', offList.includes('@openuidev/react-lang') && offList.includes('@deepwidgets/shell/ui/*'), offList)
+
+  // A bundle with no page/: the host gates only. The page of the old version goes with it.
+  const plain = join(work, 'agent', `${PAGE}-plain`)
+  writePageWidget(plain, PAGE)
+  rmSync(join(plain, 'page'), { recursive: true })
+  const noPage = await call('widget_install', { dir: plain })
+  check('a bundle with no page/ installs with the host gates only, and the old page goes', !noPage.isError && noPage.body?.gates?.map((gate) => gate.gate).join() === 'compile,lint,test' && noPage.body?.page === undefined && !existsSync(pageDir),
+    JSON.stringify(noPage.body?.error ?? noPage.body?.gates?.map((gate) => gate.gate)))
+  await call('widget_remove', { slug: PAGE })
+}
+
+/**
+ * Window part: the desktop smoke installs a bundle with a good page over MCP, and finds its window. The render
+ * check refuses a bundle whose page component throws.
+ */
+async function desktopPart() {
+  const dir = writePageWidget(join(work, 'agent', 'create-window'), 'create-window')
+  const refuse = writePageWidget(join(work, 'agent', 'create-window-throw'), 'create-window-throw', { 'page/library.tsx': THROWING_LIBRARY })
+  const smoke = spawn(process.execPath, [join(ROOT, 'tools/smoke-desktop.mjs')], { env: { ...process.env, DSH_SMOKE_CREATE: dir, DSH_SMOKE_CREATE_REFUSE: refuse }, stdio: ['ignore', 'pipe', 'pipe'] })
   let text = ''
   smoke.stdout.on('data', (chunk) => { text += chunk })
   smoke.stderr.on('data', (chunk) => { text += chunk })
   const code = await new Promise((resolve) => smoke.once('close', resolve))
   const last = text.trim().split('\n').slice(-3).join(' | ')
-  check('desktop: an MCP install of the template opens its window, and widget_remove closes it', code === 0, `smoke exit ${String(code)}: ${last}`)
+  check('desktop: a page bundle passes the render check, its window opens, the render check refuses a page whose component throws, and widget_remove closes the window', code === 0, `smoke exit ${String(code)}: ${last}`)
 }
 
 let exitCode = 1
 try {
-  const templateText = await hostPart()
-  if (process.env.WIDGETS_CREATE_DESKTOP !== '0') await desktopPart(templateText)
+  await hostPart()
+  if (process.env.WIDGETS_CREATE_DESKTOP !== '0') await desktopPart()
   const failed = results.filter((r) => !r.ok).length
   if (failed === 0 && results.length > 0) {
     console.log('widgets-create: pass')

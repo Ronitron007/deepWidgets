@@ -24,8 +24,14 @@ export interface TestRunWidget {
 export interface TestRunAction {
   slug: string
   name: string
+  kind: 'query' | 'mutation'
   outcome: 'ok' | 'threw' | 'skipped'
   message?: string
+  /**
+   * The answer of a query that returned, as JSON (`agent_library.build_gate.render`). The render check of the page
+   * answers the queries of the program with it. Absent for a mutation, and for an answer that is not JSON or is too big.
+   */
+  result?: unknown
 }
 
 /** The `RESULT` line. */
@@ -42,6 +48,8 @@ const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/
 const ACTION = /^[A-Za-z][A-Za-z0-9_]{0,62}$/
 const ACTION_LIMIT_MS = 1_000
 const APPLY_LIMIT_MS = 1_000
+/** The largest query answer, as JSON text, that the report keeps for the render check. */
+const RESULT_LIMIT = 64 * 1024
 
 interface ZodLike {
   safeParse(value: unknown): { success: true, data: unknown } | { success: false, error: unknown }
@@ -65,6 +73,16 @@ interface WidgetDefLike {
 }
 
 const textOf = (error: unknown): string => (error instanceof Error ? error.message : String(error)).slice(0, 300)
+
+/** The answer as JSON data, or undefined when it is not JSON or is larger than {@link RESULT_LIMIT}. */
+function jsonAnswer(value: unknown): unknown {
+  try {
+    const text = JSON.stringify(value ?? null)
+    return text.length > RESULT_LIMIT ? undefined : JSON.parse(text) as unknown
+  } catch {
+    return undefined
+  }
+}
 const out = (line: string): void => { process.stdout.write(`${line}\n`) }
 
 /** Check a definition as the runtime does. Throws `TypeError` with the runtime text. */
@@ -118,7 +136,7 @@ class StandInWidgets extends Service {
 }
 
 async function callAction(widgets: StandInWidgets, def: WidgetDefLike, action: ActionDef): Promise<TestRunAction> {
-  const base = { slug: def.slug, name: action.name }
+  const base = { slug: def.slug, name: action.name, kind: action.kind }
   let args: unknown = {}
   if (action.args !== undefined) {
     const parsed = action.args.safeParse({})
@@ -134,11 +152,12 @@ async function callAction(widgets: StandInWidgets, def: WidgetDefLike, action: A
   }
   let timer: NodeJS.Timeout | undefined
   try {
-    await Promise.race([
+    const answer = await Promise.race([
       Promise.resolve().then(() => action.handler(args, scope)),
-      new Promise((_resolve, reject) => { timer = setTimeout(() => { reject(new Error(`no answer in ${String(ACTION_LIMIT_MS)} ms`)) }, ACTION_LIMIT_MS) }),
+      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { reject(new Error(`no answer in ${String(ACTION_LIMIT_MS)} ms`)) }, ACTION_LIMIT_MS) }),
     ])
-    return { ...base, outcome: 'ok' }
+    const result = action.kind === 'query' ? jsonAnswer(answer) : undefined
+    return result === undefined ? { ...base, outcome: 'ok' } : { ...base, outcome: 'ok', result }
   } catch (error) {
     return { ...base, outcome: 'threw', message: textOf(error) }
   } finally {

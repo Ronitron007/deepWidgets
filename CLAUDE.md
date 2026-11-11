@@ -31,7 +31,7 @@ Code without a comment can still be off. A plugin row is off when a patch layer 
 | Item | State on 2026-11-10 |
 |---|---|
 | Rows that deepWidgets turns off | `deepwidgets/trim/cordis.patch.yml` turns off 161 of the 201 rows. The rows `hmr` and `timer` are on again for the widget system (`widget_rows`). Some kept rows stay pending, because the agent rows are off. |
-| Our packages | `deepwidgets/probe` and `deepwidgets/trace` (TypeScript). `deepwidgets/trim`: the trim patch, the row lists, and the test bundle `fixtures/widget-rows-install`. The widget MVP (spec `widget_mvp`) adds these packages: `deepwidgets/widgets` (the runtime, service `widgets`), `deepwidgets/widget-sample` (the `sample` counter), `deepwidgets/shell` (the widget page, built with Vite), `deepwidgets/mcp` (the MCP server for agents, see its `README.md`). The agent library (spec `agent_library`) adds `deepwidgets/widget-kit`: the core of the widget page and the contract `ChildProps`. The shell keeps only the default child. Electron main opens one floating window for each widget (`apps/desktop/src/deepwidgets-windows.ts`). |
+| Our packages | `deepwidgets/probe` and `deepwidgets/trace` (TypeScript). `deepwidgets/trim`: the trim patch, the row lists, and the test bundle `fixtures/widget-rows-install`. The widget MVP (spec `widget_mvp`) adds these packages: `deepwidgets/widgets` (the runtime, service `widgets`), `deepwidgets/widget-sample` (the `sample` counter), `deepwidgets/shell` (the widget page, built with Vite), `deepwidgets/mcp` (the MCP server for agents, see its `README.md`). The agent library (spec `agent_library`) adds `deepwidgets/widget-kit`: the core of the widget page and the contract `ChildProps`. The shell keeps only the default child. The unit `library.build_gate` adds the page gates: when a bundle has `page/`, `widget_install` checks its fixed files, type-checks it, builds it with Vite (`deepwidgets/mcp/src/page-gate.ts`), and asks Electron main for the render check in a hidden window (`apps/desktop/src/deepwidgets-render-check.ts`). The built page goes into `<profile>/deepwidgets-widgets/<slug>/page/`. The shell exports its shadcn pieces (`./ui/*`, `./components/*`) and the base sheet `page.css` of an agent page. Electron main opens one floating window for each widget (`apps/desktop/src/deepwidgets-windows.ts`). |
 | MCP port | In the desktop app, Electron main binds the fixed port `DEEPWIDGETS_MCP_PORT` (default 47615). It forwards each request to the loopback port of the host, which the OS picks. Electron main writes `$DSH_HOME/deepwidgets/mcp.json` (spec `safe_host`, `apps/desktop/src/deepwidgets-mcp-port.ts`). A CLI host (`apps/cli`) does not read `DEEPWIDGETS_MCP_PORT`. It binds the port of its own `--port` option and writes the file itself. Smoke runs use port 0. |
 | MCP modes | The MCP server groups its tools in modes (spec `modes`). The settings file `$DSH_HOME/deepwidgets/settings.json` can turn a mode off, except `interact`, which is always on. A missing file means that each mode is on. |
 | Main window | The app opens the main window at once, with no welcome window. The main window shows only `hello` and the probe text. |
@@ -59,7 +59,7 @@ The smoke check `tools/smoke-desktop.mjs` boots the app. Each flag below adds a 
 
 - `DSH_SMOKE_WINDOWS=1` checks that `sample` gets one window. The window must close when the `sample` row turns off.
 
-- `DSH_SMOKE_CREATE=<widget source folder>` installs that folder over MCP with `widget_install`. Then it finds the window and removes the widget.
+- `DSH_SMOKE_CREATE=<widget source folder>` installs that folder over MCP with `widget_install`. Then it finds the window and removes the widget. When the folder has `page/`, the render check must pass, and the built page must be in the profile. With `DSH_SMOKE_CREATE_REFUSE=<folder>`, the render check must refuse that second folder.
 
 - `DSH_SMOKE_HOST_RESTART=1` kills the host two times. After the first kill, the `sample` page and the main window must come back. Then the check kills the host again and quits the app while the restart waits. The app must exit by itself.
 
@@ -89,7 +89,7 @@ These scripts run with no app, unless the item says otherwise:
 
 - `tools/widgets-watchdog.mjs` checks the watchdog with a host.
 
-- `tools/widgets-create.mjs` checks widget creation over MCP with a host. Then it runs the `DSH_SMOKE_CREATE` smoke, unless `WIDGETS_CREATE_DESKTOP=0`.
+- `tools/widgets-create.mjs` checks widget creation over MCP with a host, also the page gates with the fixtures of `tools/fixtures/page-widget.mjs`. Then it runs the `DSH_SMOKE_CREATE` smoke with a page bundle, unless `WIDGETS_CREATE_DESKTOP=0`.
 
 - `tools/widgets-action-replay.mjs` replays the `action_contract` model paths of widget actions on a host.
 
@@ -121,7 +121,7 @@ The file `tools/in-host.mjs` is not a check. It gives the pin wrappers for inspe
 | `docs/canvas/` | JSON Canvas boards that show how a system works, such as `floating-widget-processes.canvas`. |
 | `docs/tasks/` | The task file of a unit, written before the unit starts. `docs/tasks/README.md` is the task protocol. |
 | `deepwidgets/` | The `@deepwidgets/*` packages. Each package with code is in TypeScript. `build:artifacts` compiles each one, except `shell` and `widget-kit`, into `lib/`. The app and the tools load `lib/` (spec `ts_move`). `build:web` builds `shell` with Vite into `deepwidgets/shell/dist/widget`. `widget-kit` exports its source, and Vite bundles it into the shell page. `trim` has no package code, only a test bundle. A widget bundle, such as `probe`, has a host half and a client half. |
-| `tools/` | deepWidgets scripts, such as the smoke check. |
+| `tools/` | deepWidgets scripts, such as the smoke check. `tools/fixtures/` holds their fixtures. |
 | `.agents/skills/` | The skills. `.claude/skills` is a link to this folder. |
 | `.claude/hooks/` | Claude Code hooks for this repository. |
 

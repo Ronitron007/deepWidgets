@@ -15,6 +15,9 @@
  * With DSH_SMOKE_CREATE set to a widget source folder (src/index.ts), an MCP client does the token
  * handshake with the proof of mcp.json, installs the folder with widget_install, finds the window of
  * its slug, removes it with widget_remove, and finds the window closed (widget.creation).
+ * When the folder has page/, the install answer must have the render check gate (page-render) with no skipped warning,
+ * and the built page in the profile (agent_library.build_gate). With DSH_SMOKE_CREATE_REFUSE set to a second folder
+ * whose page component throws, the install of that folder must fail in the gate page-render with render-error.
  * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://app/widget/?slug=sample.
  * It turns the sample row off through the host plugin manager and finds that window closed.
  * With DSH_SMOKE_HOST_RESTART=1, the check kills the host once. The sample widget page must be live again
@@ -1497,6 +1500,24 @@ async function checkCreate(deadline) {
   note(`create install ms=${String(Date.now() - started)} result=${JSON.stringify({ isError: installed.isError, slug: installed.body?.slug, application: installed.body?.application, error: installed.body?.error })}`)
   const slug = installed.body?.slug
   if (installed.isError || typeof slug !== 'string') return `create: widget_install failed: ${JSON.stringify(installed.body)}`
+  if (existsSync(join(dir, 'page'))) {
+    const render = installed.body?.gates?.find((gate) => gate.gate === 'page-render')
+    note(`create page=${JSON.stringify(installed.body?.page)} render=${JSON.stringify(render)} warnings=${JSON.stringify(installed.body?.warnings)}`)
+    if (render?.ok !== true) return `create: no passed render check: ${JSON.stringify(installed.body?.gates)}`
+    if (installed.body?.warnings?.some((line) => line.includes('skipped'))) return `create: the render check was skipped: ${JSON.stringify(installed.body?.warnings)}`
+    const page = installed.body?.page
+    if (typeof page !== 'string' || !existsSync(join(page, 'index.html'))) return `create: the built page is not in the profile: ${JSON.stringify(page)}`
+  }
+  const refuse = process.env.DSH_SMOKE_CREATE_REFUSE ?? ''
+  if (refuse !== '') {
+    const refusedAt = Date.now()
+    const refused = await tool('widget_install', { dir: refuse })
+    const error = refused.body?.error
+    note(`create refuse ms=${String(Date.now() - refusedAt)} error=${JSON.stringify(error)}`)
+    if (!refused.isError || error?.code !== 'gate-failed' || error?.gate !== 'page-render' || !error?.diagnostics?.some((line) => line.startsWith('render-error'))) {
+      return `create: the render check did not refuse the page that throws: ${JSON.stringify(refused.body)}`
+    }
+  }
   const url = `dsh-app://app/widget/?slug=${slug}`
   const soon = () => Math.min(deadline, Date.now() + 15_000)
   let failed = await waitPages(url, 1, soon(), 'after widget_install')
