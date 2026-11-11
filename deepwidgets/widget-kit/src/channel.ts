@@ -10,7 +10,7 @@ import type { McpClientLike } from '@openuidev/react-lang'
 const BACKOFF_MS = 250
 const BACKOFF_CAP_MS = 8000
 
-/** The answer of the program route. `catalog` is optional; the default is the first catalog of the page. */
+/** The answer of the program route. `catalog` is optional; the default is the catalog of the page. */
 export interface ProgramAnswer {
   rev: number
   text: string
