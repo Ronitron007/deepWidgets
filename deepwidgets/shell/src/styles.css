@@ -11,6 +11,8 @@
 @import "@deepseek-ai/dsh-client-ui-theme/src/styles/design-platform.css" layer(theme);
 
 @source "./";
+/* The core's state views use the utility classes `text-xs underline` (agent_library.main_split). */
+@source "../../widget-kit/src";
 
 /* DSH dark mode: body[data-ds-dark-theme] (boot-theme.ts). shadcn `dark:` classes follow it. */
 @custom-variant dark (&:is(body[data-ds-dark-theme] *));
