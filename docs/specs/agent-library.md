@@ -74,7 +74,7 @@ The page gates run in this order:
 
 4. **The render check.** A hidden Electron window loads the built page.
 
-The allowed imports are `react`, `react-dom`, `@openuidev/react-lang`, `@deepwidgets/widget-kit`, and the shadcn pieces that the shell has today. This unit makes those pieces importable from outside the shell.
+The allowed imports are `react`, `react-dom`, `@openuidev/react-lang`, `zod`, `@deepwidgets/widget-kit`, and the shadcn pieces that the shell has today. `zod` is on the list because `defineComponent` of OpenUI needs it. This unit makes those pieces importable from outside the shell.
 
 ### The render check `agent_library.build_gate.render`
 
