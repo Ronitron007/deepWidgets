@@ -9,8 +9,9 @@
  * @module deepwidgets-render-check
  */
 import { readFile } from 'node:fs/promises'
-import { extname, isAbsolute, resolve, sep } from 'node:path'
+import { extname, isAbsolute } from 'node:path'
 import { BrowserWindow } from 'electron'
+import { isCheckBuild, pageFile } from './deepwidgets-page-path.ts'
 
 /** The host name of the check route. The live widget route is `app`. */
 export const RENDER_CHECK_HOST = 'widget-check'
@@ -19,6 +20,8 @@ const WIDTH = 320
 const HEIGHT = 300
 /** The page must reach `ready` in this time after its load. */
 const READY_LIMIT_MS = 10_000
+/** The limit of one whole check: the load, `ready`, the settle time, and the probe. The Host waits 45 s. */
+const CHECK_LIMIT_MS = 15_000
 /** The wait after `ready`, so the query answers render and a component that throws on its data has thrown. */
 const SETTLE_MS = 400
 const POLL_MS = 100
@@ -38,7 +41,7 @@ export type RenderAnswer = { readonly ok: true; readonly result: unknown } | { r
 /** The check that the Host asks for (`RenderCheckRequest` of `deepwidgets/mcp/src/page-gate.ts`). */
 export interface RenderCheckJob {
   readonly slug: string
-  /** The absolute folder of the built page. */
+  /** The absolute folder of the built page while the gates run: `<profile>/deepwidgets-widgets/<slug>/page-<hash>.tmp`. */
   readonly pageDir: string
   readonly program: string
   readonly answers: Readonly<Record<string, RenderAnswer>>
@@ -63,7 +66,7 @@ export function parseRenderCheckJob(value: unknown): RenderCheckJob | undefined 
   const job = value as Record<string, unknown>
   const { slug, pageDir, program, answers, coreCss } = job
   if (typeof slug !== 'string' || !SLUG.test(slug) || typeof pageDir !== 'string' || !isAbsolute(pageDir)
-    || typeof program !== 'string' || typeof coreCss !== 'string' || typeof answers !== 'object' || answers === null) return undefined
+    || !isCheckBuild(pageDir, slug) || typeof program !== 'string' || typeof coreCss !== 'string' || typeof answers !== 'object' || answers === null) return undefined
   const parsed: Record<string, RenderAnswer> = {}
   for (const [name, answer] of Object.entries(answers)) {
     if (typeof answer !== 'object' || answer === null) return undefined
@@ -183,13 +186,13 @@ export class DesktopRenderCheck {
     if (!url.pathname.startsWith(base) || !['GET', 'HEAD'].includes(request.method)) return new Response(null, { status: 404 })
     let path: string
     try { path = decodeURIComponent(url.pathname.slice(base.length)) } catch { return new Response(null, { status: 400 }) }
-    const root = resolve(job.pageDir)
-    const target = resolve(root, path === '' ? 'index.html' : path)
-    if (!target.startsWith(root + sep)) return new Response(null, { status: 403 })
+    // Each link resolves, and a file outside the folder of the slug is refused.
+    const found = await pageFile(job.pageDir, path, true)
+    if ('status' in found) return new Response(null, { status: found.status })
     let body: Buffer
-    try { body = await readFile(target) } catch { return new Response(null, { status: 404 }) }
+    try { body = await readFile(found.file) } catch { return new Response(null, { status: 404 }) }
     return new Response(request.method === 'HEAD' ? null : new Uint8Array(body), {
-      headers: { 'content-type': MIME[extname(target)] ?? 'application/octet-stream', 'cache-control': 'no-store' },
+      headers: { 'content-type': MIME[extname(found.file)] ?? 'application/octet-stream', 'cache-control': 'no-store' },
     })
   }
 
@@ -234,21 +237,37 @@ export class DesktopRenderCheck {
     window.webContents.on('render-process-gone', (_event, details) => { gone = details.reason })
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     window.webContents.on('will-navigate', (event) => { event.preventDefault() })
-    try {
+    // One deadline holds the load and the judge. A page that never yields (a loop at the top level) holds its
+    // renderer, so `loadURL` and `executeJavaScript` never settle. At the deadline the window and its renderer end,
+    // and the next check of the queue can run.
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const late = new Promise<'late'>((done) => { timer = setTimeout(() => { done('late') }, CHECK_LIMIT_MS) })
+    const work = (async (): Promise<RenderCheckResult> => {
       await window.loadURL(`dsh-app://${RENDER_CHECK_HOST}/widget/${job.slug}/?slug=${encodeURIComponent(job.slug)}`)
-      return await this.judge(window, job, errors, () => gone)
+      return this.judge(window, job, errors, () => gone, Date.now() + READY_LIMIT_MS)
+    })()
+    try {
+      const outcome = await Promise.race([work, late])
+      if (outcome !== 'late') return outcome
+      // The work stays pending or rejects when its window goes; its result is not used.
+      work.catch(() => undefined)
+      const detail = [...new Set(errors)].slice(0, MAX_LINES).join(' | ')
+      return { ok: false, diagnostics: [`not-ready: the page did not load and reach ready in ${String(CHECK_LIMIT_MS)} ms. A loop or a long synchronous job holds the page${detail === '' ? '' : `: ${detail}`}`], warnings: [] }
     } finally {
+      clearTimeout(timer)
       this.job = undefined
       this.window = undefined
-      if (!window.isDestroyed()) window.destroy()
+      if (!window.isDestroyed()) {
+        window.webContents.forcefullyCrashRenderer()
+        window.destroy()
+      }
     }
   }
 
   private async judge(
-    window: BrowserWindow, job: RenderCheckJob, errors: string[], gone: () => string | undefined,
+    window: BrowserWindow, job: RenderCheckJob, errors: string[], gone: () => string | undefined, until: number,
   ): Promise<RenderCheckResult> {
     const uncaught = (): string[] => errors.filter(line => line.startsWith('Uncaught'))
-    const until = Date.now() + READY_LIMIT_MS
     let state: unknown
     while (Date.now() < until && gone() === undefined && uncaught().length === 0) {
       const text: unknown = await window.webContents.executeJavaScript('JSON.stringify(window.__dw ?? null)')
