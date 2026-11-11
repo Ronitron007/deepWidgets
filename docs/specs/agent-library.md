@@ -18,7 +18,7 @@ Today `deepwidgets/shell/src/main.tsx` holds all code of the widget page. This p
 
 - A new package, `@deepwidgets/widget-kit`, in `deepwidgets/widget-kit/`, holds the core and the contract.
 
-- The core exports one function. It takes the catalogs and the child, and it mounts the page in `#root`.
+- The core exports one function. It takes one catalog id and the child, and it mounts the page in `#root`. A child has exactly one component set, so the program must name that id.
 
 - The core does each job that `main.tsx` does today: the slug, the channel, the program load, the catalog check, the stream, the refresh of the queries, the late-answer rule, the states, and the diagnostics in `window.__dw`.
 
