@@ -70,7 +70,7 @@ A local process can drive a browser page. It can not click a native dialog witho
 
 ## Agents list `mcp_consent.agents`
 
-The main window shows each approved agent: its name, the time of approval, and the time of last use. Each row has a Revoke button.
+The Settings tab of the main widget (`main_widget.settings`) shows each approved agent: its name, the time of approval, and the time of last use. Each row has a Revoke button.
 
 ## Bridge `mcp_consent.bridge`
 
