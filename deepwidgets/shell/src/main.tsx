@@ -15,4 +15,4 @@ function DefaultChild({ root, children }: ChildProps) {
   return <Renderer.Root {...root} library={widgetLibrary}>{children}</Renderer.Root>
 }
 
-mountWidget({ catalogs: [CATALOG_ID], child: DefaultChild })
+mountWidget({ catalog: CATALOG_ID, child: DefaultChild })

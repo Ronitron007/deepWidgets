@@ -28,15 +28,15 @@ export interface ChildProps {
 
 /** What the page mounts. */
 export interface WidgetPage {
-  /** The ids of the component sets that the child renders. The first one is the default. A program that names another id is refused. */
-  catalogs: readonly [string, ...string[]]
+  /** The id of the one component set that the child renders. It is the default. A program that names another id is refused. */
+  catalog: string
   /** The child: one component that holds `<Renderer.Root>` and a component library. */
   child: ComponentType<ChildProps>
 }
 
 /** Diagnostics for the smoke check and for DevTools. The page never reads them. */
 interface ShellDiagnostics {
-  catalogs: string[]
+  catalog: string
   state: 'boot' | 'loading' | 'ready' | 'empty' | 'error' | 'removed'
   stream: StreamState
   streamOpens: number
@@ -55,7 +55,7 @@ interface Env {
   dw: ShellDiagnostics
   record: (event: string) => void
   channel: WidgetChannel | undefined
-  catalogs: readonly [string, ...string[]]
+  catalog: string
   Child: ComponentType<ChildProps>
 }
 
@@ -106,7 +106,7 @@ type Load =
   | { status: 'ready', text: string }
 
 function Core({ env }: { env: Env }) {
-  const { dw, record, channel, catalogs, Child } = env
+  const { dw, record, channel, catalog: shellCatalog, Child } = env
   const [load, setLoad] = useState<Load>({ status: 'loading' })
   const [programErrors, setProgramErrors] = useState<OpenUIError[]>([])
   const queryIdsRef = useRef<string[]>([])
@@ -127,10 +127,10 @@ function Core({ env }: { env: Env }) {
       dw.programLoads++
       if (answer.rev < programRevRef.current) { record(`program-stale:${String(answer.rev)}`); return }
       programRevRef.current = answer.rev
-      const catalog = answer.catalog ?? catalogs[0]
-      if (!catalogs.includes(catalog)) {
+      const catalog = answer.catalog ?? shellCatalog
+      if (catalog !== shellCatalog) {
         dw.state = 'error'
-        setLoad({ status: 'error', title: 'Unsupported component set', detail: `The widget needs "${catalog}". This shell has ${catalogs.join(', ')}.`, retry: false })
+        setLoad({ status: 'error', title: 'Unsupported component set', detail: `The widget needs "${catalog}". This shell has ${shellCatalog}.`, retry: false })
         return
       }
       if (answer.text.trim() === '') {
@@ -145,7 +145,7 @@ function Core({ env }: { env: Env }) {
       setLoad((current) => (current.status === 'removed' ? current
         : { status: 'error', title: 'Could not load the widget', detail: error instanceof Error ? error.message : String(error), retry: true }))
     }
-  }, [dw, record, channel, catalogs])
+  }, [dw, record, channel, shellCatalog])
 
   useEffect(() => { void loadProgram() }, [loadProgram])
 
@@ -216,7 +216,7 @@ function Core({ env }: { env: Env }) {
 /** Mount the widget page in `#root`: read the slug, open the channel, and render the core around `page.child`. */
 export function mountWidget(page: WidgetPage): void {
   const dw: ShellDiagnostics = {
-    catalogs: [...page.catalogs], state: 'boot', stream: 'connecting', streamOpens: 0,
+    catalog: page.catalog, state: 'boot', stream: 'connecting', streamOpens: 0,
     refreshes: 0, programLoads: 0, events: [], errors: [],
   }
   window.__dw = dw
@@ -225,5 +225,5 @@ export function mountWidget(page: WidgetPage): void {
   const channel = slug === null ? undefined : openChannel(slug)
   const root = document.getElementById('root')
   if (root === null) throw new Error('widget shell: the page has no #root')
-  createRoot(root).render(<Core env={{ dw, record, channel, catalogs: page.catalogs, Child: page.child }} />)
+  createRoot(root).render(<Core env={{ dw, record, channel, catalog: page.catalog, Child: page.child }} />)
 }

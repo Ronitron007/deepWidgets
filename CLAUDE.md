@@ -99,6 +99,8 @@ These scripts run with no app, unless the item says otherwise:
 
 - `tools/widgets-crash-replay.mjs` checks the crash records of `widget_fv.crash` and `safe_host`, and the cleanup at a crash. First it runs the replays and the specs with vitest and no host. Then it runs the crash cases with a host.
 
+- `tools/widget-kit-imports.mjs` checks the import boundary of the widget page. The core imports no component library, and the shell reaches the core only through `@deepwidgets/widget-kit`.
+
 - `tools/in-host-pin.mjs` checks the pin wrappers of `tools/in-host.mjs` with no host.
 
 - `tools/dsh-upstream-check.sh` lists the upstream DSH changes in the parts that deepWidgets uses, and the merge conflicts.
@@ -191,6 +193,7 @@ node tools/widgets-action-replay.mjs
 node tools/widgets-install-replay.mjs
 node tools/widgets-hmr-guards.mjs
 node tools/widgets-crash-replay.mjs
+node tools/widget-kit-imports.mjs
 node tools/in-host-pin.mjs
 tools/dsh-upstream-check.sh
 tools/verify-import.sh d15b5ec5
