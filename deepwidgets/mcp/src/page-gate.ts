@@ -51,8 +51,6 @@ const ALLOWED = [
 ]
 /** The shadcn pieces of the shell: `@deepwidgets/shell/ui/<file>` and `@deepwidgets/shell/components/<file>`. */
 const ALLOWED_PREFIXES = ['@deepwidgets/shell/ui/', '@deepwidgets/shell/components/']
-/** The bare `@import` names of a page stylesheet: the base sheet of the shell. */
-const ALLOWED_STYLES = ['@deepwidgets/shell/page.css']
 /** A built page in the folder of its slug: `page-<hash>`, and `page-<hash>.tmp` while the gates run. */
 export const PAGE_BUILD = /^page-[0-9a-f]{16}$/
 export const PAGE_BUILD_TMP = /^page-[0-9a-f]{16}\.tmp$/
@@ -305,13 +303,13 @@ async function buildGate(staging: string, slug: string, outDir: string): Promise
   await mkdir(emptyDir, { recursive: true })
   const job: PageBuildJob = {
     root: join(staging, 'page'),
+    modules: join(staging, 'node_modules'),
     outDir,
     base: `/widget/${slug}/`,
     emptyDir,
     cacheDir: join(staging, 'vite-cache'),
     allowed: ALLOWED,
     allowedPrefixes: ALLOWED_PREFIXES,
-    allowedStyles: ALLOWED_STYLES,
   }
   const jobFile = join(staging, 'build-job.json')
   await writeFile(jobFile, JSON.stringify(job))

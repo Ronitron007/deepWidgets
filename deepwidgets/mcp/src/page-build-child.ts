@@ -1,9 +1,10 @@
 /**
  * The child of the build gate of a widget page (`agent_library.build_gate.gates`). It builds the staging copy of
  * `page/` with one Vite config: React, Tailwind, the target of the shell, and the `base` of the slug. The plugin
- * `importFence` refuses each import of a page file that is not on the allowed list. Before the build,
- * `stylesheetProblems` keeps the stylesheets of the page inside `page/`, and the inline PostCSS config means that
- * Vite loads no PostCSS config file of the page. The build runs in its own process, so a long synchronous step of
+ * `importFence` refuses each import of a page file that is not on the allowed list. `outputFence` refuses the build
+ * when any file that went into the page is outside `page/` and outside the allowed packages. Before the build,
+ * `stylesheetProblems` refuses config files, `@plugin`, and `@config`, and the inline PostCSS config means that Vite
+ * loads no PostCSS config file of the page. The build runs in its own process, so a long synchronous step of
  * Rollup or Tailwind does not hold the host.
  *
  * Protocol on stdout: one line `RESULT <json>` ({@link PageBuildReport}) at the end.
@@ -11,16 +12,23 @@
  * Usage: `<node> page-build-child.js <job.json>` with a {@link PageBuildJob}.
  * @module @deepwidgets/mcp/page-build-child
  */
-import { readdir, readFile } from 'node:fs/promises'
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
+import { readdir, readFile, realpath } from 'node:fs/promises'
+import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { build, type Plugin } from 'vite'
 
+const require = createRequire(import.meta.url)
+
 /** The job file of the child. */
 export interface PageBuildJob {
-  /** The staging copy of `page/`. Its `node_modules` holds only the allowed packages. */
+  /** The staging copy of `page/`. */
   root: string
+  /** The staging `node_modules` next to it, with links to the allowed packages only. */
+  modules: string
   outDir: string
   /** The URL path of the slug, `/widget/<slug>/`. */
   base: string
@@ -31,8 +39,6 @@ export interface PageBuildJob {
   allowed: string[]
   /** The bare import prefixes that a page file may use, such as `@deepwidgets/shell/ui/`. */
   allowedPrefixes: string[]
-  /** The bare `@import` names that a page stylesheet may use, such as `@deepwidgets/shell/page.css`. */
-  allowedStyles: string[]
 }
 
 /** The `RESULT` line. */
@@ -89,12 +95,12 @@ export function importFence(job: Pick<PageBuildJob, 'root' | 'allowed' | 'allowe
   }
 }
 
+/** The config files that the resolver and the TypeScript transform read on their own: allowed as plain reads. */
+const CONFIG_READ = /^(?:package|tsconfig[^/]*|jsconfig[^/]*)\.json$/
 /** A config file that PostCSS or Tailwind would load. The build has its own config, so a page may not have one. */
 const CONFIG_FILE = /^(?:\.postcssrc|postcss\.config|tailwind\.config)(?:\.[^/]*)?$/i
 /** The stylesheet kinds that Vite or Tailwind reads. */
 const STYLE_FILE = /\.(?:css|pcss|postcss|scss|sass|less|styl|stylus)$/i
-/** A URL with a scheme, such as `https:` or `file:`. */
-const SCHEME = /^[a-z][a-z0-9+.-]*:/i
 
 /** Each file in the page folder, at any depth. */
 async function pageFiles(dir: string): Promise<string[]> {
@@ -108,14 +114,12 @@ async function pageFiles(dir: string): Promise<string[]> {
 }
 
 /**
- * The stylesheet fence of `agent_library.build_gate.gates`: CSS stays inside `page/`. It refuses a PostCSS or
- * Tailwind config file, `@plugin` and `@config`, and each `@import`, `@reference`, `url()`, `@source`, and `source()`
- * whose path resolves outside the page folder. A bare `@import` must be on `allowedStyles`. A `url()` may be a
- * `data:` URL or a `#` fragment. The check reads the text without comments, and it runs before Vite.
+ * The stylesheet rules of `agent_library.build_gate.gates` that give a clearer error than the output fence: a page has
+ * no PostCSS or Tailwind config file, and its stylesheets have no `@plugin` and no `@config`. The output fence guards
+ * the files that a stylesheet reads. The check reads the text without comments, and it runs before Vite.
  */
-export async function stylesheetProblems(job: Pick<PageBuildJob, 'root' | 'allowedStyles'>): Promise<string[]> {
+export async function stylesheetProblems(job: Pick<PageBuildJob, 'root'>): Promise<string[]> {
   const root = resolve(job.root)
-  const inside = (path: string): boolean => path === root || path.startsWith(root + sep)
   const name = (file: string): string => `page/${relative(root, file)}`
   const problems: string[] = []
   for (const file of await pageFiles(root)) {
@@ -125,36 +129,127 @@ export async function stylesheetProblems(job: Pick<PageBuildJob, 'root' | 'allow
     }
     if (!STYLE_FILE.test(file)) continue
     const text = (await readFile(file, 'utf8')).replace(/\/\*[\s\S]*?\*\//g, '')
-    const at = (path: string): boolean => inside(resolve(dirname(file), path))
     for (const match of text.matchAll(/@(plugin|config)\b/gi)) {
       problems.push(`${name(file)}: @${match[1] ?? ''} is not allowed in a page stylesheet. The build loads no plugin or config of the page.`)
     }
-    for (const match of text.matchAll(/@(import|reference)\s+(?:url\(\s*)?(["']?)([^"')\s;]+)\2/gi)) {
-      const path = match[3] ?? ''
-      if (job.allowedStyles.includes(path)) continue
-      if (!(path.startsWith('./') || path.startsWith('../')) || !at(path)) {
-        problems.push(`${name(file)}: the @${match[1] ?? ''} "${path}" is outside the page folder. A page stylesheet may import ${job.allowedStyles.join(', ')}, and files in page/.`)
-      }
+  }
+  return problems
+}
+
+/** The real folder of a package that `from` resolves by `name`, or undefined. */
+function packageFolder(from: string, name: string): string | undefined {
+  const paths = createRequire(join(from, 'package.json')).resolve.paths(name) ?? []
+  const found = paths.map((base) => join(base, name)).find((path) => existsSync(join(path, 'package.json')))
+  return found === undefined ? undefined : realpathSync(found)
+}
+
+/**
+ * The folders that a built page may read: the allowed packages, which the staging `node_modules` links, and the
+ * packages that they depend on, at any depth. A workspace package (not in a `node_modules` folder) adds its
+ * development dependencies too, because its stylesheets import Tailwind and the DSH token sheets.
+ */
+export function allowedFolders(modules: string): string[] {
+  const roots: string[] = []
+  for (const entry of readdirSync(modules)) {
+    if (entry.startsWith('@')) for (const scoped of readdirSync(join(modules, entry))) roots.push(realpathSync(join(modules, entry, scoped)))
+    else roots.push(realpathSync(join(modules, entry)))
+  }
+  const seen = new Set<string>()
+  const walk = (folder: string): void => {
+    if (seen.has(folder)) return
+    seen.add(folder)
+    let manifest: Record<string, unknown>
+    try {
+      manifest = JSON.parse(readFileSync(join(folder, 'package.json'), 'utf8')) as Record<string, unknown>
+    } catch {
+      return
     }
-    for (const match of text.matchAll(/url\(\s*(["']?)([^"')]*?)\1\s*\)/gi)) {
-      const path = (match[2] ?? '').trim()
-      if (path === '' || path.startsWith('#') || path.toLowerCase().startsWith('data:')) continue
-      if (SCHEME.test(path) || path.startsWith('/') || !at(path.split(/[?#]/)[0] ?? path)) {
-        problems.push(`${name(file)}: the url(${path}) is outside the page folder. Put the file in page/ and use a relative path.`)
-      }
-    }
-    // `@source "<glob>"`, `@source not "<glob>"`, and `source("<path>")` of `@import` and `@tailwind`. `@source inline()` names no file.
-    const sources = [...text.matchAll(/@source\s+(?:not\s+)?(["'])(.*?)\1/gi), ...text.matchAll(/source\(\s*(["'])(.*?)\1\s*\)/gi)]
-    for (const match of sources) {
-      const path = match[2] ?? ''
-      // The part before the first glob character is a folder.
-      const base = path.split(/[*?{[]/)[0] ?? ''
-      if (SCHEME.test(path) || isAbsolute(base) || !at(base === '' ? '.' : base)) {
-        problems.push(`${name(file)}: the source "${path}" is outside the page folder. Tailwind may read only files in page/.`)
+    const fields = ['dependencies', 'peerDependencies', 'optionalDependencies', ...folder.split(sep).includes('node_modules') ? [] : ['devDependencies']]
+    for (const field of fields) {
+      const deps = manifest[field]
+      if (typeof deps !== 'object' || deps === null) continue
+      for (const name of Object.keys(deps)) {
+        const found = packageFolder(folder, name)
+        if (found !== undefined) walk(found)
       }
     }
   }
-  return problems
+  for (const root of roots) walk(root)
+  return [...seen]
+}
+
+/**
+ * Record each file that this process reads while the build runs. A plugin can read a file with no module and no
+ * emitted asset: Vite inlines a small asset of `new URL(..., import.meta.url)` or of `image-set()` as a data URL.
+ * The recorder wraps the file reads of `node:fs` and `node:fs/promises`, and `syncBuiltinESMExports` makes the
+ * wrapped functions the named exports too. A read by a native module (the Tailwind scanner) is not seen here; Tailwind
+ * reports those files as watch files.
+ */
+export function recordReads(): Set<string> {
+  const reads = new Set<string>()
+  const keep = (path: unknown): void => {
+    if (typeof path === 'string') reads.add(resolve(path))
+    else if (path instanceof URL && path.protocol === 'file:') reads.add(fileURLToPath(path))
+    else if (Buffer.isBuffer(path)) reads.add(resolve(path.toString()))
+  }
+  const fs = require('node:fs') as typeof import('node:fs')
+  const wrap = (target: object, name: string): void => {
+    const slots = target as Record<string, unknown>
+    const original = slots[name] as (...args: unknown[]) => unknown
+    slots[name] = (...args: unknown[]) => {
+      keep(args[0])
+      return original.apply(target, args)
+    }
+  }
+  for (const name of ['readFile', 'readFileSync', 'createReadStream', 'open', 'openSync']) wrap(fs, name)
+  for (const name of ['readFile', 'open']) wrap(fs.promises, name)
+  syncBuiltinESMExports()
+  return reads
+}
+
+/**
+ * The output fence of `agent_library.build_gate.gates`, the guard of the build. At the end of the build it collects
+ * each file that went into the page: each module, each file that a plugin read (the stylesheet imports and the
+ * inlined assets of Vite and Tailwind), and the source of each emitted asset. The build fails when the real path of a
+ * file is outside `page/` and outside the folders of `allowedFolders`. A virtual module of Vite has no path.
+ */
+export function outputFence(job: Pick<PageBuildJob, 'root'>, allowed: () => string[], reads: Set<string>): Plugin {
+  const root = realpathSync(job.root)
+  // The staging folder holds the configs of the gates, such as the tsconfig that Vite reads for the page files.
+  const staging = dirname(root)
+  const inside = (path: string, folder: string): boolean => path === folder || path.startsWith(folder + sep)
+  return {
+    name: 'deepwidgets-output-fence',
+    async generateBundle(_options, bundle) {
+      const files = new Set<string>()
+      const add = (raw: string): void => {
+        const id = (raw.startsWith('\0') ? raw.slice(1) : raw).split('?')[0] ?? raw
+        if (isAbsolute(id)) files.add(id)
+      }
+      for (const id of this.getModuleIds()) add(id)
+      for (const id of this.getWatchFiles()) add(id)
+      for (const item of Object.values(bundle)) {
+        if (item.type === 'asset') for (const name of item.originalFileNames) add(isAbsolute(name) ? name : resolve(root, name))
+      }
+      const used = new Set(files)
+      for (const file of reads) add(file)
+      const folders = allowed()
+      const outside: string[] = []
+      for (const file of files) {
+        // A missing file put nothing into the page.
+        const real = await realpath(file).catch(() => undefined)
+        if (real === undefined || inside(real, staging) || folders.some((folder) => inside(real, folder))) continue
+        // A resolver reads each package.json on the way up from a file, and the TypeScript transform reads the tsconfig
+        // files of the shell pieces, so a plain read of one is allowed. A module or an asset that is such a file outside
+        // the page is refused. A limit: a page can inline such a file of a folder above it with `new URL`.
+        if (CONFIG_READ.test(basename(real)) && !used.has(file)) continue
+        outside.push(real)
+      }
+      if (outside.length > 0) {
+        this.error(`the page reads ${String(outside.length)} file(s) outside the page folder: ${outside.slice(0, 5).join(', ')}. A page may use only files in page/ and the allowed packages.`)
+      }
+    },
+  }
 }
 
 /** The place and the text of a Rollup or Vite error. */
@@ -178,6 +273,7 @@ async function main(): Promise<void> {
     out({ ok: false, diagnostics: problems.slice(0, MAX_DIAGNOSTICS) })
     return
   }
+  const reads = recordReads()
   try {
     await build({
       configFile: false,
@@ -188,7 +284,7 @@ async function main(): Promise<void> {
       envDir: job.emptyDir,
       publicDir: false,
       cacheDir: job.cacheDir,
-      plugins: [importFence(job), react(), tailwindcss()],
+      plugins: [importFence(job), react(), tailwindcss(), outputFence(job, () => allowedFolders(job.modules), reads)],
       resolve: { dedupe: ['react', 'react-dom'] },
       // An inline config: Vite does not look for a PostCSS config file of the page.
       css: { postcss: {} },
