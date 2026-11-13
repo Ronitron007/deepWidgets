@@ -9,7 +9,9 @@
     "src/index.ts",
     "src/creation.ts",
     "src/loop-check.ts",
-    "src/testrun-child.ts"
+    "src/testrun-child.ts",
+    "src/page-gate.ts",
+    "src/page-build-child.ts"
   ],
   "references": [
     {

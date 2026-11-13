@@ -38,6 +38,7 @@ import type { CallToolResult, StandardSchemaWithJSON } from '@modelcontextprotoc
 import { z } from 'zod'
 import { CreationError, templateFiles, widgetTypesText, WidgetInstaller } from './creation.ts'
 import type { CreationErrorCode, GateName } from './creation.ts'
+import type { RenderCheck, RenderCheckRequest, RenderCheckResult } from './page-gate.ts'
 
 export const name = 'deepwidgets-mcp'
 export const inject = ['webServer', 'widgets', 'widgetRecords']
@@ -303,6 +304,65 @@ export interface Config {
 interface ForwardMessage {
   type: 'deepwidgets-mcp'
   mcp: { port: number; nonce: string; secret: string } | null
+}
+
+/** The render check of a page asks Electron main and waits this long for the answer (`agent_library.build_gate.render`). */
+const RENDER_CHECK_LIMIT_MS = 45_000
+
+/** The IPC message to Electron main that asks for a render check, and the answer, with the same `checkId`. */
+interface RenderCheckMessage {
+  type: 'deepwidgets-render-check'
+  checkId: number
+  check: RenderCheckRequest
+}
+
+/** Parse the answer of Electron main at the boundary. */
+function renderAnswer(message: unknown, checkId: number): RenderCheckResult | undefined {
+  if (typeof message !== 'object' || message === null) return undefined
+  const value = message as { type?: unknown, checkId?: unknown, result?: unknown }
+  if (value.type !== 'deepwidgets-render-check' || value.checkId !== checkId || typeof value.result !== 'object' || value.result === null) return undefined
+  const result = value.result as { ok?: unknown, diagnostics?: unknown, warnings?: unknown }
+  const lines = (list: unknown): string[] | undefined => Array.isArray(list) && list.every((line) => typeof line === 'string') ? list : undefined
+  const diagnostics = lines(result.diagnostics)
+  const warnings = lines(result.warnings)
+  if (typeof result.ok !== 'boolean' || diagnostics === undefined || warnings === undefined) return undefined
+  return { ok: result.ok, diagnostics, warnings }
+}
+
+/**
+ * The render check through Electron main over the IPC channel of the host (`agent_library.build_gate.render`).
+ * Electron main loads the built page in a hidden window and answers with the result.
+ */
+function mainRenderCheck(): RenderCheck {
+  let next = 1
+  return (check) => new Promise<RenderCheckResult>((resolve, reject) => {
+    if (!process.connected || process.send === undefined) {
+      reject(new Error('the IPC channel to Electron main is closed'))
+      return
+    }
+    const checkId = next++
+    const listen = (message: unknown): void => {
+      const result = renderAnswer(message, checkId)
+      if (result === undefined) return
+      done()
+      resolve(result)
+    }
+    const timer = setTimeout(() => {
+      done()
+      reject(new Error(`Electron main did not answer in ${String(RENDER_CHECK_LIMIT_MS)} ms`))
+    }, RENDER_CHECK_LIMIT_MS)
+    function done(): void {
+      clearTimeout(timer)
+      process.off('message', listen)
+    }
+    process.on('message', listen)
+    const message: RenderCheckMessage = { type: 'deepwidgets-render-check', checkId, check }
+    process.send(message, (error: Error | null) => {
+      if (error === null) return
+      done()
+      reject(error)
+    })
+  })
 }
 
 function sendToMain(message: ForwardMessage): Promise<void> {
@@ -588,7 +648,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     }))
 
     mcp.registerTool('widget_install', {
-      description: 'Install the widget in a folder (absolute path, with src/index.ts). The gates compile, lint, type-check, and test-run the code first; code that fails a gate is not installed. A second install of the same slug replaces the bundle; the state stays.',
+      description: 'Install the widget in a folder (absolute path, with src/index.ts). The gates compile, lint, type-check, and test-run the code first; code that fails a gate is not installed. A folder with page/ also runs the page gates: the fixed files, the type check, the build, and the render check. A second install of the same slug replaces the bundle; the state stays.',
       inputSchema: lenient(installInput),
     }, tool(installInput, async ({ dir }) => ({ ...await creator().install(dir), nextStep: 'Call widget_describe with the slug, then widget_call each action to check it.' }), { mode: 'create' }))
 
@@ -616,6 +676,8 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       profileDir: inner.profileContext.dir,
       widgets: ctx.widgets,
       records: ctx.widgetRecords,
+      // agent_library.build_gate.render: only the desktop host has Electron main. A CLI host skips the check.
+      renderCheck: forwarded && process.connected ? mainRenderCheck() : undefined,
     })
     inner.effect(() => () => { installer = undefined }, 'mcp: the widget installer')
   })

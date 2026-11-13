@@ -5,10 +5,16 @@
   "type": "module",
   "exports": {
     "./dist/*": "./dist/*",
+    "./ui/*": "./src/ui/*",
+    "./components/*": "./src/components/*",
+    "./page.css": "./page.css",
     "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "page.css",
+    "src/ui",
+    "src/components"
   ],
   "scripts": {
     "build": "vite build && tsx scripts/guide.ts"
