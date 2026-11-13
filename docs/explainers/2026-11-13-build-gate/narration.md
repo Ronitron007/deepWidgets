@@ -72,7 +72,7 @@ The core draws four page states: loading, error, empty, and removed. Loading is 
 
 The styles sit in a block of the page stylesheet, between two marker comments. The block holds six rules in a cascade layer with the name d w core. Each declaration carries important.
 
-You already know why that beats an unlayered rule. For an important declaration, the layer order flips. So an important rule in a layer wins. The agent can not override it from below.
+You already know why that beats an unlayered rule. For an important declaration, the layer order flips. So an important rule in a layer wins.
 
 Now the catch. The agent can not override the block from an unlayered rule. It can open the same layer again lower down, and win there by order. The gate holds the text of the block to the template. The last gate then catches an override, and we reach it later.
 
@@ -134,7 +134,7 @@ The copy and its configs go at the end of the run, whether the gates pass or fai
 
 Beside the copy sits a node modules folder of symbolic links.
 
-It holds eight links. Four are the packages of the list: react, react dom, open u i react lang, and zod. Then come two type packages, the widget kit, and the shell.
+It holds eight links. Five are packages of the list: react, react dom, open u i react lang, zod, and the widget kit. The other three are two type packages and the shell.
 
 That is the whole trick of the type gate. A page that imports recharts gets no resolution, because no link with that name exists. The compiler then reports that it can not find the module. The error is a plain missing module error, not a rule of ours.
 
@@ -474,7 +474,7 @@ Eight land on page build. One is an import of a file outside the page. Three are
 
 Four more land there too. One is a bare string inside an image function. One is the new U R L form. The last two are an at plugin rule and a configuration file.
 
-Each case asserts the gate name, the diagnostic, and that a next step came back.
+Each case asserts the gate name and the diagnostic. All but the link case also assert that a next step came back.
 
 ## mutants
 

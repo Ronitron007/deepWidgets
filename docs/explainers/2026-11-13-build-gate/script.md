@@ -42,7 +42,7 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 
 ### `dw_core_block`
 
-- Target: 66 s (166 words).
+- Target: 63 s (158 words).
 - Visuals: The four page states drawn as four small widget windows: two grey bars, a red title with Retry, an empty note, a removed note. Below, the real dw-core block, with `@layer dw-core` and one `!important` highlighted. Then a diagram of the important cascade: unlayered important LOSES to layered important, with the arrow pointing the unexpected way. Then the hole: a SECOND `@layer dw-core` block from the agent, lower in the sheet, winning by order. Show the real fixture line `@layer dw-core { .dw-surface { padding: 0 !important; } }` and mark it `only the render check catches this`.
 
 
@@ -78,7 +78,7 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 
 ### `linked_modules`
 
-- Target: 45 s (113 words).
+- Target: 45 s (114 words).
 - Visuals: The staging node_modules opened: eight entries, each drawn as a link arrow to a real folder elsewhere. A ninth entry `recharts` drawn greyed out and absent, with the resulting TS2307 line below.
 
 ### `one_copy_rule`
@@ -213,7 +213,7 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 ### `keep_three`
 
 - Target: 42 s (106 words).
-- Visuals: Four build folders with timestamps, the oldest fading out. Two reasons listed: a reinstall of the same sources reuses its build; a later pin can point the link back. Sizes 360 to 800 KB each.
+- Visuals: Four build folders with timestamps, the oldest fading out. Two reasons listed: a reinstall of the same sources keeps the build that is there; a later pin can point the link back with one rename. Sizes 360 to 800 KB each.
 
 ### `sweep`
 
@@ -248,7 +248,7 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 
 ### `twelve_cases`
 
-- Target: 50 s (125 words).
+- Target: 52 s (132 words).
 - Visuals: A table of the thirteen refusals: case, gate, and the diagnostic each one asserts. Grouped by gate: page-files 3, page-types 2, page-build 8.
 
 ### `mutants`
