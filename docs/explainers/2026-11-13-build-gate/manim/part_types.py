@@ -57,7 +57,7 @@ class StagingCopy(DWScene):
             cfg.move_to(self.dst.get_center() + DOWN * 0.7 + LEFT * 1.4)
             notes = VGroup(T("for the type check", SMALL, MUTED),
                            T("for oxlint", SMALL, MUTED),
-                           T("a stylesheet import has no value", SMALL, MUTED))
+                           T("one line of types", SMALL, MUTED))
             for c, n in zip(cfg, notes):
                 n.next_to(c, RIGHT, buff=0.4).set_y(c.get_y())
             self.play(LaggedStart(*[AnimationGroup(FadeIn(c), FadeIn(n)) for c, n in zip(cfg, notes)],
@@ -79,49 +79,53 @@ class LinkedModules(DWScene):
             self.play(FadeIn(title, shift=RIGHT * 0.2), run_time=b.t(0.5))
 
         with self.beat("eight") as b:
-            box = rbox(5.2, 5.0, TYPES, fill=0.05, sw=3).move_to([-3.6, -0.15, 0])
+            box = rbox(5.2, 4.9, TYPES, fill=0.05, sw=3).move_to([-3.8, -0.45, 0])
             tag = T("node_modules/", SMALL, TYPES, mono=True)
             tag.next_to(box.get_corner(UL), DR, buff=0.16)
             entries = VGroup(*[T(n, SMALL, TEXT, mono=True) for n in LINKS])
-            entries.arrange(DOWN, buff=0.26, aligned_edge=LEFT)
-            entries.move_to(box).shift(DOWN * 0.2)
-            real = rbox(4.6, 2.2, DISK, fill=0.05, sw=3).move_to([3.8, 0.6, 0])
-            rtag = lines("the real folder of each package,",
-                         "as the widget kit resolves it", size=SMALL, color=DISK)
+            for i, e in enumerate(LINKS):
+                entries[i].move_to([box.get_left()[0] + 0.35, 1.25 - i * 0.46, 0], aligned_edge=LEFT)
+            real = rbox(4.2, 1.9, DISK, fill=0.05, sw=3).move_to([4.4, 0.4, 0])
+            rtag = lines("the real folder of", "each package, as the",
+                         "widget kit resolves it", size=SMALL, color=DISK)
             rtag.move_to(real)
-            self.play(FadeIn(box), FadeIn(tag), run_time=b.t(0.2))
+            self.play(FadeIn(box), FadeIn(tag), run_time=b.t(0.14))
             self.play(LaggedStart(*[FadeIn(e, shift=RIGHT * 0.15) for e in entries], lag_ratio=0.35),
-                      run_time=b.t(0.5))
+                      run_time=b.t(0.44))
+            spine_x = -0.5
             arrows = VGroup(*[labeled_arrow(entries[i].get_right() + RIGHT * 0.1,
-                                            [real.get_left()[0], entries[i].get_y(), 0], None, LINK)
+                                            [spine_x, entries[i].get_y(), 0], None, LINK, buff=0.05)
                               for i in range(len(LINKS))])
-            self.play(FadeIn(real), FadeIn(rtag), run_time=b.t(0.12))
+            spine = Line([spine_x, entries[0].get_y(), 0], [spine_x, entries[-1].get_y(), 0],
+                         stroke_color=LINK, stroke_width=4)
+            bus = labeled_arrow([spine_x, 0.4, 0], real.get_left(), None, LINK)
+            self.play(FadeIn(real), FadeIn(rtag), run_time=b.t(0.1))
             self.play(LaggedStart(*[GrowArrow(a.arrow) for a in arrows], lag_ratio=0.2),
-                      run_time=b.t(0.15))
-            count = T("eight links", LABEL, TYPES, bold=True)
-            count.next_to(box, DOWN, buff=0.25)
-            self.play(FadeIn(count), run_time=b.t(0.1))
+                      Create(spine), GrowArrow(bus.arrow), run_time=b.t(0.13))
+            count = chip("eight links", TYPES, mono=False)
+            count.next_to(box, UP, buff=0.2).align_to(box, RIGHT)
+            self.play(FadeIn(count), run_time=b.t(0.08))
             self.entries, self.real = entries, VGroup(real, rtag, arrows)
 
         with self.beat("trick") as b:
             ghost = T("recharts", SMALL, ISOLATION, mono=True)
-            ghost.next_to(self.entries, DOWN, buff=0.26).align_to(self.entries, LEFT)
+            ghost.next_to(self.entries, DOWN, buff=0.22).align_to(self.entries, LEFT)
             ghost.set_opacity(0.45)
             x = cross(ISOLATION).next_to(ghost, RIGHT, buff=0.3)
             self.play(FadeIn(ghost), run_time=b.t(0.2))
             self.play(FadeIn(x), run_time=b.t(0.15))
-            why = lines("a page that imports recharts gets no resolution:",
-                        "no link with that name exists", size=LABEL, color=TEXT)
-            why.move_to([3.4, -1.3, 0])
+            why = lines("a page that imports recharts", "gets no resolution: no link",
+                        "with that name exists", size=LABEL, color=TEXT)
+            why.move_to([4.3, -1.0, 0])
             self.play(FadeIn(why), run_time=b.t(0.3))
             plain = T("a plain missing module error, not a rule of ours", SMALL, MUTED)
-            plain.next_to(why, DOWN, buff=0.3)
+            plain.move_to([3.5, -2.0, 0])
             self.play(FadeIn(plain), run_time=b.t(0.25))
 
         with self.beat("check") as b:
-            code = code_block("page/child.tsx:3:24: Cannot find module 'recharts'. [TS2307]",
+            code = code_block("page/child.tsx:3:24:\nCannot find module 'recharts'. [TS2307]",
                               "text")
-            code.move_to([0.6, -3.0, 0])
+            code.move_to([3.5, -3.0, 0])
             self.play(FadeIn(code), run_time=b.t(0.6))
 
 
