@@ -181,9 +181,10 @@ class KeepThree(DWScene):
                             [("page-3f9c2a...   current", SOLVED), ("page-b7e014...", BUILD),
                              ("page-5d8810...", BUILD), ("page-91ab7e...   oldest", MUTED)]])
             rows.arrange(DOWN, buff=0.35).move_to([-3.8, 1.1, 0])
-            self.play(LaggedStart(*[FadeIn(r) for r in rows], lag_ratio=0.35), run_time=b.t(0.6))
-            self.play(rows[3].animate.set_opacity(0.2), run_time=b.t(0.3))
-            keep = T("three in all: the current one and the two newest others", SMALL, MUTED)
+            self.play(LaggedStart(*[FadeIn(r) for r in rows], lag_ratio=0.35), run_time=b.t(0.55))
+            self.play(rows[3].animate.set_opacity(0.2), run_time=b.t(0.25))
+            keep = lines("three in all: the current one", "and the two newest others",
+                         size=SMALL, color=MUTED)
             keep.next_to(rows, DOWN, buff=0.35)
             self.play(FadeIn(keep), run_time=b.t(0.1))
 
