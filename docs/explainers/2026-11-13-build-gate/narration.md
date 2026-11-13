@@ -6,7 +6,7 @@ An agent can now send a widget with its own page.
 
 Until this change, every widget window showed the same page. We wrote that page, and it drew the agent program with our fixed components. The agent chose the text of the program, never the components.
 
-Now the agent can write its own React components and its own page. That page runs in a window on your desktop. Nobody reviews it first.
+Now the agent can write its own React components and its own page. That page will run in a window on your desktop. Nobody reviews it first.
 
 So the install must check it. This video is about those checks: what each one reads, what it refuses, and where it still has a hole.
 
@@ -60,7 +60,7 @@ Why are three files fixed?
 
 Index dot h t m l is the page itself. It holds the root element, one script tag, and the content security policy of the page. That policy limits what the page may load and connect to. The widget kit video covers the policy at thirty-eight minutes five seconds.
 
-Main dot t s x is six lines. It imports the mount function from the core. It imports the child and the stylesheet. Then it calls that function.
+Main dot t s x is four lines of code. It imports the mount function from the core. It imports the child and the stylesheet. Then it calls that function.
 
 Both files are the seam between the core and the child. An agent that edits them can route the page anywhere. So the gate holds them to the template, byte for byte.
 
@@ -72,15 +72,15 @@ The core draws four page states: loading, error, empty, and removed. Loading is 
 
 The styles sit in a block of the page stylesheet, between two marker comments. The block holds six rules in a cascade layer with the name d w core. Each declaration carries important.
 
-You already know why that wins. For an important declaration, the layer order flips. So an important rule in a layer beats an unlayered one. The agent can not override it from below.
+You already know why that beats an unlayered rule. For an important declaration, the layer order flips. So an important rule in a layer wins. The agent can not override it from below.
 
-The agent writes its own styles under the block. The gate holds the block itself to the template.
+Now the catch. The agent can not override the block from an unlayered rule. It can open the same layer again lower down, and win there by order. The gate holds the text of the block to the template. The last gate then catches an override, and we reach it later.
 
 ## hash_idea
 
 The gate compares files by hash.
 
-A hash is a short fingerprint of the bytes of a file. The same bytes always give the same fingerprint. Different bytes almost always give a different one. The deepWidgets video teaches this idea at twelve minutes fourteen seconds, for a different job.
+A hash is a short fingerprint of the bytes of a file. The same bytes always give the same fingerprint. Different bytes almost always give a different one. The deepWidgets video uses a hash at twelve minutes fourteen seconds, as an idempotency key.
 
 Here it does two jobs. First, it says whether a fixed file still matches the template. The gate hashes both and compares. Second, it names a build. The gate hashes the path and the bytes of every page file, in sorted order. It keeps the first sixteen characters.
 
@@ -134,7 +134,7 @@ The copy and its configs go at the end of the run, whether the gates pass or fai
 
 Beside the copy sits a node modules folder of symbolic links.
 
-It holds eight links, one for each allowed package. They are react, react dom, open u i react lang, and zod. Then two type packages, the widget kit, and the shell.
+It holds eight links. Four are the packages of the list: react, react dom, open u i react lang, and zod. Then come two type packages, the widget kit, and the shell.
 
 That is the whole trick of the type gate. A page that imports recharts gets no resolution, because no link with that name exists. The compiler then reports that it can not find the module. The error is a plain missing module error, not a rule of ours.
 
@@ -176,7 +176,7 @@ The first fence sits on the resolve i d hook.
 
 It only looks at imports that come from a file of the page. An allowed package imports its own files and its own dependencies, and the fence lets those through without a look.
 
-For a page file it splits imports in two. A bare import names a package, like react. A path import starts with a dot or a slash. The widget kit video covers that split at five minutes twenty-one seconds.
+For a page file it splits imports in two. A bare import names a package, like react. A path import starts with a dot or a slash. The widget kit video gives the term bare import at five minutes twenty-one seconds.
 
 A bare import must be on the list, exactly, or under one of two prefixes for the shell pieces. A path import must resolve to a file inside the page folder.
 
@@ -220,7 +220,7 @@ And one last word, for the files a plugin reads on its own.
 
 A built-in module of Node holds plain functions, and a program can replace one of them while it runs. That is monkey patching. You keep the original, put your own function in its place, record what you want, then call the original.
 
-The build child does this to the file module of Node. It wraps five functions that read a file, records each path, and passes the call on. One call then makes the wrapped versions visible to code that imported those functions by name.
+The build child does this to the file module of Node. It wraps five functions of the file module, and two of its promise form. Each one records its path, then passes the call on. One call then makes the wrapped versions visible to code that imported those functions by name.
 
 It has a limit, and the code says so. A native module reads files through its own code, not through Node, so those reads are invisible here. The Tailwind scanner is such a module, and it reports its files as watch files instead.
 
@@ -232,7 +232,7 @@ At the end of the build it gathers four lists. The first two are every module of
 
 For each path it asks the system for the real path, which follows every link to the file itself. Then it compares. A real path inside the page copy is fine. A real path inside the staging folder is fine. A real path inside one of the allowed package folders is fine.
 
-Anything else fails the build, with the count and the first five paths.
+Anything else fails the build, with the count and the first five paths. One exemption stays, and I come back to it at the end.
 
 This is the guard. The syntax checks stayed, but only where they give a clearer error than a list of paths.
 
@@ -402,9 +402,9 @@ The old builds do not go.
 
 Each slug keeps three builds: the current one and the two newest others. The code removes the rest by age.
 
-Why keep them? A build costs several seconds of gates. Keeping it makes two things cheap. A reinstall of the same sources finds its build already there and reuses it, with no second build. A later unit will pin a widget to a version. It can point the link back at an old build with one rename.
+Why keep them? A reinstall of the same sources keeps the build that is there, instead of replacing it. And a later unit will pin a widget to a version. It can point the link back at an old build with one rename.
 
-Each build is about three hundred sixty to eight hundred kilobytes, so three of them cost little.
+The kit spike measured a page of this kind at about three hundred sixty to eight hundred kilobytes. So three of them cost little.
 
 A reinstall with no page folder removes the link and keeps the builds.
 
@@ -434,7 +434,7 @@ Page files hashed three things and found three matches.
 
 Page types copied the page, linked eight packages, and ran the type check with no error.
 
-Page build started its child. The child checked the stylesheet, started Vite with four plugins, and built the page. One build takes about one and a quarter seconds. The output fence found every file inside the page or the allowed packages.
+Page build started its child. The child checked the stylesheet, started Vite with its four plugin entries, and built the page. One build takes about one and a quarter seconds. The output fence found every file inside the page or the allowed packages.
 
 Page render loaded the built folder in the hidden window. The page reached ready, the six style boxes matched, and the gate passed in six hundred forty-eight milliseconds.
 
@@ -456,7 +456,7 @@ The install stops at page build. The old bundle and the old page link stay, and 
 
 And the loop case, which runs with the app.
 
-The page holds a loop at the top of the child that never ends. The check planted one, and found a trap of its own. The bundler removed the first loop, because it had no effect. So the loop writes the document title, and now it survives.
+The page holds a loop at the top level of the child file, and it never ends. The check planted one, and found a trap of its own. The bundler removed the first loop, because it had no effect. So the loop writes the document title, and now it survives.
 
 The window loads and never yields. The deadline fires at fifteen seconds. The check crashes the renderer, destroys the window, and frees the queue.
 
@@ -464,13 +464,15 @@ The install fails with not ready. The reviewer measured the whole case at eighte
 
 ## twelve_cases
 
-The checks hold twelve refusals.
+The checks hold thirteen refusals.
 
 Two land on page files: a changed fixed file, and a changed protected block. One more lands there for a symbolic link.
 
 Two land on page types: a plain type error, and an import of recharts.
 
-The rest land on page build. One is an import of a file outside the page. Four are stylesheet forms that reach a secret file, and one of those four has no space after the keyword. One is a bare string inside an image function. One is the new U R L form. The last two are an at plugin rule and a configuration file.
+Eight land on page build. One is an import of a file outside the page. Three are at import forms that reach a secret file. One of those three has no space after the keyword.
+
+Four more land there too. One is a bare string inside an image function. One is the new U R L form. The last two are an at plugin rule and a configuration file.
 
 Each case asserts the gate name, the diagnostic, and that a next step came back.
 
@@ -492,7 +494,7 @@ First, the resolver needs to read package and t s config files. So the build may
 
 Second, a worker of a page builds with no import fence at all. A test worker pulled in a charting library of seven hundred twenty kilobytes.
 
-Third, the allowed set grew. The spec lists eight packages. The code follows their dependencies. For a workspace package it follows the development dependencies too. The walk reached one thousand one hundred fifty-two folders. A scan found no secret files in them.
+Third, the allowed set grew. The gate links eight packages. The code follows their dependencies. For a workspace package it follows the development dependencies too. The walk reached one thousand one hundred fifty-two folders. A scan found no secret files in them.
 
 The fix for the first two is about two lines. The third needs a narrower walk.
 

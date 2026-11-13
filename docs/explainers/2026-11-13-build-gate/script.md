@@ -9,7 +9,7 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 
 ### `cold_open`
 
-- Target: 39 s (98 words).
+- Target: 39 s (99 words).
 - Visuals: Two widget windows side by side. Left, labelled TODAY: the same shell page drawing a program. Right, labelled AFTER: a page of the agent's own components. Then the right window gets a red border and the caption `nobody reviews it first`.
 
 ### `outline`
@@ -20,7 +20,7 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 ### `from_the_plan`
 
 - Target: 32 s (80 words).
-- Visuals: Two video cards: `widget kit, 2026-11-03, 43:48` and `this video`. Three red pins drop on the first card, labelled `deadline`, `copy`, `allowed set`.
+- Visuals: Two video cards: `widget kit, 2026-11-03, 43:50` and `this video`. Three red pins drop on the first card, labelled `deadline`, `copy`, `allowed set`.
 
 
 ## part_foundation
@@ -37,13 +37,13 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 
 ### `fixed_files`
 
-- Target: 45 s (114 words).
+- Target: 46 s (116 words).
 - Visuals: The real index.html, twelve lines, with the CSP meta line highlighted. Beside it main.tsx, six lines, each import labelled.
 
 ### `dw_core_block`
 
-- Target: 53 s (133 words).
-- Visuals: The four page states drawn as four small widget windows: two grey bars, a red title with Retry, an empty note, a removed note. Below, the real dw-core block, with `@layer dw-core` and one `!important` highlighted. Then a diagram of the important cascade: unlayered important LOSES to layered important, with the arrow pointing the unexpected way.
+- Target: 66 s (166 words).
+- Visuals: The four page states drawn as four small widget windows: two grey bars, a red title with Retry, an empty note, a removed note. Below, the real dw-core block, with `@layer dw-core` and one `!important` highlighted. Then a diagram of the important cascade: unlayered important LOSES to layered important, with the arrow pointing the unexpected way. Then the hole: a SECOND `@layer dw-core` block from the agent, lower in the sheet, winning by order. Show the real fixture line `@layer dw-core { .dw-surface { padding: 0 !important; } }` and mark it `only the render check catches this`.
 
 
 ## part_files
@@ -78,7 +78,7 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 
 ### `linked_modules`
 
-- Target: 44 s (112 words).
+- Target: 45 s (113 words).
 - Visuals: The staging node_modules opened: eight entries, each drawn as a link arrow to a real folder elsewhere. A ninth entry `recharts` drawn greyed out and absent, with the resulting TS2307 line below.
 
 ### `one_copy_rule`
@@ -101,7 +101,7 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 
 ### `import_fence`
 
-- Target: 58 s (145 words).
+- Target: 58 s (147 words).
 - Visuals: A decision tree from one import: importer in page/? no -> let through. yes -> bare? -> on the list? Then the real ALLOWED array of nine names and the two prefixes. A refused subpath example with `..` in it.
 
 ### `fence_hole`
@@ -121,12 +121,12 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 
 ### `monkey_patch_teach`
 
-- Target: 56 s (141 words).
+- Target: 59 s (149 words).
 - Visuals: node:fs drawn as a box of functions. One function swapped for a wrapper that writes to a set, then calls the original. The five wrapped names listed. A greyed box `native addon` with its own arrow straight to the disk, captioned `not seen`.
 
 ### `output_fence`
 
-- Target: 55 s (139 words).
+- Target: 60 s (151 words).
 - Visuals: The four lists flowing into one set, each path through `realpath`, then a three-way test: inside page/, inside staging, inside an allowed folder. Anything else drops into a red bucket with the real error message.
 
 ### `postcss_teach`
@@ -212,7 +212,7 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 
 ### `keep_three`
 
-- Target: 45 s (113 words).
+- Target: 42 s (106 words).
 - Visuals: Four build folders with timestamps, the oldest fading out. Two reasons listed: a reinstall of the same sources reuses its build; a later pin can point the link back. Sizes 360 to 800 KB each.
 
 ### `sweep`
@@ -230,8 +230,8 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 
 ### `example_pass`
 
-- Target: 50 s (125 words).
-- Visuals: The anchor diagram with all four page gates ticked, each carrying its real number: 3 hashes matched, 8 links, about 1.25 s build, 648 ms render. The built index.html line with the base path highlighted.
+- Target: 50 s (127 words).
+- Visuals: The anchor diagram with all four page gates ticked, each carrying its real number: 3 hashes matched, 8 links, about 1.25 s build, 648 ms render (each number verified). The built index.html line with the base path highlighted.
 
 ### `example_refuse`
 
@@ -240,7 +240,7 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 
 ### `example_loop`
 
-- Target: 48 s (122 words).
+- Target: 50 s (125 words).
 - Visuals: The loop fixture, including the detail that it writes document.title so the bundler keeps it. A clock to 15 s, the renderer crashed, then the next check passing at 654 ms.
 
 
@@ -248,8 +248,8 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 
 ### `twelve_cases`
 
-- Target: 48 s (121 words).
-- Visuals: A table of the twelve refusals: case, gate, and the diagnostic each one asserts. Grouped by gate.
+- Target: 50 s (125 words).
+- Visuals: A table of the thirteen refusals: case, gate, and the diagnostic each one asserts. Grouped by gate: page-files 3, page-types 2, page-build 8.
 
 ### `mutants`
 
@@ -274,4 +274,4 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 
 ## Total
 
-48 scenes, 5784 words, about 38 minutes.
+48 scenes, 5845 words, about 38 minutes.
