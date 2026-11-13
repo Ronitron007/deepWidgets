@@ -312,39 +312,39 @@ class StyleProbe(DWScene):
                         size=LABEL, color=TEXT)
             say.move_to([0, 2.4, 0])
             self.play(FadeIn(say), run_time=b.t(0.6))
+            self.say = say
 
         with self.beat("two") as b:
-            left = rbox(4.6, 1.9, SHELL, fill=0.06, sw=3).move_to([-3.8, 1.0, 0])
+            left = rbox(4.6, 1.9, SHELL, fill=0.06, sw=3).move_to([-3.8, 1.3, 0])
             lt = lines("the same markup, where", "every page stylesheet applies",
                        size=SMALL, color=SHELL)
             lt.move_to(left)
-            right = rbox(4.6, 1.9, RENDER, fill=0.06, sw=3).move_to([2.0, 1.0, 0])
+            right = rbox(4.6, 1.9, RENDER, fill=0.06, sw=3).move_to([2.0, 1.3, 0])
             rt = lines("a shadow root: the same markup,", "with the template dw-core block only",
                        size=SMALL, color=RENDER)
             rt.move_to(right)
             tag = T("both hidden", SMALL, MUTED)
-            tag.move_to([5.6, 1.0, 0])
-            self.play(FadeIn(left), FadeIn(lt), run_time=b.t(0.4))
+            tag.move_to([5.6, 1.3, 0])
+            self.play(FadeOut(self.say), run_time=b.t(0.08))
+            self.play(FadeIn(left), FadeIn(lt), run_time=b.t(0.35))
             self.play(FadeIn(right), FadeIn(rt), FadeIn(tag), run_time=b.t(0.45))
 
         with self.beat("compare") as b:
             tbl = RevealTable(["box", "property", "page", "control"], self.ROWS, mono_cols=[0, 1, 2, 3],
                               size=SMALL, cell_colors={(0, 2): ISOLATION, (0, 3): SOLVED})
-            tbl.move_to([-1.2, -1.4, 0])
+            tbl.move_to([0, -1.3, 0])
             self.add(tbl)
-            self.play(tbl.reveal_rows(0, 6, lag=0.3), run_time=b.t(0.55))
+            self.play(tbl.reveal_rows(0, 6, lag=0.3), run_time=b.t(0.6))
             mark = tbl.mark_row(0, ISOLATION)
-            self.play(Create(mark), run_time=b.t(0.14))
-            verdict = chip("lost-core-styles", ISOLATION)
-            verdict.move_to([4.9, -1.2, 0])
-            self.play(FadeIn(verdict), run_time=b.t(0.14))
-            which = lines("it reports which property", "on which box", size=SMALL, color=MUTED)
-            which.next_to(verdict, DOWN, buff=0.3)
-            self.play(FadeIn(which), run_time=b.t(0.08))
+            self.play(Create(mark), run_time=b.t(0.2))
 
         with self.beat("only") as b:
-            cap = caption("every compared property is one the block itself sets")
-            self.play(FadeIn(cap), run_time=b.t(0.6))
+            verdict = chip("lost-core-styles: which property, on which box", ISOLATION, mono=False)
+            verdict.move_to([0, -2.95, 0])
+            self.play(FadeIn(verdict), run_time=b.t(0.3))
+            cap = T("every compared property is one the block itself sets", SMALL, MUTED)
+            cap.move_to([0, -3.55, 0])
+            self.play(FadeIn(cap), run_time=b.t(0.3))
 
 
 class RenderVerdicts(DWScene):
