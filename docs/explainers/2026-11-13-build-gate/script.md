@@ -258,13 +258,13 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 
 ### `limits_open`
 
-- Target: 62 s (157 words).
-- Visuals: Three open items with their numbers: the config-file exemption with the 4 KB line, the worker with 720 KB, the allowed set at 1152 folders and 313 workspace packages. Fix sizes beside each.
+- Target: 78 s (196 words).
+- Visuals: Three open items with their numbers: the config-file exemption with the 4 KB line, the worker with 720 KB, the allowed set at 1152 folders and 313 workspace packages. The first two stamped ACCEPTED, with the reason `the host half already runs as full Node`. The third stamped FOLLOW-UP.
 
 ### `not_served`
 
-- Target: 32 s (81 words).
-- Visuals: The anchor diagram one more time, with a grey box after it labelled `library.serving`, and the widget window still showing the shared shell.
+- Target: 56 s (142 words).
+- Visuals: The anchor diagram one more time, with a grey box after it labelled `library.serving`, and the widget window still showing the shared shell. Then the two fences redrawn: REFUSE crossed out, WARN + LOG in its place, captioned `recovery over a defensive block`.
 
 ### `closing`
 
@@ -274,4 +274,4 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 
 ## Total
 
-48 scenes, 5845 words, about 38 minutes.
+48 scenes, 5945 words, about 39 minutes.

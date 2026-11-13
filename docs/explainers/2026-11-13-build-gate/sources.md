@@ -140,7 +140,9 @@ Every claim of the narration, with where it comes from. The code is PR #107, bra
 | A test worker pulled in a charting library of seven hundred twenty kilobytes | the reviewer's run. measured |
 | The allowed set reached one thousand one hundred fifty-two folders, three hundred thirteen of them workspace packages | the reviewer counted. measured |
 | A scan found no secret files in them | the reviewer scanned by name. measured |
-| The fix for the first two is about two lines | the reviewer wrote and ran it in a scratch build. measured |
+| The operator accepted the first two at the merge, because the host half already runs as full Node | his comment on PR #107, 2026-11-13. verified |
+| The third gets a follow-up that narrows the walk to the shell and the widget kit | the same comment. verified |
+| The two fences will warn and log instead of refusing the install | the same comment, the follow-up unit. verified |
 | `library.serving` is the next unit | `docs/specs/agent-library.md`, `agent_library.later`. verified |
 | Nothing serves the built page yet | `agent_library.build_gate.not`. verified |
 
