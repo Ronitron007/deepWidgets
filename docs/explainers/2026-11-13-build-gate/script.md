@@ -38,7 +38,7 @@ The narration of each scene is in `narration.md`, under the same name. The targe
 ### `fixed_files`
 
 - Target: 46 s (116 words).
-- Visuals: The real index.html, twelve lines, with the CSP meta line highlighted. Beside it main.tsx, six lines, each import labelled.
+- Visuals: The real index.html, twelve lines, with the CSP meta line highlighted. Beside it main.tsx, eleven lines of which four are code, each import labelled.
 
 ### `dw_core_block`
 
