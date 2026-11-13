@@ -74,11 +74,15 @@ import { DesktopWidgetWindows } from './deepwidgets-windows.ts'
 import { DesktopHostSupervisor } from './deepwidgets-supervisor.ts'
 // deepwidgets-trim: safe_host.port. Electron main owns the MCP port and forwards each request to the current Host.
 import { MCP_FORWARDED_ENV, startMcpPortOwner, type McpHostLink, type McpPortOwner } from './deepwidgets-mcp-port.ts'
+// deepwidgets-trim: agent_library.build_gate.render. A hidden window checks the built page of a widget bundle.
+import { DesktopRenderCheck, RENDER_CHECK_HOST } from './deepwidgets-render-check.ts'
 
 /** deepWidgets trace: the start-up steps for `POST /api/trace` (`floating_widget.sources`). */
 const traceSteps = new DesktopTraceSteps()
 // deepwidgets-trim: widget_mvp.windows. One panel window for each widget of the ready Host.
 const widgetWindows = new DesktopWidgetWindows(slug => `${SCHEME}://app/widget/?slug=${encodeURIComponent(slug)}`)
+// deepwidgets-trim: agent_library.build_gate.render. One render check at a time, for each Host.
+const renderChecks = new DesktopRenderCheck()
 
 let focusPrimaryWindow = (): void => {}
 let stopForRecovery = async (): Promise<void> => { await stopOperationReports() }
@@ -565,7 +569,9 @@ async function main(): Promise<void> {
         operationJournal.enqueue(JSON.stringify(record))
       // deepwidgets-trim: safe_host.port. The Host sends the state of its MCP row to the link of this Host.
       // })
-      }, (mcp) => { mcpLink?.update(mcp) })
+      // deepwidgets-trim: agent_library.build_gate.render. The Host asks for the render check of a built page.
+      // }, (mcp) => { mcpLink?.update(mcp) })
+      }, (mcp) => { mcpLink?.update(mcp) }, check => renderChecks.run(check))
     return {
       start: async () => {
         traceSteps.step('host-started')
@@ -836,6 +842,8 @@ async function main(): Promise<void> {
     // Shell-owned documents live in the application bundle and never pass through the Host.
     if (url.hostname === 'shell') return serveWebDocument(request, join(app.getAppPath(),
       url.pathname === '/design-platform.css' ? 'lib/welcome' : 'renderer'))
+    // deepwidgets-trim: agent_library.build_gate.render. The check route serves only the page of the running check.
+    if (url.hostname === RENDER_CHECK_HOST) return renderChecks.handle(request)
     if (url.hostname === 'app') {
       if (url.pathname === '/' || url.pathname === '/index.html' || url.pathname.startsWith('/assets/')
         || ['/favicon.svg', '/manifest.webmanifest'].includes(url.pathname)) {
@@ -1439,6 +1447,8 @@ async function main(): Promise<void> {
     quitting = true
     // deepwidgets-trim: widget_mvp.windows stops its stream at once. It awaits nothing, so it cannot hold the quit.
     widgetWindows.stop()
+    // deepwidgets-trim: agent_library.build_gate.render. A running check ends with its window.
+    renderChecks.stop()
     // deepwidgets-trim: widget_phase2.isolation.supervisor drops a waiting restart, so it cannot hold the quit.
     supervisor.dispose()
     shuttingDown = true
@@ -1473,6 +1483,8 @@ async function main(): Promise<void> {
       shuttingDown = true
       // deepwidgets-trim: widget_mvp.windows stops its stream at once.
       widgetWindows.stop()
+      // deepwidgets-trim: agent_library.build_gate.render. A running check ends with its window.
+      renderChecks.stop()
       // deepwidgets-trim: widget_phase2.isolation.supervisor drops a waiting restart.
       supervisor.dispose()
       quitConfirmation.dispose()

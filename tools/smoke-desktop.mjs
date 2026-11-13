@@ -15,6 +15,11 @@
  * With DSH_SMOKE_CREATE set to a widget source folder (src/index.ts), an MCP client does the token
  * handshake with the proof of mcp.json, installs the folder with widget_install, finds the window of
  * its slug, removes it with widget_remove, and finds the window closed (widget.creation).
+ * When the folder has page/, the install answer must have the render check gate (page-render) with no skipped warning,
+ * and the built page in the profile (agent_library.build_gate). With DSH_SMOKE_CREATE_CASES set to a JSON file of
+ * render cases [{ dir, refuse?: <code>, warnings?: [<text>] }], each case installs first, in order: a case with
+ * `refuse` must fail in the gate page-render with a diagnostic that starts with that code, and a case with
+ * `warnings` must install with each text in its warnings (the check then removes it).
  * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://app/widget/?slug=sample.
  * It turns the sample row off through the host plugin manager and finds that window closed.
  * With DSH_SMOKE_HOST_RESTART=1, the check kills the host once. The sample widget page must be live again
@@ -1492,11 +1497,36 @@ async function checkCreate(deadline) {
     const result = await call('tools/call', { name, arguments: args })
     return { isError: result?.isError === true, body: result?.structuredContent ?? JSON.parse(result?.content?.[0]?.text ?? 'null') }
   }
+  const casesFile = process.env.DSH_SMOKE_CREATE_CASES ?? ''
+  for (const item of casesFile === '' ? [] : JSON.parse(readFileSync(casesFile, 'utf8'))) {
+    const at = Date.now()
+    const answer = await tool('widget_install', { dir: item.dir })
+    const error = answer.body?.error
+    note(`create case ${item.dir} ms=${String(Date.now() - at)} error=${JSON.stringify(error)} warnings=${JSON.stringify(answer.body?.warnings)}`)
+    if (typeof item.refuse === 'string') {
+      if (!answer.isError || error?.code !== 'gate-failed' || error?.gate !== 'page-render' || !error?.diagnostics?.some((line) => line.startsWith(item.refuse))) {
+        return `create: the render check did not refuse ${item.dir} with ${item.refuse}: ${JSON.stringify(answer.body)}`
+      }
+    } else {
+      if (answer.isError) return `create: the case ${item.dir} did not install: ${JSON.stringify(answer.body)}`
+      const missing = (item.warnings ?? []).filter((text) => !answer.body?.warnings?.some((line) => line.includes(text)))
+      if (missing.length > 0) return `create: the case ${item.dir} has no warning ${JSON.stringify(missing)}: ${JSON.stringify(answer.body?.warnings)}`
+      await tool('widget_remove', { slug: answer.body?.slug })
+    }
+  }
   const started = Date.now()
   const installed = await tool('widget_install', { dir })
   note(`create install ms=${String(Date.now() - started)} result=${JSON.stringify({ isError: installed.isError, slug: installed.body?.slug, application: installed.body?.application, error: installed.body?.error })}`)
   const slug = installed.body?.slug
   if (installed.isError || typeof slug !== 'string') return `create: widget_install failed: ${JSON.stringify(installed.body)}`
+  if (existsSync(join(dir, 'page'))) {
+    const render = installed.body?.gates?.find((gate) => gate.gate === 'page-render')
+    note(`create page=${JSON.stringify(installed.body?.page)} render=${JSON.stringify(render)} warnings=${JSON.stringify(installed.body?.warnings)}`)
+    if (render?.ok !== true) return `create: no passed render check: ${JSON.stringify(installed.body?.gates)}`
+    if (installed.body?.warnings?.some((line) => line.includes('skipped'))) return `create: the render check was skipped: ${JSON.stringify(installed.body?.warnings)}`
+    const page = installed.body?.page
+    if (typeof page !== 'string' || !existsSync(join(page, 'index.html'))) return `create: the built page is not in the profile: ${JSON.stringify(page)}`
+  }
   const url = `dsh-app://app/widget/?slug=${slug}`
   const soon = () => Math.min(deadline, Date.now() + 15_000)
   let failed = await waitPages(url, 1, soon(), 'after widget_install')

@@ -1,0 +1,16 @@
+/* The styles of the widget page. The base sheet gives Tailwind, the DSH tokens, and the classes of the shadcn pieces. */
+@import "@deepwidgets/shell/page.css";
+@source "./";
+
+/* dw-core:begin. Do not change this block: the install compares it with the template. */
+@layer dw-core {
+  .dw-surface { background: var(--card) !important; border-radius: var(--dsw-radius-xl) !important; padding: 12px !important; box-sizing: border-box !important; width: 100% !important; }
+  .dw-state { display: flex !important; flex-direction: column !important; gap: 6px !important; align-items: flex-start !important; padding: 12px !important; color: var(--muted-foreground) !important; }
+  .dw-state strong { color: var(--foreground) !important; font-weight: 500 !important; }
+  .dw-state--error strong { color: var(--dsw-alias-state-error-primary) !important; }
+  .dw-skeleton { height: 12px !important; width: 100% !important; border-radius: var(--dsw-radius-xs) !important; background: var(--dsw-alias-bg-skeleton, var(--muted)) !important; }
+  .dw-skeleton + .dw-skeleton { width: 70% !important; }
+}
+/* dw-core:end */
+
+/* Your styles go below this line. */

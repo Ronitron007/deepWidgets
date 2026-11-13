@@ -8,6 +8,8 @@ import { desktopNodeEnvironment } from './node-environment.ts'
 // deepwidgets-trim: safe_host.port. Electron main owns the MCP port file now, so a Host exit does not remove it.
 // import { removeDeadMcpPortFile } from './deepwidgets-port-file.ts'
 import { isHostMcp, type HostMcp } from './deepwidgets-mcp-port.ts'
+// deepwidgets-trim: added import; agent_library.build_gate.render. The Host asks Electron main for the render check of a page.
+import { parseRenderCheckJob, type RenderCheckJob, type RenderCheckResult } from './deepwidgets-render-check.ts'
 import { parsePluginOperationRecord, type PluginOperationRecord, type PluginOperationRunId } from '@deepseek-ai/dsh-plugin-manager/diagnostic'
 
 interface ReadyEvent {
@@ -30,7 +32,17 @@ interface PlatformSessionEvent {
 
 // deepwidgets-trim: safe_host.port. The MCP row tells Electron main its port, nonce, and forward secret, or null when it goes.
 // type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | {
-type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | { readonly type: 'deepwidgets-mcp'; readonly mcp: HostMcp | null } | {
+/**
+ * The deepWidgets events: the MCP row state (`safe_host.port`), and a request for the render check of a built page
+ * (`agent_library.build_gate.render`).
+ */
+type DeepwidgetsHostEvent = { readonly type: 'deepwidgets-mcp'; readonly mcp: HostMcp | null }
+  | { readonly type: 'deepwidgets-render-check'; readonly checkId: number; readonly check: RenderCheckJob }
+
+// deepwidgets-trim: agent_library.build_gate.render. The deepWidgets events are one type, with the render check.
+// type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent
+//   | { readonly type: 'deepwidgets-mcp'; readonly mcp: HostMcp | null } | {
+type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | DeepwidgetsHostEvent | {
   readonly type: 'starting'
   readonly runId: PluginOperationRunId
 } | { readonly type: 'shutdown-complete' } | {
@@ -77,6 +89,9 @@ function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
     // deepwidgets-trim: added case; safe_host.port.
     case 'deepwidgets-mcp':
       return candidate.mcp === null || isHostMcp(candidate.mcp)
+    // deepwidgets-trim: added case; agent_library.build_gate.render.
+    case 'deepwidgets-render-check':
+      return Number.isSafeInteger(candidate.checkId) && parseRenderCheckJob(candidate.check) !== undefined
     case 'ready':
       return typeof candidate.url === 'string'
     case 'platform-session': {
@@ -196,6 +211,7 @@ export class DesktopHostProcess {
    * @param onPlatformSession - Private credential updates for embedded Platform views.
    * @param onPluginOperation - Optional diagnostic sink; malformed records are ignored without failing the Host.
    * @param onMcp - deepWidgets `safe_host.port`: the MCP row state of this Host, and null when the Host exits.
+   * @param onRenderCheck - deepWidgets `agent_library.build_gate.render`: runs the render check of a built page.
    */
   constructor(
     private readonly node: string,
@@ -211,6 +227,8 @@ export class DesktopHostProcess {
     private readonly onPluginOperation?: (record: PluginOperationRecord) => void,
     // deepwidgets-trim: added parameter; safe_host.port. Receives the MCP row state of this Host, and null at its exit.
     private readonly onMcp?: (mcp: HostMcp | null) => void,
+    // deepwidgets-trim: added parameter; agent_library.build_gate.render. Runs the render check that the Host asks for.
+    private readonly onRenderCheck?: (check: RenderCheckJob) => Promise<RenderCheckResult>,
   ) {}
 
   /**
@@ -259,6 +277,11 @@ export class DesktopHostProcess {
       else if (message.type === 'platform-session') this.onPlatformSession?.(message.session)
       // deepwidgets-trim: added branch; safe_host.port.
       else if (message.type === 'deepwidgets-mcp') this.onMcp?.(message.mcp)
+      // deepwidgets-trim: added branch; agent_library.build_gate.render.
+      else if (message.type === 'deepwidgets-render-check') {
+        const check = parseRenderCheckJob(message.check)
+        if (check !== undefined) this.renderCheck(child, message.checkId, check)
+      }
       else if (message.type === 'shutdown-complete') {
         if (this.stopping) this.shutdownCompleted = true
         else this.fail(new Error('dsh desktop host acknowledged an unrequested shutdown'))
@@ -290,6 +313,23 @@ export class DesktopHostProcess {
       })
     })
     return this.readyPromise
+  }
+
+  /**
+   * deepWidgets `agent_library.build_gate.render`: run one render check and send its result to the Host. A Host with
+   * no handler here gets a failed result, so its install stops with a diagnostic.
+   * @param child - the Host process that asked.
+   * @param checkId - the id of the request, echoed in the answer.
+   * @param check - the parsed check.
+   */
+  private renderCheck(child: ChildProcess, checkId: number, check: RenderCheckJob): void {
+    const run = this.onRenderCheck ?? ((): Promise<RenderCheckResult> => Promise.resolve({ ok: false, diagnostics: ['load-failed: Electron main has no render check'], warnings: [] }))
+    void run(check).catch((error: unknown): RenderCheckResult => ({
+      ok: false, diagnostics: [`load-failed: ${error instanceof Error ? error.message : String(error)}`], warnings: [],
+    })).then((result) => {
+      // A Host that exited during the check gets no answer.
+      if (child.connected) child.send({ type: 'deepwidgets-render-check', checkId, result }, (_error) => {})
+    })
   }
 
   /**

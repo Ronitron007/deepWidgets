@@ -10,11 +10,16 @@
  * (`widget_fv.replace`). The new version waits as the standby of the old one. The old bundle goes
  * only after the new one registers, so a failed reinstall keeps the old version live. The state of
  * a slug is in the runtime storage, so it stays across a replace and a remove.
+ *
+ * A bundle with a folder `page/` also runs the page gates after the host gates (`agent_library.build_gate`,
+ * `page-gate.ts`). Each build is a folder `<profile>/deepwidgets-widgets/<slug>/page-<hash>`. Only after the install
+ * applies, the link `<slug>/page` swaps to the new build in one rename, so a failed install keeps the old page. The
+ * last builds of a slug stay across a replace (`PAGE_BUILDS_KEPT`).
  * @module @deepwidgets/mcp/creation
  */
 import { execFile, spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, rmdir, stat, writeFile } from 'node:fs/promises'
+import { createHash, randomBytes } from 'node:crypto'
+import { cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, rmdir, stat, symlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -22,6 +27,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { BundleInfo, ChangeResult } from '@deepseek-ai/dsh-plugin-manager/types'
 import type { ProgramRecord } from '@deepwidgets/widgets'
 import { endlessLoops } from './loop-check.ts'
+import { hasPage, PAGE_BUILD, PAGE_BUILD_TMP, PAGE_NEXT_STEP, runPageGates } from './page-gate.ts'
+import type { PageGateName, RenderAnswer, RenderCheck } from './page-gate.ts'
 import type { TestRunReport, TestRunWidget } from './testrun-child.ts'
 
 const require = createRequire(import.meta.url)
@@ -48,9 +55,17 @@ const META_FILE = 'deepwidgets-widget.json'
 const LEGACY_SEEDS_DIR = '.seeds'
 /** The source files that the loop rule reads: each kind that esbuild bundles. */
 const SOURCE_FILE = /\.(?:[cm]?[jt]s|[jt]sx)$/
+/** The link to the current built page in the folder of a slug (`agent_library.build_gate.gates`). */
+const PAGE_DIR = 'page'
+/** The builds `page-<hash>` that each slug keeps, the current one with them. */
+const PAGE_BUILDS_KEPT = 3
+/** The folder of the staging copies of the page gates, under the widget root. The host start empties it. */
+const PAGE_STAGING = '.page-staging'
+/** A link under a temporary name, before the rename over `page`. */
+const PAGE_LINK_TMP = /^\.page-link-/
 
-/** One gate of `widget_phase2.creation.gates`, in order. */
-export type GateName = 'compile' | 'lint' | 'test'
+/** One gate of `widget_phase2.creation.gates`, in order, then the page gates of `agent_library.build_gate.gates`. */
+export type GateName = 'compile' | 'lint' | 'test' | PageGateName
 
 /** The report of one gate. */
 export interface GateReport {
@@ -102,6 +117,8 @@ export interface InstallOutcome {
   programUpdated: boolean
   gates: GateReport[]
   warnings: string[]
+  /** The folder of the built page, `<profile>/deepwidgets-widgets/<slug>/page`, for a bundle with a page. */
+  page?: string
 }
 
 /** The record that a profile-owned widget folder keeps. */
@@ -124,6 +141,8 @@ export interface CreationServices {
   readonly widgets: Context['widgets']
   /** The install records of the widget runtime (`widget_fv.install`). Widget code can not use them. */
   readonly records: Context['widgetRecords']
+  /** The render check of a page in Electron main (`agent_library.build_gate.render`). Undefined in a CLI host. */
+  readonly renderCheck?: RenderCheck | undefined
 }
 
 /** Where the tools of the gates are. They resolve from this package, not from a working folder. */
@@ -300,8 +319,19 @@ async function lintGate(staging: string, configs: { tsconfig: string, oxlintrc: 
   return { gate: 'lint', ok: false, ms: elapsed(started), diagnostics: diagnostics.slice(0, MAX_DIAGNOSTICS), warnings: [] }
 }
 
-/** Run the compiled bundle in a throwaway process. Gives the report and the one registered widget. */
-async function testGate(staging: string): Promise<{ report: GateReport, widget: TestRunWidget | undefined }> {
+/** The answer of each query action of `slug` in the test run, for the render check of the page. */
+function queryAnswers(report: TestRunReport, slug: string): Record<string, RenderAnswer> {
+  const answers: Record<string, RenderAnswer> = {}
+  for (const action of report.actions) {
+    if (action.slug !== slug || action.kind !== 'query') continue
+    if (action.outcome === 'ok') answers[action.name] = { ok: true, result: action.result ?? null }
+    else answers[action.name] = { ok: false, message: action.message ?? `the test run did not call ${action.name}` }
+  }
+  return answers
+}
+
+/** Run the compiled bundle in a throwaway process. Gives the report, the one registered widget, and its query answers. */
+async function testGate(staging: string): Promise<{ report: GateReport, widget: TestRunWidget | undefined, answers: Record<string, RenderAnswer> }> {
   const started = performance.now()
   const t = tools()
   const child = spawn(process.execPath, [`--max-old-space-size=${String(TEST_HEAP_MB)}`, t.child, join(staging, 'out', 'index.js'), String(TEST_WINDOW_MS)], {
@@ -362,7 +392,9 @@ async function testGate(staging: string): Promise<{ report: GateReport, widget: 
     }
   }
   const ok = diagnostics.length === 0
-  return { report: { gate: 'test', ok, ms: elapsed(started), diagnostics: diagnostics.slice(0, MAX_DIAGNOSTICS), warnings }, widget: ok ? result?.widgets[0] : undefined }
+  const widget = ok ? result?.widgets[0] : undefined
+  const answers = result === undefined || widget === undefined ? {} : queryAnswers(result, widget.slug)
+  return { report: { gate: 'test', ok, ms: elapsed(started), diagnostics: diagnostics.slice(0, MAX_DIAGNOSTICS), warnings }, widget, answers }
 }
 
 /** Write the paths of the diagnostics relative to the source folder of the agent. */
@@ -376,13 +408,22 @@ export interface GatesOutcome {
   gates: GateReport[]
   code?: string
   widget?: TestRunWidget
+  /** The build `page-<hash>` of a bundle with `page/`, in the folder of the slug. */
+  page?: { name: string, reused: boolean }
+}
+
+/** Where the page gates build: the folder of a slug, and the staging root. */
+export interface PageRoots {
+  slugDir: (slug: string) => string
+  stagingRoot: string
 }
 
 /**
- * Run the three gates on `dir/src/index.ts`. The first failed gate stops the run.
+ * Run the three gates on `dir/src/index.ts`, then the page gates when `dir` has `page/`. The first failed gate stops
+ * the run. `renderCheck` runs the render check of the page; without it, that check is skipped with a warning.
  * @throws {CreationError} `bad-source` when the folder has no `src/index.ts`.
  */
-export async function runGates(dir: string): Promise<GatesOutcome> {
+export async function runGates(dir: string, pages: PageRoots, renderCheck?: RenderCheck): Promise<GatesOutcome> {
   const staging = await stage(dir)
   try {
     const configs = await writeConfigs(staging)
@@ -395,9 +436,16 @@ export async function runGates(dir: string): Promise<GatesOutcome> {
     gates.push(linted)
     if (!linted.ok) return { gates }
     const code = await readFile(join(staging, 'out', 'index.js'), 'utf8')
-    const { report, widget } = await testGate(staging)
+    const { report, widget, answers } = await testGate(staging)
     gates.push(relativize(report, staging))
-    return widget === undefined ? { gates } : { gates, code, widget }
+    if (widget === undefined) return { gates }
+    if (!await hasPage(dir)) return { gates, code, widget }
+    const t = tools()
+    const page = await runPageGates(dir, { slug: widget.slug, program: widget.program, answers }, { oxlint: t.oxlint, tsgolint: t.tsgolint }, renderCheck,
+      { slugDir: pages.slugDir(widget.slug), stagingRoot: pages.stagingRoot })
+    gates.push(...page.gates)
+    if (page.build === undefined) return { gates }
+    return { gates, code, widget, page: page.build }
   } finally {
     await rm(staging, { recursive: true, force: true })
   }
@@ -411,9 +459,27 @@ function patchText(name: string): string {
   return ['- insert:', `    - id: ${name}`, `      name: ${name}`, ''].join('\n')
 }
 
-/** Write a complete bundle folder. */
-async function writeBundle(folder: string, name: string, widget: TestRunWidget, code: string, source: string): Promise<void> {
-  await rm(folder, { recursive: true, force: true })
+/** True for an entry of the folder of a slug that belongs to its pages: the link `page` and the builds `page-<hash>`. */
+const isPageEntry = (entry: string): boolean => entry === PAGE_DIR || PAGE_BUILD.test(entry)
+
+/**
+ * Empty `folder`, or remove it. With `keepPage`, the page link and the builds of the slug stay
+ * (`agent_library.build_gate`): the link changes only when an install applies.
+ */
+async function clearFolder(folder: string, keepPage: boolean): Promise<void> {
+  if (!keepPage) {
+    await rm(folder, { recursive: true, force: true })
+    return
+  }
+  const entries = await readdir(folder).catch((): string[] => [])
+  for (const entry of entries) if (!isPageEntry(entry)) await rm(join(folder, entry), { recursive: true, force: true })
+  // The folder goes when no page is in it.
+  if (!entries.some(isPageEntry)) await rmdir(folder).catch(() => undefined)
+}
+
+/** Write a complete bundle folder. With `keepPage`, the pages of the slug stay. */
+async function writeBundle(folder: string, name: string, widget: TestRunWidget, code: string, source: string, keepPage: boolean): Promise<void> {
+  await clearFolder(folder, keepPage)
   await mkdir(folder, { recursive: true })
   await writeFile(join(folder, 'package.json'), `${JSON.stringify({
     name,
@@ -429,6 +495,8 @@ async function writeBundle(folder: string, name: string, widget: TestRunWidget, 
   const meta: WidgetMeta = { slug: widget.slug, source, installedAt: new Date().toISOString() }
   await writeFile(join(folder, META_FILE), `${JSON.stringify(meta, null, 2)}\n`)
 }
+
+const isPageGate = (gate: GateName): gate is PageGateName => gate.startsWith('page-')
 
 /** The diagnostics of a plugin manager result. */
 function resultDiagnostics(result: ChangeResult): string[] {
@@ -448,6 +516,22 @@ export class WidgetInstaller {
 
   constructor(private readonly services: CreationServices) {
     this.root = join(services.profileDir, 'deepwidgets-widgets')
+    // The first job of the queue: a host that stopped during the page gates left their folders.
+    void this.serial(() => this.sweepPages())
+  }
+
+  /**
+   * agent_library.build_gate: remove what a stopped host left of the page gates: the staging copies, the folders
+   * `page-<hash>.tmp`, and a link under its temporary name. A failed removal stays for the next host start.
+   */
+  private async sweepPages(): Promise<void> {
+    await rm(join(this.root, PAGE_STAGING), { recursive: true, force: true }).catch(() => undefined)
+    for (const slug of await readdir(this.root).catch((): string[] => [])) {
+      const folder = join(this.root, slug)
+      for (const entry of await readdir(folder).catch((): string[] => [])) {
+        if (PAGE_BUILD_TMP.test(entry) || PAGE_LINK_TMP.test(entry)) await rm(join(folder, entry), { recursive: true, force: true }).catch(() => undefined)
+      }
+    }
   }
 
   private serial<T>(job: () => Promise<T>): Promise<T> {
@@ -464,6 +548,56 @@ export class WidgetInstaller {
   /** The folder of the package `name` of `slug`. The second name has its own folder, `<root>/<slug>.b`. */
   private folderOfName(slug: string, name: string): string {
     return name === secondBundleName(slug) ? `${this.folderOf(slug)}.b` : this.folderOf(slug)
+  }
+
+  /** Remove the bundle folder of the package `name` of `slug`. The built page of the slug stays. */
+  private clearBundle(slug: string, name: string): Promise<void> {
+    const folder = this.folderOfName(slug, name)
+    return clearFolder(folder, folder === this.folderOf(slug))
+  }
+
+  /**
+   * agent_library.build_gate: point `<root>/<slug>/page` at the build of an applied install. The new link gets a
+   * temporary name, then a rename puts it over `page`, so a reader sees the old page or the new page, never none.
+   * A bundle with no page removes the link, and the builds stay. Gives the link, or undefined.
+   */
+  private async linkPage(slug: string, build: string | undefined): Promise<string | undefined> {
+    const folder = this.folderOf(slug)
+    const link = join(folder, PAGE_DIR)
+    const current = await lstat(link).catch(() => undefined)
+    if (build === undefined) {
+      if (current !== undefined) await rm(link, { recursive: !current.isSymbolicLink(), force: true })
+      return undefined
+    }
+    // A page folder of an older install is not a link, and a rename can not replace a folder with a link.
+    if (current !== undefined && !current.isSymbolicLink()) await rm(link, { recursive: true, force: true })
+    const temp = join(folder, `.page-link-${randomBytes(6).toString('hex')}`)
+    await symlink(build, temp, 'dir')
+    await rename(temp, link)
+    await this.prunePages(slug, build)
+    return link
+  }
+
+  /** Keep the current build and the newest other builds of `slug`, {@link PAGE_BUILDS_KEPT} in all. */
+  private async prunePages(slug: string, current: string): Promise<void> {
+    const folder = this.folderOf(slug)
+    const builds: { name: string, at: number }[] = []
+    for (const name of await readdir(folder)) {
+      if (!PAGE_BUILD.test(name) || name === current) continue
+      const info = await stat(join(folder, name)).catch(() => undefined)
+      if (info !== undefined) builds.push({ name, at: info.mtimeMs })
+    }
+    builds.sort((a, b) => b.at - a.at)
+    for (const { name } of builds.slice(PAGE_BUILDS_KEPT - 1)) await rm(join(folder, name), { recursive: true, force: true })
+  }
+
+  /** Remove a build that this install made, when the install did not apply and no link names it. */
+  private async dropBuild(slug: string, build: string): Promise<void> {
+    const folder = this.folderOf(slug)
+    const target = await readlink(join(folder, PAGE_DIR)).catch(() => undefined)
+    if (target === build) return
+    await rm(join(folder, build), { recursive: true, force: true })
+    await rmdir(folder).catch(() => undefined)
   }
 
   /**
@@ -595,15 +729,27 @@ export class WidgetInstaller {
       throw new CreationError('install-failed', `the plugin manager did not remove the leftover bundle ${name}; ${keep} stays, and nothing was installed`, { diagnostics: resultDiagnostics(removal) })
     }
     // The older name and the current name share a folder.
-    if (this.folderOfName(slug, name) !== this.folderOfName(slug, keep)) await rm(this.folderOfName(slug, name), { recursive: true, force: true })
+    if (this.folderOfName(slug, name) !== this.folderOfName(slug, keep)) await this.clearBundle(slug, name)
   }
 
   private async installNow(dir: string, expected: string | undefined): Promise<InstallOutcome> {
-    const outcome = await runGates(dir)
+    const pages: PageRoots = { slugDir: (slug) => this.folderOf(slug), stagingRoot: join(this.root, PAGE_STAGING) }
+    const outcome = await runGates(dir, pages, this.services.renderCheck)
+    try {
+      return await this.installGated(dir, expected, outcome)
+    } catch (error) {
+      // A new build of an install that did not apply goes. An older build of the same sources stays.
+      if (outcome.page !== undefined && !outcome.page.reused && outcome.widget !== undefined) await this.dropBuild(outcome.widget.slug, outcome.page.name)
+      throw error
+    }
+  }
+
+  private async installGated(dir: string, expected: string | undefined, outcome: GatesOutcome): Promise<InstallOutcome> {
     const failed = outcome.gates.find((gate) => !gate.ok)
     if (failed !== undefined || outcome.widget === undefined || outcome.code === undefined) {
       const gate = failed?.gate ?? 'test'
-      throw new CreationError('gate-failed', `the ${gate} gate refused the bundle; nothing was installed`, { gate, diagnostics: failed?.diagnostics ?? ['the test run found no widget'] })
+      const nextStep = isPageGate(gate) ? PAGE_NEXT_STEP[gate] : undefined
+      throw new CreationError('gate-failed', `the ${gate} gate refused the bundle; nothing was installed`, { gate, diagnostics: failed?.diagnostics ?? ['the test run found no widget'], ...(nextStep === undefined ? {} : { nextStep }) })
     }
     const { widget, code } = outcome
     const { slug } = widget
@@ -644,7 +790,7 @@ export class WidgetInstaller {
     // `deepwidgets-widget-<slug>` uses the folder of the current name.
     const name = old === undefined || old === secondBundleName(slug) ? bundleName(slug) : secondBundleName(slug)
     const folder = this.folderOfName(slug, name)
-    await writeBundle(folder, name, widget, code, dir)
+    await writeBundle(folder, name, widget, code, dir, folder === this.folderOf(slug))
 
     // widget_fv.install: the program record before the load. A standby writes no seed, so only the load of a first
     // install, or a user edit through the live old version, can change it during the install.
@@ -652,7 +798,13 @@ export class WidgetInstaller {
     // widget_fv.install: a quarantine of the slug ends only when the whole install succeeds, not when the load does.
     this.services.records.holdLift(slug)
     try {
-      return await this.loadNew({ slug, widget, folder, name, old, replaced, before, gates: outcome.gates, warnings })
+      const done = await this.loadNew({ slug, widget, folder, name, old, replaced, before, gates: outcome.gates, warnings })
+      // The bundle is live from here, so a failed link is a warning, not a failed install.
+      const page = await this.linkPage(slug, outcome.page?.name).catch((error: unknown) => {
+        done.warnings.push(`the page link of the built page was not written into the profile: ${errorText(error)}`)
+        return undefined
+      })
+      return page === undefined ? done : { ...done, page }
     } finally {
       // After a success the hold is already settled; this ends it after a throw.
       this.services.records.settleLift(slug, false)
@@ -688,7 +840,7 @@ export class WidgetInstaller {
     if (registered && old !== undefined) {
       const removal = await this.services.pluginManager.removeBundle(old)
       if (removal.application === 'applied') {
-        await rm(this.folderOfName(slug, old), { recursive: true, force: true })
+        await this.clearBundle(slug, old)
       } else if (this.registeredName(slug, [name], ['live']) !== undefined) {
         // The new version is live: the plugin manager turned the old bundle off before `pnpm remove` failed, or the old
         // version was not live. The old bundle is a leftover, and the next install of the slug removes it.
@@ -716,7 +868,7 @@ export class WidgetInstaller {
       if (undo.application !== 'applied') diagnostics.push(`the failed bundle was not removed: ${resultDiagnostics(undo).join('; ')}`)
     }
     this.services.records.clearOff(slug)
-    await rm(folder, { recursive: true, force: true })
+    await this.clearBundle(slug, name)
     // widget_fv.install: the failed load of a first install can have written the program record. Put back the record
     // and its seed hash. When a version still runs, the record stays: it is the record of that code. widget_fv.replace:
     // that version is the old one, whose user edits during the install stay, or a failed bundle that could not be removed.

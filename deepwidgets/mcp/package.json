@@ -16,6 +16,7 @@
     "cordis.patch.yml",
     "lib/index.js",
     "lib/testrun-child.js",
+    "lib/page-build-child.js",
     "lib/types/**/*.d.ts",
     "widget"
   ],
@@ -26,12 +27,17 @@
     "@deepseek-ai/cordis-plugin-timer": "workspace:~",
     "@deepseek-ai/dsh-home-paths": "workspace:*",
     "@deepwidgets/shell": "workspace:*",
+    "@deepwidgets/widget-kit": "workspace:*",
     "@modelcontextprotocol/node": "2.0.0",
     "@modelcontextprotocol/server": "2.2.0",
+    "@tailwindcss/vite": "4.3.3",
+    "@vitejs/plugin-react": "4.7.0",
     "esbuild": "^0.28.2",
     "oxlint": "1.81.0",
     "oxlint-tsgolint": "7.0.2001",
+    "tailwindcss": "4.3.3",
     "typescript": "^6.0.3",
+    "vite": "6.4.3",
     "zod": "4.4.3"
   },
   "devDependencies": {
