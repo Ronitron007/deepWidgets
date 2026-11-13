@@ -15,7 +15,7 @@ class IpcTeach(DWScene):
             em = ProcessBox("Electron main", color=SERVING, width=4.0, height=1.3)
             em.move_to([-4.6, 2.5, 0])
             host = ProcessBox("host", "its child process", color=HOST, width=4.0, height=1.3)
-            host.move_to([4.6, 2.5, 0])
+            host.move_to([4.9, 2.5, 0])
             rend = ProcessBox("renderer", "one for each window", color=SHELL, width=4.4, height=1.3)
             rend.move_to([-4.6, 0.2, 0])
             link = labeled_arrow(em.get_bottom(), rend.get_top(), None, SERVING)
@@ -29,10 +29,11 @@ class IpcTeach(DWScene):
 
         with self.beat("number") as b:
             up = code_block('{ checkId: 7, check: {...} }', "text")
-            up.move_to([0, 1.5, 0])
-            a1 = labeled_arrow(self.host.get_left(), [up.get_right()[0] + 0.3, 2.2, 0], None, HOST)
+            up.move_to([-0.7, 1.5, 0])
+            a1 = labeled_arrow(self.host.get_left(), [up.get_right()[0] + 0.25, up.get_y(), 0],
+                               None, HOST)
             down = code_block('{ checkId: 7, result: {...} }', "text")
-            down.move_to([0, 0.5, 0])
+            down.move_to([-0.7, 0.5, 0])
             a2 = labeled_arrow([down.get_left()[0] - 0.3, 0.8, 0], self.em.get_bottom() + RIGHT * 0.9,
                                None, SERVING)
             self.play(GrowArrow(a1.arrow), FadeIn(up), run_time=b.t(0.3))

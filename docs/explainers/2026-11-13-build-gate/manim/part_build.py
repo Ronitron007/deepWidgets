@@ -378,8 +378,8 @@ class OutputFence(DWScene):
             self.one = one
 
         with self.beat("real") as b:
-            rp = ProcessBox("realpath", "it follows every link", color=LINK, height=1.1)
-            rp.move_to([4.9, 1.3, 0])
+            rp = ProcessBox("realpath", "follows every link", color=LINK, height=1.1)
+            rp.move_to([4.7, 1.3, 0])
             a = labeled_arrow(self.one.get_right(), rp.get_left(), None, BUILD)
             self.play(GrowArrow(a.arrow), FadeIn(rp), run_time=b.t(0.25))
             tests = VGroup(*[chip(x, SOLVED, mono=False) for x in
@@ -405,7 +405,7 @@ class OutputFence(DWScene):
 
         with self.beat("guard") as b:
             cap = T("one exemption stays, and we come back to it at the end", SMALL, MUTED)
-            cap.move_to([0, 0.2, 0])
+            cap.move_to([0, -1.35, 0])
             self.play(FadeIn(cap), run_time=b.t(0.5))
 
 
