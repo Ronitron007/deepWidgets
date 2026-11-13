@@ -224,7 +224,7 @@ class GateFilesLinks(DWScene):
             head = T("why refuse it instead of checking the target?", BODY, TEXT)
             head.move_to([0, -0.9, 0])
             line = Line([-5.6, -2.1, 0], [5.6, -2.1, 0], stroke_color=MUTED, stroke_width=2)
-            steps = [("the gate reads the target: fine", SOLVED, -4.2),
+            steps = [("the gate reads the target", SOLVED, -4.2),
                      ("the agent repoints the link", ISOLATION, 0.0),
                      ("the build reads another file", ISOLATION, 4.2)]
             marks = VGroup()
@@ -244,8 +244,8 @@ class GateFilesLinks(DWScene):
 
         with self.beat("check") as b:
             st = stamp("REFUSED at page-files", ISOLATION)
-            st.move_to([3.9, 1.9, 0])
+            st.move_to([4.2, 2.3, 0])
             self.play(FadeIn(st, scale=1.2), run_time=b.t(0.3))
-            proof = T("the check plants leak.ts in a page", SMALL, MUTED)
-            proof.next_to(st, DOWN, buff=0.35)
+            proof = lines("the check plants leak.ts", "in a page", size=SMALL, color=MUTED)
+            proof.move_to([4.6, 1.2, 0])
             self.play(FadeIn(proof), run_time=b.t(0.3))

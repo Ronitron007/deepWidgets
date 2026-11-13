@@ -30,11 +30,11 @@ class RenameTeach(DWScene):
             self.play(FadeIn(fill), run_time=b.t(0.2))
             self.play(FadeIn(reader), run_time=b.t(0.2))
             rl = T("a rename", LABEL, SOLVED, bold=True).move_to([-5.6, 0.2, 0])
-            sw_box = rbox(2.4, 1.0, SOLVED, fill=0.07, sw=2.5).move_to([-2.4, 0.2, 0])
+            sw_box = rbox(3.2, 1.0, SOLVED, fill=0.07, sw=2.5).move_to([-2.4, 0.2, 0])
             sw_t = lines("either it happened,", "or it did not", size=SMALL, color=SOLVED)
             sw_t.move_to(sw_box)
             none = T("no moment where a reader sees half of one", SMALL, SOLVED)
-            none.move_to([2.9, 0.2, 0])
+            none.move_to([3.3, 0.2, 0])
             self.play(FadeIn(rl), FadeIn(sw_box), FadeIn(sw_t), run_time=b.t(0.2))
             self.play(FadeIn(none), run_time=b.t(0.16))
 
@@ -75,12 +75,12 @@ class TmpBuild(DWScene):
             self.play(LaggedStart(*[FadeIn(x) for x in boxes], lag_ratio=0.4),
                       LaggedStart(*[GrowArrow(a.arrow) for a in arrows], lag_ratio=0.4),
                       run_time=b.t(0.4))
-            bst = burst(ISOLATION, 0.4).move_to([2.0, 1.45, 0])
+            bst = burst(ISOLATION, 0.4).move_to([0.6, 1.5, 0])
             gap = lines("a crash in the gap left the widget", "with no page, or half a page",
                         size=SMALL, color=ISOLATION)
-            gap.move_to([3.2, 1.15, 0])
+            gap.move_to([3.9, 1.15, 0])
             after = T("and it ran after the new code was already live", SMALL, MUTED)
-            after.move_to([-3.4, 1.3, 0])
+            after.move_to([-3.6, 0.6, 0])
             self.play(FadeIn(bst, scale=1.3), FadeIn(gap), run_time=b.t(0.25))
             self.play(FadeIn(after), run_time=b.t(0.2))
 
@@ -131,11 +131,19 @@ class PageLink(DWScene):
                               ("page-3f9c2a...", "page-b7e014...", "page-5d8810...")])
             builds.arrange(DOWN, buff=0.3).move_to(box).shift(UP * 0.35)
             link = _folder_row("page", LINK, w=2.0)
-            link.move_to([box.get_x() - 1.1, box.get_bottom()[1] + 0.55, 0])
-            arrow = labeled_arrow(link.get_right(), builds[0].get_left(), None, LINK)
+            link.move_to([box.get_x() - 1.3, box.get_bottom()[1] + 0.5, 0])
+            lane = box.get_right()[0] - 0.3
+            path = VMobject(stroke_color=LINK, stroke_width=4)
+            path.set_points_as_corners([link.get_right(), [lane, link.get_y(), 0],
+                                        [lane, builds[0].get_y(), 0],
+                                        [builds[0].get_right()[0] + 0.12, builds[0].get_y(), 0]])
+            atip = Triangle(fill_color=LINK, fill_opacity=1, stroke_width=0).scale(0.1)
+            atip.rotate(PI / 2).move_to([builds[0].get_right()[0] + 0.08, builds[0].get_y(), 0])
+            arrow = VGroup(path, atip)
+            arrow.arrow = path
             self.play(FadeIn(box), FadeIn(tag), run_time=b.t(0.2))
             self.play(LaggedStart(*[FadeIn(x) for x in builds], lag_ratio=0.35), run_time=b.t(0.4))
-            self.play(FadeIn(link), GrowArrow(arrow.arrow), run_time=b.t(0.3))
+            self.play(FadeIn(link), Create(arrow), run_time=b.t(0.3))
             self.builds, self.link = builds, link
 
         with self.beat("swap") as b:
@@ -177,7 +185,7 @@ class KeepThree(DWScene):
             self.play(FadeIn(title, shift=RIGHT * 0.2), run_time=b.t(0.6))
 
         with self.beat("three") as b:
-            rows = VGroup(*[_folder_row(n, c, w=4.4) for n, c in
+            rows = VGroup(*[_folder_row(n, c, w=5.0) for n, c in
                             [("page-3f9c2a...   current", SOLVED), ("page-b7e014...", BUILD),
                              ("page-5d8810...", BUILD), ("page-91ab7e...   oldest", MUTED)]])
             rows.arrange(DOWN, buff=0.35).move_to([-3.8, 1.1, 0])
@@ -241,7 +249,7 @@ class Sweep(DWScene):
         with self.beat("first") as b:
             job = chip("the first job of the installer queue, at every host start", HOST,
                        mono=False)
-            job.move_to([0, -0.4, 0])
+            job.move_to([0, -0.9, 0])
             removes = T("it removes all three kinds", SMALL, SOLVED)
             removes.next_to(job, DOWN, buff=0.3)
             self.play(FadeIn(job), run_time=b.t(0.45))
@@ -252,9 +260,9 @@ class Sweep(DWScene):
                    LABEL, TEXT)
             n2 = T("a link under a temporary name is never the name page", LABEL, TEXT)
             notes = VGroup(n1, n2).arrange(DOWN, buff=0.35)
-            notes.move_to([0, -2.0, 0])
+            notes.move_to([0, -2.4, 0])
             self.play(FadeIn(n1), run_time=b.t(0.3))
             self.play(FadeIn(n2), run_time=b.t(0.3))
             cap = T("each leftover is both inert and easy to find", BODY, SOLVED, bold=True)
-            cap.move_to([0, -3.2, 0])
+            cap.move_to([0, -3.5, 0])
             self.play(FadeIn(cap), run_time=b.t(0.3))

@@ -13,40 +13,41 @@ class IpcTeach(DWScene):
 
         with self.beat("channel") as b:
             em = ProcessBox("Electron main", color=SERVING, width=4.0, height=1.3)
-            em.move_to([-4.2, 1.9, 0])
+            em.move_to([-4.6, 2.5, 0])
             host = ProcessBox("host", "its child process", color=HOST, width=4.0, height=1.3)
-            host.move_to([4.2, 1.9, 0])
+            host.move_to([4.6, 2.5, 0])
             rend = ProcessBox("renderer", "one for each window", color=SHELL, width=4.4, height=1.3)
-            rend.move_to([-4.2, -0.4, 0])
+            rend.move_to([-4.6, 0.2, 0])
             link = labeled_arrow(em.get_bottom(), rend.get_top(), None, SERVING)
             self.play(FadeIn(em), run_time=b.t(0.2))
             self.play(FadeIn(host), run_time=b.t(0.2))
             self.play(GrowArrow(link.arrow), FadeIn(rend), run_time=b.t(0.2))
             ipc = T("a channel: each side sends an object and listens for one", SMALL, MUTED)
-            ipc.move_to([0, 0.75, 0])
+            ipc.move_to([2.4, -0.9, 0])
             self.play(FadeIn(ipc), run_time=b.t(0.25))
             self.em, self.host = em, host
 
         with self.beat("number") as b:
             up = code_block('{ checkId: 7, check: {...} }', "text")
-            up.move_to([0.4, 2.4, 0])
-            a1 = labeled_arrow(self.host.get_left(), [1.9, 1.9, 0], None, HOST)
+            up.move_to([0, 1.5, 0])
+            a1 = labeled_arrow(self.host.get_left(), [up.get_right()[0] + 0.3, 2.2, 0], None, HOST)
             down = code_block('{ checkId: 7, result: {...} }', "text")
-            down.move_to([0.4, 1.4, 0])
-            a2 = labeled_arrow([-1.9, 1.4, 0], [-2.3, 1.6, 0], None, SERVING)
+            down.move_to([0, 0.5, 0])
+            a2 = labeled_arrow([down.get_left()[0] - 0.3, 0.8, 0], self.em.get_bottom() + RIGHT * 0.9,
+                               None, SERVING)
             self.play(GrowArrow(a1.arrow), FadeIn(up), run_time=b.t(0.3))
             self.play(GrowArrow(a2.arrow), FadeIn(down), run_time=b.t(0.3))
             rule = lines("a message is not a question. a counter puts the next number on it,",
                          "then the asker waits for an answer with the same number.",
                          size=LABEL, color=TEXT)
-            rule.move_to([0, -1.9, 0])
+            rule.move_to([0, -2.1, 0])
             self.play(FadeIn(rule), run_time=b.t(0.25))
             two = VGroup(chip("checkId: 7", CREATION), chip("checkId: 8", CREATION))
-            two.arrange(RIGHT, buff=0.8).move_to([0, -2.8, 0])
+            two.arrange(RIGHT, buff=0.8).move_to([0, -2.95, 0])
             self.play(FadeIn(two), run_time=b.t(0.12))
 
         with self.beat("cite") as b:
-            cite = T("deepWidgets video  05:42", SMALL, MUTED).move_to([0, CAPTION_Y, 0])
+            cite = T("deepWidgets video  05:42", SMALL, MUTED).move_to([0, -3.6, 0])
             self.play(FadeIn(cite), run_time=b.t(0.5))
 
 
@@ -105,7 +106,7 @@ class TestRunFixture(DWScene):
             self.play(FadeIn(title, shift=RIGHT * 0.2), run_time=b.t(0.5))
 
         with self.beat("recall") as b:
-            card = rbox(5.6, 2.2, CREATION, fill=0.06, sw=3).move_to([-3.6, 1.6, 0])
+            card = rbox(7.4, 2.2, CREATION, fill=0.06, sw=3).move_to([-3.0, 1.6, 0])
             t = T("the test run", LABEL, CREATION, bold=True)
             s = lines("the third host gate: it runs the bundle",
                       "in a throwaway process and calls each action once",
@@ -119,7 +120,7 @@ class TestRunFixture(DWScene):
         with self.beat("new") as b:
             new = lines("new: the run now keeps", "what each query returned",
                         size=LABEL, color=SOLVED)
-            new.move_to([3.6, 1.6, 0])
+            new.move_to([4.4, 1.6, 0])
             self.play(FadeIn(new, shift=RIGHT * 0.15), run_time=b.t(0.6))
 
         with self.beat("routes") as b:
@@ -154,29 +155,29 @@ class HiddenWindow(DWScene):
             self.play(FadeIn(title, shift=RIGHT * 0.2), run_time=b.t(0.6))
 
         with self.beat("window") as b:
-            win = rbox(4.2, 3.0, SHELL, fill=0.05, sw=3).move_to([-4.0, 0.6, 0])
+            win = rbox(3.8, 2.4, SHELL, fill=0.05, sw=3).move_to([-4.8, 1.2, 0])
             size = T("320 x 300", LABEL, SHELL, mono=True).move_to(win)
             note = T("the size of a real widget window", SMALL, MUTED)
             note.next_to(win, DOWN, buff=0.25)
             self.play(Create(win), FadeIn(size), FadeIn(note), run_time=b.t(0.35))
             props = lines("show: false", "no frame", "no Node access", "sandbox: true",
                           size=SMALL, color=TEXT, mono=True)
-            props.move_to([0.6, 0.6, 0])
+            props.move_to([-4.8, -1.6, 0])
             self.play(LaggedStart(*[FadeIn(p, shift=RIGHT * 0.1) for p in props], lag_ratio=0.4),
                       run_time=b.t(0.5))
             self.win = win
 
         with self.beat("listeners") as b:
             ears = VGroup(*[chip(x, RENDER, mono=False) for x in
-                            ("console errors: kept", "the renderer ended: recorded with the reason",
+                            ("console errors: kept", "the renderer ended, with the reason",
                              "navigation and new windows: refused")])
-            ears.arrange(DOWN, buff=0.26, aligned_edge=LEFT).move_to([3.4, 0.6, 0])
+            ears.arrange(DOWN, buff=0.3, aligned_edge=LEFT).move_to([2.9, 1.0, 0])
             self.play(LaggedStart(*[FadeIn(e, shift=LEFT * 0.15) for e in ears], lag_ratio=0.4),
                       run_time=b.t(0.8))
 
         with self.beat("queue") as b:
             boxes = VGroup(*[chip(f"check {i}", CREATION) for i in (7, 8, 9)])
-            boxes.arrange(RIGHT, buff=0.35).move_to([-1.0, -2.3, 0])
+            boxes.arrange(RIGHT, buff=0.35).move_to([2.9, -1.4, 0])
             lab = T("one check at a time; each new one waits", SMALL, MUTED)
             lab.next_to(boxes, DOWN, buff=0.3)
             self.play(LaggedStart(*[FadeIn(x) for x in boxes], lag_ratio=0.4), run_time=b.t(0.45))
@@ -224,9 +225,9 @@ class Deadline(DWScene):
             over.move_to([-2.0, -0.8, 0])
             after = lines("it crashes the renderer, destroys the window,",
                           "and frees the queue", size=SMALL, color=TEXT)
-            after.move_to([1.6, -2.1, 0])
+            after.move_to([2.2, -2.1, 0])
             verdict = chip("not ready, with the console lines", ISOLATION, mono=False)
-            verdict.move_to([-3.2, -2.3, 0])
+            verdict.move_to([-3.6, -2.9, 0])
             self.play(FadeIn(lab), Create(line), FadeIn(bar), FadeIn(over), run_time=b.t(0.4))
             self.play(FadeIn(after), run_time=b.t(0.3))
             self.play(FadeIn(verdict), run_time=b.t(0.2))
@@ -403,10 +404,10 @@ class CliSkip(DWScene):
             self.play(FadeIn(title, shift=RIGHT * 0.2), run_time=b.t(0.6))
 
         with self.beat("two") as b:
-            em = ProcessBox("Electron main", color=SERVING, width=4.0, height=1.2)
-            em.move_to([-1.6, 2.0, 0])
-            h1 = ProcessBox("host", "started by the app", color=HOST, width=4.0, height=1.2)
-            h1.move_to([-5.2, 2.0, 0])
+            em = ProcessBox("Electron main", color=SERVING, width=4.4, height=1.2)
+            em.move_to([1.6, 2.0, 0])
+            h1 = ProcessBox("host", "started by the app", color=HOST, width=4.4, height=1.2)
+            h1.move_to([-4.6, 2.0, 0])
             a1 = labeled_arrow(h1.get_right(), em.get_left(), "asks", HOST, side=UP, mono=False)
             self.play(FadeIn(h1), run_time=b.t(0.2))
             self.play(GrowArrow(a1.arrow), FadeIn(a1.label), FadeIn(em), run_time=b.t(0.3))

@@ -61,18 +61,21 @@ class ExamplePass(DWScene):
             self.play(o.highlight("page_files", arrows=("branch_page",)), run_time=b.t(0.3))
             n1 = chip("3 hashes matched", SOLVED, mono=False)
             n1.move_to([o.box("page_files").get_x(), -2.5, 0])
+            self.nums = VGroup(n1)
             self.play(FadeIn(n1), run_time=b.t(0.45))
 
         with self.beat("types") as b:
             self.play(o.highlight("page_types", arrows=("arrow_files_types",)), run_time=b.t(0.3))
             n2 = chip("8 links, no type error", SOLVED, mono=False)
             n2.move_to([o.box("page_types").get_x() + 0.3, -2.5, 0])
+            self.nums.add(n2)
             self.play(FadeIn(n2), run_time=b.t(0.5))
 
         with self.beat("build") as b:
             self.play(o.highlight("page_build", arrows=("arrow_types_build",)), run_time=b.t(0.2))
             n3 = chip("about 1.25 s", SOLVED, mono=False)
             n3.move_to([o.box("page_build").get_x() + 0.2, -2.5, 0])
+            self.nums.add(n3)
             self.play(FadeIn(n3), run_time=b.t(0.25))
             det = lines("the child checked the stylesheet, started Vite with its four",
                         "plugin entries, and built the page. the output fence found every",
@@ -87,6 +90,7 @@ class ExamplePass(DWScene):
             self.play(o.highlight("page_render", arrows=("arrow_build_render",)), run_time=b.t(0.2))
             n4 = chip("648 ms", SOLVED, mono=False)
             n4.move_to([o.box("page_render").get_x() + 0.2, -2.5, 0])
+            self.nums.add(n4)
             self.play(FadeIn(n4), run_time=b.t(0.25))
             det = T("the page reached ready, and the six style boxes matched", SMALL, TEXT)
             det.move_to([0, -3.4, 0])
@@ -94,7 +98,7 @@ class ExamplePass(DWScene):
             self.det2 = det
 
         with self.beat("applied") as b:
-            self.play(FadeOut(self.det2), FadeOut(o), run_time=b.t(0.12))
+            self.play(FadeOut(self.det2), FadeOut(o), FadeOut(self.nums), run_time=b.t(0.12))
             ok = T("the install applied, and the link swapped", BODY, SOLVED, bold=True)
             ok.move_to([0, 2.4, 0])
             self.play(FadeIn(ok), run_time=b.t(0.22))
@@ -130,6 +134,7 @@ class ExampleRefuse(DWScene):
                          size=SMALL, color=MUTED)
             note.next_to(code, DOWN, buff=0.3)
             self.play(FadeIn(note), run_time=b.t(0.35))
+            self.top = VGroup(code, note)
 
         with self.beat("passes") as b:
             rows = VGroup()
@@ -161,12 +166,13 @@ class ExampleRefuse(DWScene):
 
         with self.beat("stops") as b:
             st = stamp("the install stops at page-build", ISOLATION)
-            st.move_to([3.6, 1.1, 0])
-            self.play(FadeIn(st, scale=1.15), run_time=b.t(0.4))
+            st.move_to([0, 2.1, 0])
+            self.play(FadeOut(self.top), run_time=b.t(0.1))
+            self.play(FadeIn(st, scale=1.15), run_time=b.t(0.35))
             keep = lines("the old bundle and the old page link stay,",
-                         "and no .tmp folder is left behind", size=SMALL, color=SOLVED)
-            keep.next_to(st, DOWN, buff=0.4)
-            self.play(FadeIn(keep), run_time=b.t(0.4))
+                         "and no .tmp folder is left behind", size=LABEL, color=SOLVED)
+            keep.move_to([0, 1.0, 0])
+            self.play(FadeIn(keep), run_time=b.t(0.35))
 
 
 class ExampleLoop(DWScene):
@@ -194,24 +200,24 @@ class ExampleLoop(DWScene):
             clock = VGroup(Circle(radius=0.7, stroke_color=ISOLATION, stroke_width=4),
                            Line(ORIGIN, UP * 0.5, stroke_color=ISOLATION, stroke_width=4),
                            Line(ORIGIN, RIGHT * 0.35, stroke_color=ISOLATION, stroke_width=4))
-            clock.move_to([-4.4, -1.6, 0])
+            clock.move_to([-5.2, -1.2, 0])
             lab = T("15 s", LABEL, ISOLATION, mono=True).next_to(clock, DOWN, buff=0.25)
             self.play(FadeIn(clock), FadeIn(lab), run_time=b.t(0.45))
             crashed = lines("the renderer crashed, the window went,",
                             "and the queue was free", size=SMALL, color=TEXT)
-            crashed.move_to([0.4, -1.6, 0])
+            crashed.move_to([1.0, -1.2, 0])
             self.play(FadeIn(crashed), run_time=b.t(0.4))
 
         with self.beat("after") as b:
             verdict = chip("the install failed with not ready", ISOLATION, mono=False)
-            verdict.move_to([-3.0, -2.7, 0])
+            verdict.move_to([-2.4, -2.8, 0])
             whole = chip("the whole case: 18 s", ISOLATION, mono=False)
             whole.next_to(verdict, RIGHT, buff=0.5)
             self.play(FadeIn(verdict), run_time=b.t(0.25))
             self.play(FadeIn(whole), run_time=b.t(0.2))
             good = T("a good page installed right after it, and passed in 654 ms",
                      BODY, SOLVED, bold=True)
-            good.move_to([0, -3.5, 0])
+            good.move_to([0, -3.6, 0])
             self.play(FadeIn(good), run_time=b.t(0.3))
             why = T("that second half is the part that matters: the queue really did free",
                     SMALL, MUTED)

@@ -33,30 +33,28 @@ class PluginHookTeach(DWScene):
             self.play(FadeIn(title, shift=RIGHT * 0.2), run_time=b.t(0.5))
 
         with self.beat("kitchen") as b:
-            cor = _corridor()
+            cor = _corridor(w=11.0, h=2.2, y=0.2)
             lab = T("the build, from the first import to the finished bundle", SMALL, MUTED)
-            lab.move_to([0, 2.4, 0])
+            lab.move_to([0, 2.75, 0])
             self.play(Create(cor), FadeIn(lab), run_time=b.t(0.3))
             say = lines("a bundler plugin is an object with named functions.",
                         "the bundler calls each one at a fixed point of the build.",
                         size=LABEL, color=TEXT)
-            say.move_to([0, -1.6, 0])
+            say.move_to([0, -1.9, 0])
             self.play(FadeIn(say), run_time=b.t(0.3))
             kitchen = T("a kitchen inspector at two doors", SMALL, MUTED)
-            kitchen.next_to(say, DOWN, buff=0.35)
+            kitchen.next_to(say, DOWN, buff=0.3)
             self.play(FadeIn(kitchen), run_time=b.t(0.25))
             self.cor, self.say = cor, VGroup(say, kitchen)
 
         with self.beat("hooks") as b:
-            d1 = _door(-3.4, 0.6, 2.6, BUILD, "resolveId(source, importer)", "the delivery entrance")
-            d2 = _door(3.9, 0.6, 2.6, BUILD, "generateBundle(bundle)", "the pass, where food leaves")
+            d1 = _door(-3.4, 0.2, 2.2, BUILD, "resolveId(source, importer)", "the delivery entrance")
+            d2 = _door(3.9, 0.2, 2.2, BUILD, "generateBundle(bundle)", "the pass, where food leaves")
             self.play(FadeIn(d1), run_time=b.t(0.25))
-            w1 = T("runs for every import, and it can refuse", SMALL, TEXT)
-            w1.move_to([-3.4, 0.6, 0]).shift(LEFT * 0.1)
             w1 = lines("runs for every import,", "and it can refuse", size=SMALL, color=TEXT)
-            w1.move_to([-5.2, 0.6, 0])
+            w1.move_to([-5.2, 0.2, 0])
             w2 = lines("runs once at the end,", "with the finished bundle", size=SMALL, color=TEXT)
-            w2.move_to([1.3, 0.6, 0])
+            w2.move_to([1.3, 0.2, 0])
             self.play(FadeIn(w1), run_time=b.t(0.2))
             self.play(FadeIn(d2), run_time=b.t(0.2))
             self.play(FadeIn(w2), run_time=b.t(0.2))
@@ -64,9 +62,9 @@ class PluginHookTeach(DWScene):
 
         with self.beat("pre") as b:
             badge = chip("enforce: 'pre'", CREATION)
-            badge.next_to(self.d1, UP, buff=0.9)
+            badge.move_to([-3.4, 2.1, 0])
             why = T("so the fence sees an import before any other plugin rewrites it", SMALL, MUTED)
-            why.move_to([0, -3.2, 0])
+            why.move_to([0, -3.3, 0])
             self.play(FadeIn(badge, shift=DOWN * 0.15), run_time=b.t(0.4))
             self.play(FadeIn(why), run_time=b.t(0.35))
 
@@ -164,10 +162,10 @@ class FenceHole(DWScene):
             for i, (form, what) in enumerate(self.WAYS):
                 f = T(form, SMALL, ISOLATION, mono=True)
                 w = T(what, SMALL, MUTED)
-                f.move_to([-6.2, 0.4 - i * 0.72, 0], aligned_edge=LEFT)
-                w.move_to([-0.6, 0.4 - i * 0.72, 0], aligned_edge=LEFT)
+                f.move_to([-6.2, 0.75 - i * 0.68, 0], aligned_edge=LEFT)
+                w.move_to([-0.6, 0.75 - i * 0.68, 0], aligned_edge=LEFT)
                 tag = T("no import", SMALL, ISOLATION)
-                tag.move_to([5.4, 0.4 - i * 0.72, 0], aligned_edge=LEFT)
+                tag.move_to([5.4, 0.75 - i * 0.68, 0], aligned_edge=LEFT)
                 rows.add(VGroup(f, w, tag))
             self.play(LaggedStart(*[FadeIn(r, shift=RIGHT * 0.15) for r in rows], lag_ratio=0.45),
                       run_time=b.t(0.85))
@@ -182,7 +180,7 @@ class FenceHole(DWScene):
             found = lines("we shipped the syntax checks first, for the forms we knew.",
                           "a reviewer then found four more that got past them.",
                           size=LABEL, color=TEXT)
-            found.move_to([0, -2.1, 0])
+            found.move_to([0, -2.35, 0])
             self.play(FadeIn(found), run_time=b.t(0.35))
             one = T("one was an @import with no space after the keyword", SMALL, MUTED)
             one.next_to(found, DOWN, buff=0.3)
@@ -191,7 +189,7 @@ class FenceHole(DWScene):
         with self.beat("result") as b:
             cap = T("so the second fence does not read syntax at all: it reads the result",
                     BODY, SOLVED, bold=True)
-            cap.move_to([0, -3.4, 0])
+            cap.move_to([0, -3.5, 0])
             self.play(FadeIn(cap, shift=UP * 0.15), run_time=b.t(0.6))
 
 
@@ -259,18 +257,18 @@ class DataUrlTeach(DWScene):
             self.play(FadeIn(title, shift=RIGHT * 0.2), run_time=b.t(0.5))
 
         with self.beat("embed") as b:
-            png = rbox(1.9, 1.5, VITE, fill=0.1, sw=2.5).move_to([-5.0, 1.5, 0])
+            png = rbox(1.9, 1.5, VITE, fill=0.1, sw=2.5).move_to([-5.8, 1.5, 0])
             pl = T("logo.png", SMALL, VITE, mono=True).move_to(png)
             limit = lines("below the size limit", "of the bundler", size=SMALL, color=MUTED)
-            limit.move_to([-2.2, 1.5, 0])
-            arrow = labeled_arrow(png.get_right(), [-3.5, 1.5, 0], None, VITE)
+            limit.move_to([-5.8, 0.25, 0])
+            arrow = labeled_arrow(png.get_right(), [-3.8, 1.5, 0], None, VITE)
             self.play(FadeIn(png), FadeIn(pl), run_time=b.t(0.2))
             self.play(GrowArrow(arrow.arrow), FadeIn(limit), run_time=b.t(0.25))
             css = code_block("background: url(data:image/png;base64,iVBOR...);", "css")
-            css.move_to([2.4, 1.5, 0])
+            css.move_to([1.9, 1.5, 0])
             self.play(FadeIn(css), run_time=b.t(0.35))
             inside = T("the bytes sit inside the script or the stylesheet, as text", SMALL, MUTED)
-            inside.move_to([0.6, 0.4, 0])
+            inside.move_to([1.4, 0.3, 0])
             self.play(FadeIn(inside), run_time=b.t(0.15))
 
         with self.beat("trap") as b:
@@ -329,7 +327,7 @@ class MonkeyPatchTeach(DWScene):
             pr.move_to(prbox).shift(DOWN * 0.22)
             prtag.move_to([prbox.get_x(), prbox.get_top()[1] - 0.32, 0])
             g2 = VGroup(prbox, prtag, pr)
-            VGroup(g1, g2).arrange(RIGHT, buff=0.7, aligned_edge=UP).move_to([-3.6, -1.6, 0])
+            VGroup(g1, g2).arrange(RIGHT, buff=0.6, aligned_edge=UP).move_to([-3.2, -1.6, 0])
             self.play(FadeIn(g1), run_time=b.t(0.3))
             self.play(FadeIn(g2), run_time=b.t(0.25))
             sync = code_block("syncBuiltinESMExports()", "typescript")
@@ -342,8 +340,8 @@ class MonkeyPatchTeach(DWScene):
         with self.beat("limit") as b:
             self.play(FadeOut(self.top), run_time=b.t(0.1))
             native = ProcessBox("a native module", "reads files through its own code",
-                                color=OPEN, width=5.6, height=1.3, dashed=True)
-            native.move_to([-2.6, 1.9, 0])
+                                color=OPEN, height=1.3, dashed=True)
+            native.move_to([-2.8, 1.9, 0])
             disk = disk_icon(DISK, 1.0).move_to([3.6, 1.9, 0])
             dlab = T("the disk", SMALL, DISK).next_to(disk, DOWN, buff=0.25)
             a = labeled_arrow(native.get_right(), disk.get_left(), "not seen", OPEN, side=UP,
@@ -371,7 +369,7 @@ class OutputFence(DWScene):
             items = VGroup(*[chip(x, BUILD, mono=False) for x in self.LISTS])
             items.arrange(DOWN, buff=0.26).move_to([-4.0, 1.3, 0])
             one = ProcessBox("one set of paths", color=BUILD, width=3.6, height=1.0)
-            one.move_to([1.6, 1.3, 0])
+            one.move_to([0.9, 1.3, 0])
             arrows = VGroup(*[labeled_arrow(i.get_right(), one.get_left(), None, BUILD) for i in items])
             self.play(LaggedStart(*[FadeIn(i, shift=RIGHT * 0.15) for i in items], lag_ratio=0.4),
                       run_time=b.t(0.6))
@@ -380,8 +378,8 @@ class OutputFence(DWScene):
             self.one = one
 
         with self.beat("real") as b:
-            rp = ProcessBox("realpath", "it follows every link", color=LINK, width=3.6, height=1.1)
-            rp.move_to([5.2, 1.3, 0])
+            rp = ProcessBox("realpath", "it follows every link", color=LINK, height=1.1)
+            rp.move_to([4.9, 1.3, 0])
             a = labeled_arrow(self.one.get_right(), rp.get_left(), None, BUILD)
             self.play(GrowArrow(a.arrow), FadeIn(rp), run_time=b.t(0.25))
             tests = VGroup(*[chip(x, SOLVED, mono=False) for x in
@@ -423,12 +421,13 @@ class PostcssTeach(DWScene):
             sheet = _sheet_icon().move_to([-5.4, 1.6, 0])
             slab = T("styles.css", SMALL, VITE, mono=True).next_to(sheet, DOWN, buff=0.22)
             tool = ProcessBox("PostCSS", "parse, plugins, write out", color=BUILD,
-                              width=4.4, height=1.2).move_to([-0.6, 1.6, 0])
+                              height=1.2).move_to([-0.9, 1.6, 0])
             plugins = VGroup(chip("Tailwind", VITE), chip("...", VITE)).arrange(DOWN, buff=0.2)
-            plugins.move_to([4.4, 1.6, 0])
+            plugins.move_to([5.4, 1.6, 0])
             a1 = labeled_arrow(sheet.get_right(), tool.get_left(), None, VITE)
-            a2 = labeled_arrow(tool.get_right(), plugins.get_left(), "a list of plugins", VITE,
-                               side=UP, mono=False)
+            a2 = labeled_arrow(tool.get_right(), plugins.get_left(), None, VITE)
+            a2.label = T("a list of plugins", SMALL, VITE).move_to([3.4, 2.4, 0])
+            a2.add(a2.label)
             self.play(FadeIn(sheet), FadeIn(slab), run_time=b.t(0.25))
             self.play(GrowArrow(a1.arrow), FadeIn(tool), run_time=b.t(0.3))
             self.play(GrowArrow(a2.arrow), FadeIn(a2.label), FadeIn(plugins), run_time=b.t(0.35))
@@ -546,22 +545,22 @@ class BuildChild(DWScene):
         with self.beat("why") as b:
             beats_line = VMobject(stroke_color=SOLVED, stroke_width=3)
             pts = []
-            for i in range(28):
+            for i in range(20):
                 x = -6.4 + i * 0.22
                 y = 2.9 + (0.28 if i % 7 == 3 else 0.0)
                 pts.append([x, y, 0])
             beats_line.set_points_as_corners(pts)
             hb = T("the heartbeat of the host stays unbroken", SMALL, SOLVED)
-            hb.move_to([1.4, 2.95, 0])
+            hb.move_to([2.6, 2.95, 0])
             self.play(Create(beats_line), FadeIn(hb), run_time=b.t(0.35))
             why = lines("a build has long steps that do not pause.",
                         "a build inside the host would look like a frozen host.",
                         size=LABEL, color=TEXT)
-            why.move_to([0, -1.9, 0])
+            why.move_to([0, -1.7, 0])
             self.play(FadeIn(why), run_time=b.t(0.45))
 
         with self.beat("limit") as b:
-            bar = rbox(8.6, 0.6, CREATION, fill=0.08, sw=2.5).move_to([-0.6, -3.0, 0])
+            bar = rbox(8.6, 0.6, CREATION, fill=0.08, sw=2.5).move_to([-0.6, -3.4, 0])
             lab = T("90 s", SMALL, CREATION, mono=True).move_to(bar)
             kill = chip("SIGKILL", ISOLATION)
             kill.next_to(bar, RIGHT, buff=0.35)
@@ -569,5 +568,5 @@ class BuildChild(DWScene):
             self.play(FadeIn(kill), run_time=b.t(0.2))
             fails = lines("it also fails with no result line,",
                           "and when the build wrote no index page", size=SMALL, color=MUTED)
-            fails.move_to([0, -2.3, 0])
+            fails.move_to([0, -2.6, 0])
             self.play(FadeIn(fails), run_time=b.t(0.3))

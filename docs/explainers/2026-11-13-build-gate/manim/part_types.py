@@ -150,7 +150,7 @@ class OneCopyRule(DWScene):
             self.play(GrowArrow(a1.arrow), FadeIn(a1.label), FadeIn(kit), run_time=b.t(0.3))
             self.play(GrowArrow(a2.arrow), FadeIn(react), run_time=b.t(0.3))
             same = T("the page gets the same copy as the core", SMALL, MUTED)
-            same.move_to([-2.4, 0.2, 0])
+            same.move_to([1.4, 2.85, 0])
             self.play(FadeIn(same), run_time=b.t(0.15))
 
         with self.beat("zod") as b:
@@ -194,23 +194,21 @@ oxlint -c <staging>/oxlintrc.json
 
         with self.beat("oxlint") as b:
             code = code_block(self.CMD, "bash")
-            code.move_to([-3.1, 1.4, 0])
+            code.move_to([-3.4, 1.4, 0])
             self.play(FadeIn(code), run_time=b.t(0.5))
             cite = T("deepWidgets video  25:51", SMALL, MUTED)
             cite.next_to(code, DOWN, buff=0.3)
             self.play(FadeIn(cite), run_time=b.t(0.3))
 
         with self.beat("limits") as b:
-            rows = [("limit", "60 s"), ("diagnostics", "at most 20"),
-                    ("each one keeps", "file, line, column"),
-                    ("the path shown", "under page/")]
-            tbl = RevealTable(["the gate", ""], rows, mono_cols=[1], size=LABEL,
-                              cell_colors={(i, 1): TYPES for i in range(len(rows))})
-            tbl.move_to([3.6, 1.4, 0])
-            self.add(tbl)
-            self.play(tbl.reveal_rows(0, len(rows)), run_time=b.t(0.7))
+            rows = VGroup(*[chip(x, TYPES, mono=False) for x in
+                            ("a limit of 60 s", "at most 20 problems",
+                             "file, line and column", "the path under page/")])
+            rows.arrange(DOWN, buff=0.26).move_to([4.2, 1.4, 0])
+            self.play(LaggedStart(*[FadeIn(r, shift=LEFT * 0.12) for r in rows], lag_ratio=0.4),
+                      run_time=b.t(0.7))
             strip = T("the staging path is stripped off", SMALL, MUTED)
-            strip.next_to(tbl, DOWN, buff=0.35)
+            strip.next_to(rows, DOWN, buff=0.35)
             self.play(FadeIn(strip), run_time=b.t(0.2))
 
         with self.beat("kinds") as b:

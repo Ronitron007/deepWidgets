@@ -96,14 +96,14 @@ class Mutants(DWScene):
 
         with self.beat("four") as b:
             row = chip("the four bypasses, with the syntax checks turned off", BUILD, mono=False)
-            row.move_to([0, -1.6, 0])
+            row.move_to([0, -1.75, 0])
             res = chip("all four stayed refused", SOLVED, mono=False)
             res.next_to(row, DOWN, buff=0.35)
             self.play(FadeIn(row), run_time=b.t(0.3))
             self.play(FadeIn(res), run_time=b.t(0.25))
             proof = lines("which proves that the output fence catches them on its own,",
                           "and not the syntax checks", size=SMALL, color=MUTED)
-            proof.move_to([0, -3.1, 0])
+            proof.move_to([0, -3.35, 0])
             self.play(FadeIn(proof), run_time=b.t(0.3))
 
 
@@ -193,24 +193,24 @@ class NotServed(DWScene):
 
         with self.beat("window") as b:
             self.play(FadeOut(o), run_time=b.t(0.12))
-            win = window_card("widget window", w=4.6, h=2.6, color=SHELL)
-            win.move_to([-4.0, 1.4, 0])
+            win = window_card("widget window", w=4.6, h=2.4, color=SHELL)
+            win.move_to([-4.0, 1.1, 0])
             body = chip("the shared shell", SHELL, mono=False)
             body.move_to(win.body())
             nothing = lines("the built page sits in the profile folder,",
                             "checked and linked, and nothing serves it",
                             size=LABEL, color=TEXT)
-            nothing.move_to([2.6, 1.4, 0])
+            nothing.move_to([2.6, 1.1, 0])
             self.play(FadeIn(win), FadeIn(body), run_time=b.t(0.4))
             self.play(FadeIn(nothing), run_time=b.t(0.4))
 
         with self.beat("next") as b:
-            box = rbox(5.0, 1.3, OPEN, fill=0.05, sw=3, dashed=True).move_to([-3.6, -0.6, 0])
+            box = rbox(5.0, 1.3, OPEN, fill=0.05, sw=3, dashed=True).move_to([-3.6, -0.9, 0])
             nm = T("library.serving", LABEL, OPEN, mono=True).move_to(box)
             what = lines("Electron main will serve the link of each slug.",
                          "a slug with no page falls back to the shared shell.",
                          size=SMALL, color=MUTED)
-            what.move_to([2.9, -0.6, 0])
+            what.move_to([2.9, -0.9, 0])
             self.play(FadeIn(box), FadeIn(nm), run_time=b.t(0.4))
             self.play(FadeIn(what), run_time=b.t(0.4))
 
@@ -233,7 +233,7 @@ class NotServed(DWScene):
             tell = lines("the gate will still tell you what a page reached for.",
                          "it will not decide for you what to do about it.",
                          size=LABEL, color=TEXT)
-            tell.move_to([0, -3.6, 0])
+            tell.move_to([0, -3.5, 0])
             self.play(FadeIn(tell), run_time=b.t(0.7))
 
         with self.beat("today") as b:
@@ -259,25 +259,24 @@ class Closing(DWScene):
         with self.beat("four") as b:
             stamps = VGroup()
             for i, (name, what, color) in enumerate(self.GATES):
+                y = 2.3 - i * 0.85
                 st = stamp(name, color, angle=0)
+                st.move_to([-4.8, y, 0], aligned_edge=LEFT)
                 w = T(what, SMALL, MUTED)
-                row = VGroup(st, w).arrange(RIGHT, buff=0.45)
-                stamps.add(row)
-            for r in stamps:
-                r[0].align_to(stamps[0][0], LEFT)
-            stamps.arrange(DOWN, buff=0.3, aligned_edge=LEFT).move_to([-0.8, 1.5, 0])
+                w.move_to([-1.4, y, 0], aligned_edge=LEFT)
+                stamps.add(VGroup(st, w))
             self.play(LaggedStart(*[FadeIn(r, scale=1.08) for r in stamps], lag_ratio=0.45),
                       run_time=b.t(0.85))
 
         with self.beat("idea") as b:
             one = T("check the result, not the syntax", TITLE, SOLVED, bold=True)
-            one.move_to([0, -0.7, 0])
+            one.move_to([0, -1.0, 0])
             self.play(FadeIn(one, scale=1.05), run_time=b.t(0.3))
             why = lines("the import fence reads what the agent wrote, and it kept losing to a new form.",
                         "the output fence reads what landed in the page: a form it has never seen",
                         "still shows up as a path.",
                         size=LABEL, color=TEXT)
-            why.move_to([0, -2.1, 0])
+            why.move_to([0, -2.4, 0])
             self.play(FadeIn(why), run_time=b.t(0.45))
             self.why = why
 
