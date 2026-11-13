@@ -1,0 +1,3 @@
+- insert:
+    - id: deepwidgets-widget-main
+      name: '@deepwidgets/widget-main'

@@ -31,7 +31,7 @@ Code without a comment can still be off. A plugin row is off when a patch layer 
 | Item | State on 2026-11-10 |
 |---|---|
 | Rows that deepWidgets turns off | `deepwidgets/trim/cordis.patch.yml` turns off 161 of the 201 rows. The rows `hmr` and `timer` are on again for the widget system (`widget_rows`). Some kept rows stay pending, because the agent rows are off. |
-| Our packages | `deepwidgets/probe` and `deepwidgets/trace` (TypeScript). `deepwidgets/trim`: the trim patch, the row lists, and the test bundle `fixtures/widget-rows-install`. The widget MVP (spec `widget_mvp`) adds these packages: `deepwidgets/widgets` (the runtime, service `widgets`), `deepwidgets/widget-sample` (the `sample` counter), `deepwidgets/shell` (the widget page, built with Vite), `deepwidgets/mcp` (the MCP server for agents, see its `README.md`). The agent library (spec `agent_library`) adds `deepwidgets/widget-kit`: the core of the widget page and the contract `ChildProps`. The shell keeps only the default child. Electron main opens one floating window for each widget (`apps/desktop/src/deepwidgets-windows.ts`). |
+| Our packages | `deepwidgets/probe` and `deepwidgets/trace` (TypeScript). `deepwidgets/trim`: the trim patch, the row lists, and the test bundle `fixtures/widget-rows-install`. The widget MVP (spec `widget_mvp`) adds these packages: `deepwidgets/widgets` (the runtime, service `widgets`), `deepwidgets/widget-sample` (the `sample` counter), `deepwidgets/shell` (the widget page, built with Vite), `deepwidgets/mcp` (the MCP server for agents, see its `README.md`). The agent library (spec `agent_library`) adds `deepwidgets/widget-kit`: the core of the widget page and the contract `ChildProps`. The shell keeps only the default child. The main widget (spec `main_widget`) adds `deepwidgets/widget-main`: the built-in widget `main`, which lists, turns off, turns on, and removes the other widgets. Electron main opens one floating window for each widget (`apps/desktop/src/deepwidgets-windows.ts`). |
 | MCP port | In the desktop app, Electron main binds the fixed port `DEEPWIDGETS_MCP_PORT` (default 47615). It forwards each request to the loopback port of the host, which the OS picks. Electron main writes `$DSH_HOME/deepwidgets/mcp.json` (spec `safe_host`, `apps/desktop/src/deepwidgets-mcp-port.ts`). A CLI host (`apps/cli`) does not read `DEEPWIDGETS_MCP_PORT`. It binds the port of its own `--port` option and writes the file itself. Smoke runs use port 0. |
 | MCP modes | The MCP server groups its tools in modes (spec `modes`). The settings file `$DSH_HOME/deepwidgets/settings.json` can turn a mode off, except `interact`, which is always on. A missing file means that each mode is on. |
 | Main window | The app opens the main window at once, with no welcome window. The main window shows only `hello` and the probe text. |
@@ -91,6 +91,8 @@ These scripts run with no app, unless the item says otherwise:
 
 - `tools/widgets-create.mjs` checks widget creation over MCP with a host. Then it runs the `DSH_SMOKE_CREATE` smoke, unless `WIDGETS_CREATE_DESKTOP=0`.
 
+- `tools/widgets-main.mjs` checks the main widget with a host: its query of all widgets, Turn off, Turn on, Remove, and the MCP rule that hides `main`.
+
 - `tools/widgets-action-replay.mjs` replays the `action_contract` model paths of widget actions on a host.
 
 - `tools/widgets-install-replay.mjs` runs the `widget_install` replays of the `widget-state-models` skill on a host.
@@ -115,7 +117,7 @@ The file `tools/in-host.mjs` is not a check. It gives the pin wrappers for inspe
 
 | Path | Content |
 |---|---|
-| `docs/specs/` | `fork-trim.md` (`fork_trim`), `floating-widget.md` (`floating_widget`), `ts-move.md` (`ts_move`), `widget-rows.md` (`widget_rows`), `widget-mvp.md` (`widget_mvp`), `widget-phase2.md` (`widget_phase2`), `handoff.md` (`handoff`, proposed), `handoff-evidence.md` (`handoff_evidence`), `widget-fv.md` (`widget_fv`), `mcp-consent.md` (`mcp_consent`), `modes.md` (`modes`), `safe-host.md` (`safe_host`), `agent-library.md` (`agent_library`) |
+| `docs/specs/` | `fork-trim.md` (`fork_trim`), `floating-widget.md` (`floating_widget`), `ts-move.md` (`ts_move`), `widget-rows.md` (`widget_rows`), `widget-mvp.md` (`widget_mvp`), `widget-phase2.md` (`widget_phase2`), `handoff.md` (`handoff`, proposed), `handoff-evidence.md` (`handoff_evidence`), `widget-fv.md` (`widget_fv`), `mcp-consent.md` (`mcp_consent`), `modes.md` (`modes`), `safe-host.md` (`safe_host`), `agent-library.md` (`agent_library`), `main-widget.md` (`main_widget`) |
 | `docs/explore/widget-system/` | The widget decisions (`where-we-stand.md`, `standing.decided`), the checked facts, the open points, and the spikes `widget-kit-spike.md` (`kit_spike`) and `plugins-spike.md` (`plugins_spike`) |
 | `docs/plans/` | The plans of the specs. Each plan unit is one PR. |
 | `docs/canvas/` | JSON Canvas boards that show how a system works, such as `floating-widget-processes.canvas`. |
@@ -189,6 +191,7 @@ DSH_SMOKE_ROWS=deepwidgets/trim DSH_SMOKE_ROWS_SNAPSHOT="${TMPDIR:-/tmp}/rows.js
 node tools/widgets-blame.mjs
 node tools/widgets-watchdog.mjs
 node tools/widgets-create.mjs
+node tools/widgets-main.mjs
 node tools/widgets-action-replay.mjs
 node tools/widgets-install-replay.mjs
 node tools/widgets-hmr-guards.mjs
