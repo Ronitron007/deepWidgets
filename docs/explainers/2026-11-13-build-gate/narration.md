@@ -494,9 +494,11 @@ First, the resolver needs to read package and t s config files. So the build may
 
 Second, a worker of a page builds with no import fence at all. A test worker pulled in a charting library of seven hundred twenty kilobytes.
 
-Third, the allowed set grew. The gate links eight packages. The code follows their dependencies. For a workspace package it follows the development dependencies too. The walk reached one thousand one hundred fifty-two folders. A scan found no secret files in them.
+The operator accepted both of those at the merge, and the reason is worth hearing. The host half of the same widget already runs as full Node. Neither hole gives an agent anything that it did not already have.
 
-The fix for the first two is about two lines. The third needs a narrower walk.
+Third, the allowed set grew. The gate links eight packages. The code follows their dependencies. For a workspace package it follows the development dependencies too.
+
+The walk reached one thousand one hundred fifty-two folders. A scan found no secret files in them. That one gets a follow-up, which narrows the walk to the shell and the widget kit.
 
 This is the third place where the plan did not hold.
 
@@ -507,6 +509,10 @@ One more thing stays undone, and it is the obvious one.
 Your widget window still shows the shared shell. The built page sits in the profile folder, checked and linked, and nothing serves it.
 
 That is the next unit, and its name is library serving. Electron main will serve the link of each slug. A slug with no page falls back to the shared shell.
+
+One more change waits for the gate itself. The operator chose recovery over a defensive block. So the two fences will report a warning in the install answer, and write a log. They will no longer stop the install.
+
+The gate will still tell you what a page reached for. It will not decide for you what to do about it.
 
 So today the gate is real, and the page it guards is not on screen yet.
 
