@@ -70,7 +70,7 @@ The page gates run in this order:
 
 2. **The type gate.** `tsc` checks `page/` against the types of `@deepwidgets/widget-kit` and of the allowed packages.
 
-3. **The build.** Vite builds the page into the profile folder of the bundle, at `<profile>/deepwidgets-widgets/<slug>/page/`. One Vite config serves each page. Its `base` is the URL path of the slug. A Vite plugin refuses each import that is not on the allowed list.
+3. **The build.** Vite builds the page into the profile folder of the bundle, at `<profile>/deepwidgets-widgets/<slug>/page/`. One Vite config serves each page. Its `base` is the URL path of the slug. A Vite plugin refuses each import that is not on the allowed list. `agent_library.fence_warn` changes that refusal to a warning.
 
 4. **The render check.** A hidden Electron window loads the built page.
 
@@ -94,12 +94,115 @@ The allowed imports are `react`, `react-dom`, `@openuidev/react-lang`, `zod`, `@
 
 - The kit does not exist yet. The allowed packages come from the workspace.
 
+## Accepted findings of the build gate `agent_library.build_gate.accepted`
+
+The verify of `library.build_gate` left findings open. The operator merged the unit on 2026-11-13 with this decision: recovery, not a defensive block. The host half of a widget runs as full Node. Thus a page that reads a file gets nothing that the bundle did not have.
+
+| Finding | State |
+|---|---|
+| A page can embed a `package.json` or a `tsconfig*.json` of a folder above it, with `new URL` or in a worker | Accepted by the operator |
+| The build of a worker of a page runs with no import fence | Accepted by the operator |
+| A page can open `@layer dw-core` again below the fixed block and override a protected style. The gate `page-files` compares only the text of the block. | Accepted in the free hour of 2026-11-16. The render check finds the override (`lost-core-styles`). A CLI host skips the render check, and only checks and dev runs use a CLI host. The operator can change this decision. |
+
+## Fences that report `agent_library.fence_warn`
+
+This part follows the decision of the operator at the merge of `library.build_gate`.
+
+- The import fence and the output fence do not refuse the build. Each finding becomes a warning of the gate `page-build`, and the install answer lists it.
+
+- A warning of the import fence names the page file and the import. A warning of the output fence names each file outside the page folder.
+
+- The host writes one log line for each install that has such a warning.
+
+- `allowedFolders` follows the development dependencies of `@deepwidgets/shell` and `@deepwidgets/widget-kit` only. Before, it followed them for each workspace package that it reached, and the set had 1,152 folders.
+
+These parts do not change:
+
+- The gate `page-files` and the render check refuse as before.
+
+- The type gate refuses an import of a package that has no link in the staging `node_modules`. Such an import does not resolve.
+
+- The stylesheet rules refuse a PostCSS or Tailwind config file, `@plugin`, and `@config`. These change how the build itself runs. This was a decision of the free hour of 2026-11-16, and the operator can change it.
+
+## Serve the page of each widget `agent_library.serving`
+
+The operator gave the direction on 2026-11-16: each widget page gets its own origin. The free hour of that day gave more decisions, and `agent_library.serving.decisions` lists them.
+
+### Terms `agent_library.serving.terms`
+
+- **Origin:** the scheme, the host name, and the port of a URL. The browser keeps the pages of two origins apart.
+
+- **Widget origin:** the origin of one slug, `dsh-app://w-<slug>.widget`.
+
+### Origins `agent_library.serving.origins`
+
+- Each widget window loads its page from the widget origin of its slug.
+
+- Built-in widgets, such as `sample`, move to their widget origin too. Thus one rule covers each widget.
+
+- No slug maps to a host name that the app uses for another job: `app`, `shell`, or `widget-check`. Two slugs never map to one host name. The mapping holds for each valid slug.
+
+A spike found two traps, and the host name `w-<slug>.widget` has neither:
+
+- The name `widget-<slug>` gives the slug `check` the host name of the render check.
+
+- The name `<slug>.widget` fails for a slug that starts with `xn--`. The URL parser reads that label as Punycode and refuses it.
+
+### Routes of a widget origin `agent_library.serving.routes`
+
+On the widget origin of the slug S, Electron main answers only these paths:
+
+| Path | Answer |
+|---|---|
+| `/widget/<S>/` and the files below it | The built page of S, from the folder behind the link `<S>/page`. Only when the link is there. |
+| `/widget/` and the files below it | The shared shell |
+| `/api/widgets/<S>/` and the paths below it | The host, as today |
+| `/api/widgets/<other slug>/` | Status 403 |
+| Each other path | Status 404 |
+
+- A page build has the base path `/widget/<slug>/` (`agent_library.build_gate.gates`). Thus the page keeps that path on its widget origin. A build from before this unit needs no new build.
+
+- The window of a slug with a page link loads `/widget/<S>/?slug=<S>`. The window of a slug with no page link loads `/widget/?slug=<S>`.
+
+- `pageFile` of `apps/desktop/src/deepwidgets-page-path.ts` finds each page file. It resolves each link, refuses a path outside the folder of the slug, and refuses a `.tmp` build.
+
+- A page of the slug A can not call an action of the slug B. The fixed `index.html` allows connections to its own origin only. Electron main refuses the path of another slug on that origin.
+
+### Page changes `agent_library.serving.changes`
+
+- Electron main does not know the profile folder. The host uses its IPC channel to Electron main. When the host is ready, it sends the widget root folder and the slugs that have a page link. It sends a message again after each change of a page link.
+
+- When the page link of a slug changes, Electron main loads the window of that slug again. It uses the URL for the new state. Thus an install with new page sources shows the new page. An install with no `page/` shows the shared shell.
+
+### Failures at run time `agent_library.serving.failures`
+
+- A component that throws stays inside the page. The core shows its error state, as today.
+
+- The renderer of an agent page can end, and a page can fail to load. In each case, Electron main loads the page one more time.
+
+- When that occurs again in 60 s, Electron main loads the shared shell in that window. The shell shows a notice that the page of the widget failed. The window keeps the shared shell until the page link changes or the app starts again.
+
+- Electron main writes a log line for each of these steps.
+
+This follows the host: a crash gets a restart first, and safe mode comes only after a repeat (`safe_host`).
+
+### Decisions of the free hour `agent_library.serving.decisions`
+
+The operator gave one hour of free decisions on 2026-11-16. Each row is a decision of that hour, and the operator can change it.
+
+| Decision | Data |
+|---|---|
+| The host name is `w-<slug>.widget` | The spike of `agent_library.serving.origins` |
+| Built-in widgets get a widget origin too | One rule, and the shared shell needs no second route |
+| An agent page keeps the path `/widget/<slug>/` | The base path is in each build. A relative base needs a new build of each page. |
+| The host tells Electron main each page change over IPC | Electron main has no profile path, and the IPC channel carries the render check already |
+| Reload one time, then the shared shell with a notice | The host supervisor does the same: restart, then safe mode |
+| The routes of the origin `app` stay | No agent page loads there. The smallest change. |
+
 ## Later `agent_library.later`
 
 These units follow, in this order. Each one waits for the operator's direction.
 
-1. `library.serving`: Electron main serves the built page of a slug.
+1. `library.guide`: the template and the create guide for `page/library.tsx` and `page/child.tsx`.
 
-2. `library.guide`: the template and the create guide for `page/library.tsx` and `page/child.tsx`.
-
-3. The kit units: `kit.service`, `kit.host_extras`, `kit.tools`, `kit.pins`, `kit.pane`, and `kit.model`.
+2. The kit units: `kit.service`, `kit.host_extras`, `kit.tools`, `kit.pins`, `kit.pane`, and `kit.model`.
