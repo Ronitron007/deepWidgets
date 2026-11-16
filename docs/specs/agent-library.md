@@ -199,10 +199,66 @@ The operator gave one hour of free decisions on 2026-11-16. Each row is a decisi
 | Reload one time, then the shared shell with a notice | The host supervisor does the same: restart, then safe mode |
 | The routes of the origin `app` stay | No agent page loads there. The smallest change. |
 
+## Teach the agent `agent_library.guide`
+
+Each rule of this part is a decision of the free hour of 2026-11-16. The data for each one is in `agent_library.guide.decisions`. The operator can change each one.
+
+### The mode `agent_library.guide.mode`
+
+- The mode `library` joins the answer of `deepwidgets_modes` (`modes.list`). Its goal is to write the page of a widget with components of the agent.
+
+- The setting of the mode is `modes.library` in the settings file. A missing key means that the mode is on.
+
+- The mode has one tool, `library_template`, and one guide, `widget_guide` with the mode `library`.
+
+When the mode is off:
+
+- `library_template` returns `mode-off`.
+
+- `widget_install` and `widget_reload` return `mode-off` for a bundle that has `page/`. The error names the mode `library` and its setting. A bundle with no `page/` installs as before.
+
+- A page that is installed keeps its window. The setting stops an install, not a page.
+
+### The tool `library_template` `agent_library.guide.template`
+
+- `library_template` gives the files of the page folder for one slug: the three fixed files, an example `child.tsx`, and an example `library.tsx`.
+
+- `widget_template` does not change. Thus an agent that writes a widget with no page does not pay for the page files.
+
+- The example library extends the component set of the shell with one component of its own. Thus the program of the widget template renders with the example page, and the agent sees how to add a component.
+
+- For this, the shell exports its library as `@deepwidgets/shell/library`, and that import joins the allowed imports of a page.
+
+### The guide `agent_library.guide.text`
+
+`widget_guide` with the mode `library` gives the page guide. It holds these parts:
+
+- the page folder, and the files that the agent must not change
+
+- the contract `ChildProps`, and the catalog id of the child
+
+- the allowed imports
+
+- how to define a component, with its props as a zod schema
+
+- each page gate, with its error codes and its warnings
+
+- how to see the page: `widget_describe`, and the window of the widget
+
+The page guide does not repeat the guide of the program language. It tells the agent to read the guide of the mode `create` for that. The page guide has at most 8,000 characters.
+
+### Decisions of the free hour `agent_library.guide.decisions`
+
+| Decision | Data |
+|---|---|
+| The page work is the mode `library` | `modes.list` names `library` as a later mode, and each stage adds its own mode |
+| The mode has a setting, and the default is on | Page code runs in a window with no review, so the operator gets a switch. `modes.settings` makes a missing key mean on. |
+| A new tool `library_template`, not a change to `widget_template` | `modes.names`: a tool name starts with the area of its mode. The page files are about 2,100 characters with no example, and an agent with no page does not need them. |
+| The example library extends the shell library | The operator chose the shell pieces as a base for agent pages (2026-11-11). `standing.checked.component_extend` verified `library.extend`. With it, the template program renders with no change. |
+| The page guide is short and points at the create guide | The create guide is about 21,000 characters. A second copy doubles the cost. |
+
 ## Later `agent_library.later`
 
 These units follow, in this order. Each one waits for the operator's direction.
 
-1. `library.guide`: the template and the create guide for `page/library.tsx` and `page/child.tsx`.
-
-2. The kit units: `kit.service`, `kit.host_extras`, `kit.tools`, `kit.pins`, `kit.pane`, and `kit.model`.
+1. The kit units: `kit.service`, `kit.host_extras`, `kit.tools`, `kit.pins`, `kit.pane`, and `kit.model`.
