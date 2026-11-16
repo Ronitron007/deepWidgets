@@ -38,6 +38,7 @@ import type { CallToolResult, StandardSchemaWithJSON } from '@modelcontextprotoc
 import { z } from 'zod'
 import { CreationError, templateFiles, widgetTypesText, WidgetInstaller } from './creation.ts'
 import type { CreationErrorCode, GateName, InstallOutcome } from './creation.ts'
+import { fenceCount, fenceFindings } from './page-gate.ts'
 import type { RenderCheck, RenderCheckRequest, RenderCheckResult } from './page-gate.ts'
 
 export const name = 'deepwidgets-mcp'
@@ -671,10 +672,13 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
    */
   function logFence(outcome: InstallOutcome): InstallOutcome {
     const fence = outcome.gates.find((gate) => gate.gate === 'page-build')?.warnings ?? []
-    if (fence.length > 0) {
+    // The caps of the fences and of the gate add summary lines such as `3 more fence warning(s)`: the count is of findings.
+    const findings = fenceFindings(fence)
+    const count = fenceCount(fence)
+    if (count > 0) {
       const path = (line: string): string => / reaches (.+?), outside the page folder/.exec(line)?.[1] ?? / the import (".+?")/.exec(line)?.[1] ?? line.split(': ')[0] ?? line
-      const first = fence.slice(0, 3).map(path).join(', ')
-      ctx.logger.warn(`mcp: the page of ${outcome.slug} installed with ${String(fence.length)} fence warning(s): ${first}`)
+      const first = findings.slice(0, 3).map(path).join(', ')
+      ctx.logger.warn(`mcp: the page of ${outcome.slug} installed with ${String(count)} fence warning(s): ${first}`)
     }
     return outcome
   }

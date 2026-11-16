@@ -298,6 +298,18 @@ async function typesGate(staging: string, tools: PageTools): Promise<GateReport>
   return { gate: 'page-types', ok: false, ms: elapsed(started), diagnostics: diagnostics.slice(0, MAX_DIAGNOSTICS), warnings: [] }
 }
 
+/** The count of a summary line of a fence cap, such as `3 more fence warning(s)`. Undefined for a finding. */
+function summaryCount(line: string): number | undefined {
+  const count = /^(?:the page uses )?(\d+) more /.exec(line)?.[1]
+  return count === undefined ? undefined : Number(count)
+}
+
+/** The fence warning lines that are findings, not summary lines of a cap. */
+export const fenceFindings = (warnings: string[]): string[] => warnings.filter((line) => summaryCount(line) === undefined)
+
+/** The count of the findings of fence warning lines: one for each finding, and the count of each summary line. */
+export const fenceCount = (warnings: string[]): number => warnings.reduce((sum, line) => sum + (summaryCount(line) ?? 1), 0)
+
 /** Gate `page-build`: Vite in a child process. */
 async function buildGate(staging: string, slug: string, outDir: string): Promise<{ report: GateReport, built?: string }> {
   const started = performance.now()
@@ -339,7 +351,7 @@ async function buildGate(staging: string, slug: string, outDir: string): Promise
   }
   // agent_library.fence_warn: the findings of the import fence and the output fence are warnings of this gate.
   const found = result?.warnings ?? []
-  const warnings = found.length > MAX_DIAGNOSTICS ? [...found.slice(0, MAX_DIAGNOSTICS), `${String(found.length - MAX_DIAGNOSTICS)} more fence warning(s)`] : found
+  const warnings = found.length > MAX_DIAGNOSTICS ? [...found.slice(0, MAX_DIAGNOSTICS), `${String(fenceCount(found.slice(MAX_DIAGNOSTICS)))} more fence warning(s)`] : found
   const report = (ok: boolean, diagnostics: string[]): GateReport => ({ gate: 'page-build', ok, ms: elapsed(started), diagnostics: diagnostics.slice(0, MAX_DIAGNOSTICS), warnings })
   if (killed) return { report: report(false, [`the build took longer than ${String(BUILD_LIMIT_MS)} ms`]) }
   if (result === undefined) return { report: report(false, [`the build process ended with ${String(code)}: ${stderr.trim().split('\n').slice(0, 3).join(' | ').slice(0, 400)}`]) }
