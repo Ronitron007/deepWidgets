@@ -36,8 +36,10 @@
  *   link stay, and no .tmp build or staging copy stays;
  * - the fences report (agent_library.fence_warn): a page that imports a file outside the page folder, and each page
  *   that pulls a secret file from outside page/ (a stylesheet @import, also with no space and with a comment, a bare
- *   image-set() string, and new URL in a .tsx file), installs. Its answer has a warning that names the file, and the
- *   host log has a line for it;
+ *   image-set() string, and new URL in a .tsx file), installs. So does an off-list import that resolves
+ *   (react-dom/server). Its answer has a warning that names the file or the import, and the host log has a line for
+ *   it. The page link points at the new build, and no .tmp build or staging copy stays. widget_reload of such a page
+ *   logs a line too;
  * - a bundle with no page/ installs with the host gates only. The page link goes, and the builds stay.
  * Allowed set (agent_library.fence_warn), before the host starts: allowedFolders follows the development dependencies
  * of the shell and the kit only, so it does not hold a workspace package that only the theme names as one.
@@ -644,18 +646,39 @@ async function pagePart(call, slugs) {
     { name: 'a stylesheet @import of a secret file with no space', files: sheet('@import"../../../secret-page.css";'), file: 'secret-page.css' },
     { name: 'a stylesheet @import of a secret file with a comment', files: sheet('@import/**/"../../../secret-page.css";'), file: 'secret-page.css' },
     { name: 'a bare image-set() string of a secret file', files: { 'page/styles.css': `${styles}.leak { background-image: image-set("../../../secret-page.txt" 1x); }\n` }, file: 'secret-page.txt' },
-    { name: 'new URL of a secret file in a .tsx file', files: { 'page/child.tsx': `${CHILD}\nexport const leak = new URL('../../../secret-page.txt', import.meta.url).href\n` }, file: 'secret-page.txt' },
+    { name: 'new URL of a secret file in a .tsx file', files: { 'page/child.tsx': `${CHILD}\nexport const leak = new URL('../../../secret-page.txt', import.meta.url).href\n` }, file: 'secret-page.txt', reload: true },
+    // react-dom has a staging link, so this import passes the type gate and resolves. It is not on the list.
+    { name: 'an off-list import that resolves, react-dom/server', files: { 'page/child.tsx': `import { renderToString } from 'react-dom/server'\n${CHILD}\nexport const render = renderToString\n` }, file: '"react-dom/server"', page: 'page/child.tsx', text: 'is not on the list of allowed imports' },
   ]
+  const fenceSlugDir = join(profileDir, 'deepwidgets-widgets', FENCE)
+  const newLines = async (seen) => (await fenceLines()).filter((line) => line.sn > seen).map((line) => line.text)
+  const lastSn = async () => Math.max(0, ...(await fenceLines()).map((line) => line.sn))
   for (const [index, item] of warned.entries()) {
-    const seen = Math.max(0, ...(await fenceLines()).map((line) => line.sn))
+    const seen = await lastSn()
     const answer = await call('widget_install', { dir: writePageWidget(join(work, 'agent', `${FENCE}-${String(index)}`), FENCE, item.files) })
     const fence = answer.body?.gates?.find((gate) => gate.gate === 'page-build')?.warnings ?? []
-    const names = (line) => line.includes('outside the page folder') && line.includes(item.file) && (item.page === undefined || line.startsWith(`${item.page}:`))
+    const names = (line) => line.includes(item.text ?? 'outside the page folder') && line.includes(item.file) && (item.page === undefined || line.startsWith(`${item.page}:`))
     // The tool logs before it answers.
-    const lines = (await fenceLines()).filter((line) => line.sn > seen).map((line) => line.text)
+    const lines = await newLines(seen)
     check(`the install applies ${item.name}, with a fence warning that names the file, and one host log line`,
       !answer.isError && answer.body?.application === 'applied' && fence.some(names) && answer.body?.warnings?.some(names) === true && lines.length === 1 && lines[0].includes(item.file),
       JSON.stringify({ error: answer.body?.error, fence, log: lines }))
+    // The slug had no build before this case, so its one build is the new one.
+    const entries = pageEntries(fenceSlugDir)
+    const target = linkTarget(join(fenceSlugDir, 'page'))
+    const stagingLeft = existsSync(staging) ? readdirSync(staging) : []
+    check(`after the install of ${item.name}, the page link points at the new build, and no .tmp build or staging copy stays`,
+      answer.body?.page === join(fenceSlugDir, 'page') && BUILD.test(target ?? '') && JSON.stringify(entries.builds) === JSON.stringify([target]) && entries.tmp.length === 0 && stagingLeft.length === 0,
+      `page=${JSON.stringify(answer.body?.page)} link=${String(target)} entries=${JSON.stringify(entries)} staging=${JSON.stringify(stagingLeft)}`)
+    if (item.reload === true) {
+      const before = await lastSn()
+      const reloaded = await call('widget_reload', { slug: FENCE })
+      const reloadFence = reloaded.body?.gates?.find((gate) => gate.gate === 'page-build')?.warnings ?? []
+      const reloadLines = await newLines(before)
+      check(`widget_reload of ${item.name} applies with the fence warning, and writes one host log line`,
+        !reloaded.isError && reloaded.body?.application === 'applied' && reloadFence.some(names) && reloadLines.length === 1 && reloadLines[0].includes(item.file),
+        JSON.stringify({ error: reloaded.body?.error, fence: reloadFence, log: reloadLines }))
+    }
     const removed = await call('widget_remove', { slug: FENCE })
     if (removed.isError) throw new Error(`the remove of ${FENCE} failed: ${JSON.stringify(removed.body)}`)
   }
