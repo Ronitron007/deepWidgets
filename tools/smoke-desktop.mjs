@@ -7,7 +7,8 @@
  * With DSH_SMOKE_ROWS_SAVE set to a path, also write the host row snapshot to that file.
  * With DSH_SMOKE_ROWS_SNAPSHOT set to a path, compare that host snapshot with rows.host.txt and do not start the app.
  * With DSH_SMOKE_INSTALL set to a local bundle path, also call pluginManager.installBundle over the host Loader.
- * With DSH_SMOKE_WIDGET set to a widget slug, the check finds the widget window dsh-app://app/widget/?slug=<slug>.
+ * With DSH_SMOKE_WIDGET set to a widget slug, the check finds the widget window at the widget origin of the slug,
+ * dsh-app://w-<slug>.widget/widget/?slug=<slug> (agent_library.serving).
  * It finds the count in that page, posts add from the main window, and finds the new count in the page.
  * Then it writes a new program with ctx.widgets.setProgram over the host Loader and finds its text in the page.
  * Then it registers a second widget over the Loader, loads its page (with a bar chart of two bars), ends the
@@ -20,7 +21,7 @@
  * render cases [{ dir, refuse?: <code>, warnings?: [<text>] }], each case installs first, in order: a case with
  * `refuse` must fail in the gate page-render with a diagnostic that starts with that code, and a case with
  * `warnings` must install with each text in its warnings (the check then removes it).
- * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://app/widget/?slug=sample.
+ * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://w-sample.widget/widget/?slug=sample.
  * It turns the sample row off through the host plugin manager and finds that window closed.
  * With DSH_SMOKE_HOST_RESTART=1, the check kills the host once. The sample widget page must be live again
  * (count readable, an add shows, its stream did not close), and the main window must load again for the new host.
@@ -651,8 +652,19 @@ add = Mutation("add", {by: 1})
 `
 }
 
-async function findWidgetPage(slug, deadline) {
-  const url = `dsh-app://app/widget/?slug=${encodeURIComponent(slug)}`
+/**
+ * The window URL of a slug on its widget origin (`agent_library.serving`, `apps/desktop/src/deepwidgets-origin.ts`):
+ * `shell` for the shared shell, `page` for the built page of the slug, `failed` for the shell with the notice.
+ */
+function widgetUrl(slug, mode = 'shell') {
+  const origin = `dsh-app://w-${slug}.widget`
+  const query = `?slug=${encodeURIComponent(slug)}`
+  if (mode === 'page') return `${origin}/widget/${slug}/${query}`
+  return `${origin}/widget/${query}${mode === 'failed' ? '&page=failed' : ''}`
+}
+
+async function findWidgetPage(slug, deadline, mode = 'shell') {
+  const url = widgetUrl(slug, mode)
   while (Date.now() < deadline) {
     try {
       const targets = await (await fetch(`http://127.0.0.1:${String(rendererPort)}/json/list`, { signal: AbortSignal.timeout(2000) })).json()
@@ -796,7 +808,7 @@ async function setSample(enabled, deadline) {
 }
 
 async function checkWindows(deadline) {
-  const url = 'dsh-app://app/widget/?slug=sample'
+  const url = widgetUrl('sample')
   const soon = () => Math.min(deadline, Date.now() + 15_000)
   let failed = await waitPages(url, 1, deadline, 'first open')
   if (failed !== undefined) return failed
@@ -905,7 +917,7 @@ async function quitApp(until) {
 }
 
 async function checkHostRestart(page, deadline) {
-  const url = 'dsh-app://app/widget/?slug=sample'
+  const url = widgetUrl('sample')
   const widget = await findWidgetPage('sample', deadline)
   if (widget === undefined) return 'restart: no sample widget page'
   const first = await pollWidget(widget, deadline, (value) => value.count !== null && value.dw?.stream === 'open')
@@ -976,7 +988,7 @@ async function checkHostRestart(page, deadline) {
 }
 
 async function checkHostGiveUp(deadline) {
-  const url = 'dsh-app://app/widget/?slug=sample'
+  const url = widgetUrl('sample')
   const widget = await findWidgetPage('sample', deadline)
   if (widget === undefined) return 'give-up: no sample widget page'
   const until = Math.min(deadline, Date.now() + 120_000)
@@ -1176,7 +1188,7 @@ async function checkHostBlame(deadline) {
   await delay(5_000)
   let failed = noCrashSince(crash.at + 1, 'after the restart')
   if (failed !== undefined) return failed
-  if (await countPages('dsh-app://app/widget/?slug=sample') !== 1) return 'blame: the sample window closed'
+  if (await countPages(widgetUrl('sample')) !== 1) return 'blame: the sample window closed'
   if (ready?.safeMode !== false) return `blame: the restart is in safe mode: ${JSON.stringify(ready)}`
   if (!(crash.blamed === row || String(crash.blamed).endsWith(`:${row}`)) || crash.crashes !== 0) return `blame: the supervisor did not see a blamed crash: ${JSON.stringify(crash)}`
 
@@ -1272,7 +1284,7 @@ async function checkHostWatchdog(deadline) {
   await delay(5_000)
   failed = noCrashSince(crash.at + 1, 'after the restart')
   if (failed !== undefined) return `watchdog: ${failed}`
-  if (await countPages('dsh-app://app/widget/?slug=sample') !== 1) return 'watchdog: the sample window closed'
+  if (await countPages(widgetUrl('sample')) !== 1) return 'watchdog: the sample window closed'
   return undefined
 }
 
@@ -1527,10 +1539,15 @@ async function checkCreate(deadline) {
     const page = installed.body?.page
     if (typeof page !== 'string' || !existsSync(join(page, 'index.html'))) return `create: the built page is not in the profile: ${JSON.stringify(page)}`
   }
-  const url = `dsh-app://app/widget/?slug=${slug}`
+  const hasPage = existsSync(join(dir, 'page'))
+  const url = widgetUrl(slug, hasPage ? 'page' : 'shell')
   const soon = () => Math.min(deadline, Date.now() + 15_000)
   let failed = await waitPages(url, 1, soon(), 'after widget_install')
   if (failed !== undefined) return `create: ${failed}`
+  if (hasPage) {
+    failed = await checkServing(slug, dir, tool, deadline)
+    if (failed !== undefined) return `create: serving: ${failed}`
+  }
   const added = await tool('widget_call', { slug, action: 'add', args: { by: 1 }, requestId: 'smoke-create-1' })
   if (added.isError || typeof added.body?.result?.count !== 'number') return `create: widget_call failed: ${JSON.stringify(added.body)}`
   const removed = await tool('widget_remove', { slug })
@@ -1538,6 +1555,102 @@ async function checkCreate(deadline) {
   if (removed.isError) return `create: widget_remove failed: ${JSON.stringify(removed.body)}`
   failed = await waitPages(url, 0, soon(), 'after widget_remove')
   return failed === undefined ? undefined : `create: ${failed}`
+}
+
+/** Read the window of one renderer target id: its URL, origin, the note of the page fixture, and the notice. */
+async function readTarget(id, until) {
+  try {
+    const targets = await (await fetch(`http://127.0.0.1:${String(rendererPort)}/json/list`, { signal: AbortSignal.timeout(2000) })).json()
+    const target = targets.find((item) => item?.id === id && typeof item.webSocketDebuggerUrl === 'string')
+    if (target === undefined) return { error: 'no target' }
+    return JSON.parse(String(await evaluate(target.webSocketDebuggerUrl, `JSON.stringify({ url: location.href, origin: location.origin,
+  note: document.querySelector('[data-dw=note]')?.textContent ?? null, notice: document.querySelector('[data-dw=page-failed]')?.textContent ?? null,
+  catalog: window.__dw?.catalog ?? null, state: window.__dw?.state ?? null })`, Math.min(until, Date.now() + 3000))))
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'evaluate failed' }
+  }
+}
+
+/** Poll one renderer target until `accept` takes its read. Gives the last read, and whether it was accepted. */
+async function pollTarget(id, until, accept) {
+  let last
+  while (Date.now() < until) {
+    last = await readTarget(id, until)
+    if (last.error === undefined && accept(last)) return { value: last, ok: true }
+    await delay(250)
+  }
+  return { value: last, ok: false }
+}
+
+/**
+ * agent_library.serving: the window of a bundle with a page, after its install. DSH_SMOKE_CREATE_NEXT is the same
+ * bundle with new page sources (its Note starts with `next: `), and DSH_SMOKE_CREATE_PLAIN is the same bundle with no
+ * page/. The window stays one renderer target, so the check follows it by its id.
+ * - The page shows its component at the widget origin of the slug.
+ * - From the page, its own program gives 200, and the program of sample gives 403.
+ * - An install with new page sources shows the new page; an install with no page/ shows the shared shell.
+ * - A renderer that ends two times in 60 s leaves the shared shell with the notice. A new page link ends it.
+ * The window ends on the page of `dir`.
+ */
+async function checkServing(slug, dir, tool, deadline) {
+  const next = process.env.DSH_SMOKE_CREATE_NEXT ?? ''
+  const plain = process.env.DSH_SMOKE_CREATE_PLAIN ?? ''
+  if (next === '' || plain === '') return 'DSH_SMOKE_CREATE_NEXT and DSH_SMOKE_CREATE_PLAIN must be set for a bundle with page/'
+  const soon = () => Math.min(deadline, Date.now() + 20_000)
+  const pageUrl = widgetUrl(slug, 'page')
+  const origin = `dsh-app://w-${slug}.widget`
+  const target = await findWidgetPage(slug, deadline, 'page')
+  if (target === undefined) return `no window at ${pageUrl}`
+  const onPage = (prefix) => (value) => value.url === pageUrl && value.origin === origin && typeof value.note === 'string'
+    && (prefix === undefined ? !value.note.startsWith('next: ') : value.note.startsWith(prefix)) && value.notice === null
+  const step = async (label, accept) => {
+    const read = await pollTarget(target.id, soon(), accept)
+    note(`serving ${label}=${JSON.stringify(read.value)}`)
+    return read.ok ? undefined : `${label}: ${JSON.stringify(read.value)}`
+  }
+  const install = async (label, from) => {
+    const answer = await tool('widget_install', { dir: from })
+    note(`serving install ${label} error=${JSON.stringify(answer.body?.error)} page=${JSON.stringify(answer.body?.page)}`)
+    return answer.isError ? `install ${label}: ${JSON.stringify(answer.body?.error)}` : undefined
+  }
+  let failed = await step('page', onPage())
+  if (failed !== undefined) return failed
+
+  const ws = (await findWidgetPage(slug, deadline, 'page'))?.webSocketDebuggerUrl
+  const statuses = ws === undefined ? undefined : JSON.parse(String(await evaluate(ws, `Promise.all([
+    fetch('/api/widgets/${slug}/program'), fetch('/api/widgets/sample/program'),
+  ]).then((answers) => JSON.stringify(answers.map((answer) => answer.status)))`, deadline, true)))
+  note(`serving scope own,other=${JSON.stringify(statuses)}`)
+  if (statuses?.[0] !== 200 || statuses?.[1] !== 403) return `scope: the program of ${slug} and of sample gave ${JSON.stringify(statuses)}, want [200,403]`
+
+  failed = await install('next', next) ?? await step('next page', onPage('next: '))
+  if (failed !== undefined) return failed
+  const shellUrl = widgetUrl(slug, 'shell')
+  failed = await install('plain', plain) ?? await step('shared shell', (value) => value.url === shellUrl && value.origin === origin && value.catalog === 'shadcn-widgets@1' && value.notice === null)
+  if (failed !== undefined) return failed
+  failed = await install('page again', dir) ?? await step('page again', onPage())
+  if (failed !== undefined) return failed
+
+  const crash = `function () { const entry = this.windows.get(${JSON.stringify(slug)}); entry.window.webContents.forcefullyCrashRenderer(); return true }`
+  const failures = `function () { return this.windows.get(${JSON.stringify(slug)})?.failures?.length ?? -1 }`
+  await withWidgetWindows(deadline, crash)
+  // The count comes first: once it is 1, the dead renderer is gone and the window loads the page one more time.
+  let count
+  const counted = soon()
+  while (Date.now() < counted && (count = await withWidgetWindows(deadline, failures)) !== 1) await delay(100)
+  note(`serving failures after one crash=${String(count)}`)
+  if (count !== 1) return `after one crash, Electron main counts ${String(count)} failures, want 1`
+  failed = await step('after one crash', onPage())
+  if (failed !== undefined) return failed
+  await withWidgetWindows(deadline, crash)
+  const failedUrl = widgetUrl(slug, 'failed')
+  failed = await step('after two crashes', (value) => value.url === failedUrl && value.origin === origin && value.catalog === 'shadcn-widgets@1'
+    && typeof value.notice === 'string' && value.notice.includes('failed'))
+  if (failed !== undefined) return failed
+  // The window keeps the notice until the page link changes: a new link loads the page again.
+  failed = await install('next after the notice', next) ?? await step('next page after the notice', onPage('next: '))
+  if (failed !== undefined) return failed
+  return await install('page at the end', dir) ?? await step('page at the end', onPage())
 }
 
 async function checkWidget(page, deadline) {
@@ -1581,6 +1694,7 @@ async function checkWidgetRemoved(main, deadline) {
       program: 'root = Card([CardHeader("' + title + '"), BarChart(["a", "b"], [Series("n", [1, 2])])])', actions: [] })
     return true
   }`, [slug, title])
+  // The iframe loads the shell on the origin app, which keeps its routes, so the main window can read the frame.
   const url = `dsh-app://app/widget/?slug=${encodeURIComponent(slug)}`
   const page = await findWidgetPage(slug, deadline)
   if (page === undefined) return `widget removed: no window for ${slug}`
@@ -1605,7 +1719,35 @@ async function checkWidgetRemoved(main, deadline) {
   await evaluate(main.webSocketDebuggerUrl, `document.getElementById(${JSON.stringify(frameId)})?.remove(), true`, deadline)
   if (after.value?.state !== 'state-removed') return `widget removed: the removed state did not stay: ${String(after.value?.state)}`
   if (tail.length > 0) return `widget removed: the page kept using the stream after removed: ${JSON.stringify(tail)}`
-  return waitPages(url, 0, Math.min(deadline, Date.now() + 10_000), 'the window of the removed widget')
+  const closed = await waitPages(widgetUrl(slug), 0, Math.min(deadline, Date.now() + 10_000), 'the window of the removed widget')
+  return closed ?? checkSlugOrigins(deadline)
+}
+
+/**
+ * agent_library.serving.origins: a slug that starts with `xn--`, a slug that ends with `-`, and a slug of 63 characters
+ * each get a window that loads at the widget origin of the slug. The check registers each widget over the Loader,
+ * finds its window, reads its program and its stream, and ends the registration.
+ */
+async function checkSlugOrigins(deadline) {
+  for (const slug of ['xn--abc', 'a-', 'o'.repeat(63)]) {
+    const title = `origin ${slug.slice(0, 12)}`
+    await hostWidgets(deadline, `(widgets, slug, title) => {
+      globalThis.__deepwidgetsSmokeOrigin = widgets.register({ slug, title, initialState: {}, program: 'root = Card([CardHeader("' + title + '")])', actions: [] })
+      return true
+    }`, [slug, title])
+    const page = await findWidgetPage(slug, Math.min(deadline, Date.now() + 15_000))
+    const read = page === undefined ? undefined : await pollWidget(page, Math.min(deadline, Date.now() + 15_000), (value) => value.text.includes(title) && value.dw?.stream === 'open')
+    let origin
+    if (page !== undefined) origin = await evaluate(page.webSocketDebuggerUrl, 'location.origin', deadline)
+    note(`origins ${slug} page=${String(page?.url)} origin=${String(origin)} ok=${String(read?.ok)}`)
+    await hostWidgets(deadline, 'async () => { await globalThis.__deepwidgetsSmokeOrigin(); delete globalThis.__deepwidgetsSmokeOrigin; return true }', [])
+    if (page === undefined) return `origins: no window at ${widgetUrl(slug)}`
+    if (read?.ok !== true) return `origins: the window of ${slug} did not load: ${JSON.stringify({ ...read?.value, text: read?.value?.text?.slice(0, 80) })}`
+    if (origin !== `dsh-app://w-${slug}.widget`) return `origins: the page of ${slug} has the origin ${String(origin)}`
+    const closed = await waitPages(widgetUrl(slug), 0, Math.min(deadline, Date.now() + 10_000), `the window of ${slug}`)
+    if (closed !== undefined) return closed
+  }
+  return undefined
 }
 
 async function checkHello(page, deadline) {

@@ -39,7 +39,10 @@
  * Window part: it runs tools/smoke-desktop.mjs with DSH_SMOKE_CREATE set to a bundle with a good page and
  * DSH_SMOKE_CREATE_CASES set to render cases that install first: a page that loops forever (not-ready), a page whose
  * component throws (render-error), a page that overrides a dw-core style (lost-core-styles), and a page with no body
- * height and wide content (two warnings). The good page then passes the render check, and its window opens. Skip the
+ * height and wide content (two warnings). The good page then passes the render check, and its window opens at the
+ * widget origin of its slug (agent_library.serving): the page component shows, its own program gives 200 and the
+ * program of sample 403, an install with new page sources shows the new page in the open window, an install with no
+ * page/ shows the shared shell, and two renderer ends in 60 s leave the shared shell with the notice. Skip the
  * window part with WIDGETS_CREATE_DESKTOP=0. It needs the machine lock of the smoke checks.
  * Prints `widgets-create: pass` and exits 0 only when every check passes.
  * Needs `corepack pnpm run build:artifacts` (and the desktop build for the window part) first.
@@ -54,7 +57,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { pinnedFunction } from './in-host.mjs'
-import { CHILD, LIBRARY, LOOPING_CHILD, LOST_STYLES, THROWING_LIBRARY, WARNING_STYLES, templateText, writePageWidget } from './fixtures/page-widget.mjs'
+import { CHILD, LIBRARY, LOOPING_CHILD, NEXT_LIBRARY, LOST_STYLES, THROWING_LIBRARY, WARNING_STYLES, templateText, writePageWidget } from './fixtures/page-widget.mjs'
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const BIN = join(ROOT, 'apps/cli/lib/bin.js')
@@ -654,13 +657,20 @@ async function desktopPart() {
   ]
   const casesFile = join(work, 'render-cases.json')
   writeFileSync(casesFile, JSON.stringify(cases))
-  const smoke = spawn(process.execPath, [join(ROOT, 'tools/smoke-desktop.mjs')], { env: { ...process.env, DSH_SMOKE_CREATE: dir, DSH_SMOKE_CREATE_CASES: casesFile }, stdio: ['ignore', 'pipe', 'pipe'] })
+  // agent_library.serving: the same bundle with new page sources, and with no page/.
+  const next = writePageWidget(join(work, 'agent', 'create-window-next'), 'create-window', { 'page/library.tsx': NEXT_LIBRARY })
+  const plain = writePageWidget(join(work, 'agent', 'create-window-plain'), 'create-window')
+  rmSync(join(plain, 'page'), { recursive: true })
+  const smoke = spawn(process.execPath, [join(ROOT, 'tools/smoke-desktop.mjs')], {
+    env: { ...process.env, DSH_SMOKE_CREATE: dir, DSH_SMOKE_CREATE_CASES: casesFile, DSH_SMOKE_CREATE_NEXT: next, DSH_SMOKE_CREATE_PLAIN: plain },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
   let text = ''
   smoke.stdout.on('data', (chunk) => { text += chunk })
   smoke.stderr.on('data', (chunk) => { text += chunk })
   const code = await new Promise((resolve) => smoke.once('close', resolve))
   const last = text.trim().split('\n').slice(-3).join(' | ')
-  check('desktop: the render check refuses a page that loops (not-ready), a component that throws (render-error), and a lost dw-core style (lost-core-styles); it warns of no body height and wide content; then a good page passes, its window opens, and widget_remove closes it', code === 0, `smoke exit ${String(code)}: ${last}`)
+  check('desktop: the render check refuses a page that loops (not-ready), a component that throws (render-error), and a lost dw-core style (lost-core-styles); it warns of no body height and wide content; then a good page passes, and its window opens at the widget origin of its slug and shows its component; its own program gives 200 and the program of sample 403; new page sources show the new page, no page/ shows the shared shell, and two renderer ends in 60 s leave the shared shell with the notice; widget_remove closes the window', code === 0, `smoke exit ${String(code)}: ${last}`)
 }
 
 let exitCode = 1

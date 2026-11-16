@@ -82,6 +82,9 @@ export const pageLibrary = createLibrary({ root: 'Stack', components: [Stack, Ca
 /** The good library: its components have zod schemas. */
 export const LIBRARY = library('<p className="text-xs" data-dw="note">{props.text}</p>')
 
+/** The good library with new page sources: its Note starts with `next: ` (`agent_library.serving`). */
+export const NEXT_LIBRARY = library('<p className="text-xs" data-dw="note">next: {props.text}</p>')
+
 /** A library whose Note throws when it renders. The host gates and the build pass. */
 export const THROWING_LIBRARY = library("{ throw new Error('the page component broke on purpose: ' + props.text) }")
 

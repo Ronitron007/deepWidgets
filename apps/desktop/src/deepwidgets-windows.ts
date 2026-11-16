@@ -1,10 +1,15 @@
 /**
  * deepWidgets windows: one floating panel window for each widget of the Host.
- * The spec is `widget_mvp.windows` in `docs/specs/widget-mvp.md`.
+ * The spec is `widget_mvp.windows` in `docs/specs/widget-mvp.md`. Each window loads its page from the widget origin
+ * of its slug (`agent_library.serving` in `docs/specs/agent-library.md`): the built page of the slug when the Host
+ * lists a page link for it, else the shared shell. This module also answers the requests of a widget origin.
  * @module deepwidgets-windows
  */
+import { join } from 'node:path'
 import { BrowserWindow, screen } from 'electron'
 import { EventSourceParserStream } from 'eventsource-parser/stream'
+import { isWidgetSlug, widgetRoute, widgetUrl, type WidgetPageMode, type WidgetPages } from './deepwidgets-origin.ts'
+import { servePageFile } from './deepwidgets-page-path.ts'
 
 /** One frame of `GET /api/widgets/events` (`widget_mvp.runtime.routes`). */
 type WidgetEvent =
@@ -22,16 +27,15 @@ const WIDGET_HEIGHT = 300
 const WIDGET_GAP = 16
 const RETRY_FIRST_MS = 500
 const RETRY_MAX_MS = 10_000
-
-/** The slug pattern of the Host runtime (`deepwidgets/widgets/src/index.ts`). */
-const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/u
+/** A second failure of an agent page in this time puts its window on the shared shell (`agent_library.serving.failures`). */
+const PAGE_FAILURE_WINDOW_MS = 60_000
 
 /**
  * Check one slug against the Host pattern. An invalid slug writes one warning.
  * @param slug - slug from a frame.
  */
 function validSlug(slug: unknown): slug is string {
-  if (typeof slug === 'string' && SLUG.test(slug)) return true
+  if (isWidgetSlug(slug)) return true
   console.warn('deepwidgets-windows: dropped an invalid slug', JSON.stringify(slug))
   return false
 }
@@ -54,13 +58,36 @@ function parseWidgetEvent(data: string): WidgetEvent | undefined {
   return undefined
 }
 
+/** One open panel window and the page that it shows. */
+interface WidgetWindow {
+  readonly window: BrowserWindow
+  /** `page` for the built page of the slug, `shell` for the shared shell, `failed` for the shell with the notice. */
+  mode: WidgetPageMode
+  /** The stamp of the page link that the window shows, or undefined for no page link. */
+  stamp: string | undefined
+  /** The count of loads. The result of an older load is not used. */
+  loads: number
+  /** The times of the recent failures of the agent page. */
+  failures: number[]
+}
+
+/** How the widget origin reaches the shared shell and the Host. Electron main gives these. */
+export interface WidgetOriginServers {
+  /** Serve the shared shell: its document when `index` is true, else the file of the request path. */
+  readonly shell: (request: Request, index: boolean) => Promise<Response>
+  /** Forward a request to the Host, or give a network error while the Host is down. */
+  readonly forward: (request: Request) => Promise<Response>
+}
+
 /**
  * Keep one panel window open for each slug that the Host lists.
  * A Host that becomes ready gets a new stream. The windows stay open while the Host is down;
  * the `hello` frame of the next stream syncs them.
  */
 export class DesktopWidgetWindows {
-  private readonly windows = new Map<string, BrowserWindow>()
+  private readonly windows = new Map<string, WidgetWindow>()
+  /** The page state of the Host. It stays across a Host restart, because the page files stay. */
+  private pages: WidgetPages | undefined
   private target: WidgetHostTarget | undefined
   private reading: AbortController | undefined
   private retry: ReturnType<typeof setTimeout> | undefined
@@ -68,9 +95,40 @@ export class DesktopWidgetWindows {
   private stopped = false
 
   /**
-   * @param pageUrl - gives the page URL of one slug.
+   * Take the page state of the Host (`agent_library.serving.changes`). The window of each slug whose page link changed
+   * loads again with the URL of the new state. A change also ends the shared shell after failures of the page.
+   * @param pages - the parsed `deepwidgets-pages` message.
    */
-  constructor(private readonly pageUrl: (slug: string) => string) {}
+  setPages(pages: WidgetPages): void {
+    this.pages = pages
+    for (const [slug, entry] of this.windows) {
+      const stamp = pages.pages.get(slug)
+      if (stamp === entry.stamp || entry.window.isDestroyed()) continue
+      entry.stamp = stamp
+      entry.failures = []
+      entry.mode = stamp === undefined ? 'shell' : 'page'
+      console.info(`deepwidgets-windows: the page link of ${slug} changed; the window loads the ${entry.mode === 'page' ? 'page of the slug' : 'shared shell'}`)
+      this.load(slug, entry)
+    }
+  }
+
+  /**
+   * Answer one request on the widget origin of `slug` (`agent_library.serving.routes`).
+   * @param request - a request to `dsh-app://w-<slug>.widget/`.
+   * @param slug - the slug of the origin.
+   * @param servers - the shared shell and the forward to the Host.
+   */
+  async handle(request: Request, slug: string, servers: WidgetOriginServers): Promise<Response> {
+    const folder = this.pages?.pages.has(slug) === true ? join(this.pages.root, slug, 'page') : undefined
+    const route = widgetRoute(slug, new URL(request.url).pathname, folder !== undefined)
+    if (route.kind === 'status') return new Response(null, { status: route.status })
+    if (route.kind === 'api') return servers.forward(request)
+    if (route.kind === 'shell') return servers.shell(request, route.index)
+    // pageFile resolves each link and refuses a path outside the folder of the slug and a `.tmp` build.
+    const answer = await servePageFile(request, folder ?? '', route.path, false)
+    if (answer.status === 404 && route.orShell) return servers.shell(request, false)
+    return answer
+  }
 
   /**
    * Read the events of this Host. A stream of an earlier Host stops.
@@ -95,7 +153,7 @@ export class DesktopWidgetWindows {
     this.stopped = true
     this.target = undefined
     this.halt()
-    for (const window of this.windows.values()) if (!window.isDestroyed()) window.hide()
+    for (const { window } of this.windows.values()) if (!window.isDestroyed()) window.hide()
   }
 
   private halt(): void {
@@ -159,7 +217,7 @@ export class DesktopWidgetWindows {
   private open(slug: string): void {
     if (this.stopped) return
     const existing = this.windows.get(slug)
-    if (existing !== undefined && !existing.isDestroyed()) return
+    if (existing !== undefined && !existing.window.isDestroyed()) return
     const area = screen.getPrimaryDisplay().workArea
     const row = this.windows.size
     const window = new BrowserWindow({
@@ -174,22 +232,59 @@ export class DesktopWidgetWindows {
       title: `deepWidgets ${slug}`,
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
     })
-    this.windows.set(slug, window)
-    window.once('closed', () => { if (this.windows.get(slug) === window) this.windows.delete(slug) })
+    const stamp = this.pages?.pages.get(slug)
+    const entry: WidgetWindow = { window, mode: stamp === undefined ? 'shell' : 'page', stamp, loads: 0, failures: [] }
+    this.windows.set(slug, entry)
+    window.once('closed', () => { if (this.windows.get(slug) === entry) this.windows.delete(slug) })
     window.setVisibleOnAllWorkspaces(true, { skipTransformProcessType: true })
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     window.webContents.on('will-navigate', (event) => { event.preventDefault() })
-    void window.loadURL(this.pageUrl(slug)).then(() => {
-      if (!window.isDestroyed() && !this.stopped) window.showInactive()
+    window.webContents.on('render-process-gone', (_event, details) => {
+      if (entry.mode === 'page' && !this.stopped && !window.isDestroyed()) this.pageFailed(slug, entry, `its renderer ended (${details.reason})`)
+    })
+    this.load(slug, entry)
+  }
+
+  /**
+   * Load the URL of the mode of the window. A failed load of the shared shell destroys the window, as before.
+   * A failed load of an agent page follows the failure policy.
+   */
+  private load(slug: string, entry: WidgetWindow): void {
+    const { window, mode } = entry
+    if (window.isDestroyed()) return
+    const load = ++entry.loads
+    const url = widgetUrl(slug, mode)
+    void window.loadURL(url).then(() => {
+      if (!window.isDestroyed() && !this.stopped && load === entry.loads) window.showInactive()
     }, (error: unknown) => {
-      console.warn(`deepwidgets-windows: the window of ${slug} did not load`, error)
-      if (!window.isDestroyed()) window.destroy()
+      // A newer load stopped this one.
+      if (window.isDestroyed() || load !== entry.loads) return
+      console.warn(`deepwidgets-windows: the window of ${slug} did not load ${url}`, error)
+      if (mode === 'page' && !this.stopped) this.pageFailed(slug, entry, 'its load failed')
+      else window.destroy()
     })
   }
 
+  /**
+   * The failure policy of an agent page (`agent_library.serving.failures`): load the page one more time. A second
+   * failure in {@link PAGE_FAILURE_WINDOW_MS} loads the shared shell with the notice. The window keeps it until the
+   * page link of the slug changes or the app starts again.
+   */
+  private pageFailed(slug: string, entry: WidgetWindow, reason: string): void {
+    const now = Date.now()
+    entry.failures = [...entry.failures.filter(at => now - at < PAGE_FAILURE_WINDOW_MS), now]
+    if (entry.failures.length >= 2) {
+      entry.mode = 'failed'
+      console.warn(`deepwidgets-windows: the page of ${slug} failed again in ${String(PAGE_FAILURE_WINDOW_MS / 1000)} s: ${reason}; the window loads the shared shell with the notice`)
+    } else {
+      console.warn(`deepwidgets-windows: the page of ${slug} failed: ${reason}; the window loads the page one more time`)
+    }
+    this.load(slug, entry)
+  }
+
   private close(slug: string): void {
-    const window = this.windows.get(slug)
+    const entry = this.windows.get(slug)
     this.windows.delete(slug)
-    if (window !== undefined && !window.isDestroyed()) window.destroy()
+    if (entry !== undefined && !entry.window.isDestroyed()) entry.window.destroy()
   }
 }

@@ -96,3 +96,4 @@ body {
 .dw-state--error strong { color: var(--dsw-alias-state-error-primary); }
 .dw-skeleton { height: 12px; width: 100%; border-radius: var(--dsw-radius-xs); background: var(--dsw-alias-bg-skeleton, var(--muted)); }
 .dw-skeleton + .dw-skeleton { width: 70%; }
+.dw-notice { margin: 0 0 8px; padding: 6px 8px; border-radius: var(--dsw-radius-xs); color: var(--foreground); background: var(--dsw-alias-state-warn-bg, var(--muted)); font-size: 12px; line-height: 16px; }
