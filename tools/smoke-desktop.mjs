@@ -1557,12 +1557,17 @@ async function checkCreate(deadline) {
   return failed === undefined ? undefined : `create: ${failed}`
 }
 
-/** Read the window of one renderer target id: its URL, origin, the note of the page fixture, and the notice. */
-async function readTarget(id, until) {
+/**
+ * Read the one page on the widget origin of `slug`: its URL, origin, the note of the page fixture, and the notice.
+ * A load gives the window a new renderer target, so the read finds the page by its origin.
+ */
+async function readOrigin(slug, until) {
   try {
-    const targets = await (await fetch(`http://127.0.0.1:${String(rendererPort)}/json/list`, { signal: AbortSignal.timeout(2000) })).json()
-    const target = targets.find((item) => item?.id === id && typeof item.webSocketDebuggerUrl === 'string')
-    if (target === undefined) return { error: 'no target' }
+    const prefix = `dsh-app://w-${slug}.widget/`
+    const targets = (await (await fetch(`http://127.0.0.1:${String(rendererPort)}/json/list`, { signal: AbortSignal.timeout(2000) })).json())
+      .filter((item) => item?.type === 'page' && String(item.url).startsWith(prefix) && typeof item.webSocketDebuggerUrl === 'string')
+    if (targets.length !== 1) return { error: `${String(targets.length)} pages on ${prefix}` }
+    const target = targets[0]
     return JSON.parse(String(await evaluate(target.webSocketDebuggerUrl, `JSON.stringify({ url: location.href, origin: location.origin,
   note: document.querySelector('[data-dw=note]')?.textContent ?? null, notice: document.querySelector('[data-dw=page-failed]')?.textContent ?? null,
   catalog: window.__dw?.catalog ?? null, state: window.__dw?.state ?? null })`, Math.min(until, Date.now() + 3000))))
@@ -1571,11 +1576,11 @@ async function readTarget(id, until) {
   }
 }
 
-/** Poll one renderer target until `accept` takes its read. Gives the last read, and whether it was accepted. */
-async function pollTarget(id, until, accept) {
+/** Poll the page on the widget origin of `slug` until `accept` takes its read. Gives the last read, and whether it was accepted. */
+async function pollOrigin(slug, until, accept) {
   let last
   while (Date.now() < until) {
-    last = await readTarget(id, until)
+    last = await readOrigin(slug, until)
     if (last.error === undefined && accept(last)) return { value: last, ok: true }
     await delay(250)
   }
@@ -1585,7 +1590,7 @@ async function pollTarget(id, until, accept) {
 /**
  * agent_library.serving: the window of a bundle with a page, after its install. DSH_SMOKE_CREATE_NEXT is the same
  * bundle with new page sources (its Note starts with `next: `), and DSH_SMOKE_CREATE_PLAIN is the same bundle with no
- * page/. The window stays one renderer target, so the check follows it by its id.
+ * page/. Each step reads the one page on the widget origin of the slug.
  * - The page shows its component at the widget origin of the slug.
  * - From the page, its own program gives 200, and the program of sample gives 403.
  * - An install with new page sources shows the new page; an install with no page/ shows the shared shell.
@@ -1603,9 +1608,12 @@ async function checkServing(slug, dir, tool, deadline) {
   if (target === undefined) return `no window at ${pageUrl}`
   const onPage = (prefix) => (value) => value.url === pageUrl && value.origin === origin && typeof value.note === 'string'
     && (prefix === undefined ? !value.note.startsWith('next: ') : value.note.startsWith(prefix)) && value.notice === null
+  // A replace ends the old entry and promotes the new one, so the runtime sends removed and added, and Electron main
+  // opens a new window (widget_fv.replace). The note logs the BrowserWindow id of each step.
+  const windowId = `function () { return this.windows.get(${JSON.stringify(slug)})?.window?.id ?? null }`
   const step = async (label, accept) => {
-    const read = await pollTarget(target.id, soon(), accept)
-    note(`serving ${label}=${JSON.stringify(read.value)}`)
+    const read = await pollOrigin(slug, soon(), accept)
+    note(`serving ${label}=${JSON.stringify(read.value)} window=${String(await withWidgetWindows(deadline, windowId))}`)
     return read.ok ? undefined : `${label}: ${JSON.stringify(read.value)}`
   }
   const install = async (label, from) => {
