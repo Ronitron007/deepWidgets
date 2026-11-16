@@ -80,6 +80,28 @@ If the dispose does not end in 3 s, the host stops itself with `SIGKILL`. The su
 
 - A loop in the top-level code of an agent row is blamed by the native stack, when the module `@sentry/node-native-stacktrace` loads. Without the module, the loop is a stall with no blame. After two such crashes, safe mode does not load agent rows, so the host recovers.
 
+## Host log `safe_host.log`
+
+The host code writes its reports with `ctx.logger`. Before this part, no profile had a row that gives the logger an exporter. Thus each line stayed in the buffer `ctx.logger.buffer`, which holds 1,000 lines. An operator could not read the buffer. `agent_library.fence_warn` and the skill `dsh-error-handling` need a log that an operator can read.
+
+- The web profile of deepWidgets has the row `logger-console`. Its plugin is `@deepseek-ai/cordis-plugin-logger-console`, from `vendor/logger-console`. `deepwidgets/trim/cordis.patch.yml` inserts the row.
+
+- The row writes each `ctx.logger` line of the host to the stdout of the host process. A line has the time, the level letter, the name of the logger, and the text.
+
+- The row shows the levels `error`, `warn`, and `info`. It does not show the level `debug`.
+
+- A CLI host writes the lines to its terminal.
+
+- In the desktop app, Electron main copies the stdout of the host to its own stdout. Thus the terminal of `corepack pnpm run start:desktop` shows the lines.
+
+- The buffer stays as it is.
+
+- The Loader starts each row when the module of the row loads, not in the order of the tree. A line that a row writes before the row `logger-console` starts stays only in the buffer.
+
+- The client half does not change. A `ctx.logger` line of the renderer does not go to the host log.
+
+This part does not build a log file. The packaged app has no terminal, so nobody reads its host log. The operator decides the log file.
+
 ## Later `safe_host.later`
 
 These items are designed, but this spec does not build them. Code of this stage must not block them.
