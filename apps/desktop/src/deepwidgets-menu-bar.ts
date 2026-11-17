@@ -50,6 +50,9 @@ export class DesktopMenuBar {
     ])
     this.menubar = new Menubar(app, {
       tray: this.tray,
+      // menubar takes our Tray, but the ESM build of 11.1.1 still reads __dirname for a default icon when `icon` is
+      // not an existing file, and __dirname does not exist in ESM. The image skips that read.
+      icon: image,
       index: PANEL_URL,
       tooltip: 'deepWidgets',
       // A right click opens the menu; a left click toggles the panel.
