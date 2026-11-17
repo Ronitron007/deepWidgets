@@ -10,7 +10,9 @@
  * - main_widget.widgets: the query `widgets` of main lists sample and the test widget with each field of the table,
  *   and no row for main; Turn off keeps the row with the status turned-off and the state; Turn on brings back the
  *   same state, for the built-in sample and for the test widget; Remove refuses sample; Remove removes the test
- *   widget, and its state stays in storage.
+ *   widget, and its state stays in storage. A refusal of an action of main is its result, with a code.
+ * - main_widget.widgets in safe mode: a second host start with DEEPWIDGETS_SAFE_MODE=1. An agent widget keeps the status
+ *   safe-mode, and the field turnedOff follows Turn off and Turn on.
  * The calls of main go through POST /api/widgets/main/call with the host cookie, as the page of main calls them.
  * Prints `widgets-main: pass` and exits 0 only when every check passes.
  * Needs `corepack pnpm run build:artifacts` first. A run starts a host: take the machine lock of the smoke checks.
@@ -32,6 +34,8 @@ const requireFromMcp = createRequire(join(ROOT, 'deepwidgets/mcp/package.json'))
 const { Client, StreamableHTTPClientTransport } = await import(pathToFileURL(requireFromMcp.resolve('@modelcontextprotocol/client')).href)
 
 const SLUG = 'main-check'
+/** The agent widget of the safe-mode part. */
+const SAFE_SLUG = 'main-safe'
 const work = await mkdtemp(join(process.env.WIDGETS_MAIN_TMP ?? tmpdir(), 'widgets-main-'))
 const home = join(work, 'home')
 const logPath = join(work, 'host.log')
@@ -57,12 +61,21 @@ function freePort() {
   })
 }
 
-async function startHost(port) {
+async function stopHost() {
+  if (child === undefined || child.exitCode !== null) return
+  const exited = new Promise((resolve) => child.once('exit', resolve))
+  child.kill('SIGTERM')
+  const timer = setTimeout(() => child.kill('SIGKILL'), 10_000)
+  await exited
+  clearTimeout(timer)
+}
+
+async function startHost(port, env = {}) {
   mkdirSync(home, { recursive: true })
   const out = createWriteStream(logPath, { flags: 'a' })
   child = spawn(process.execPath, [`--inspect=127.0.0.1:${String(inspectPort)}`, BIN, '--profile', 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open'], {
     cwd: home,
-    env: { ...process.env, DSH_HOME: home },
+    env: { ...process.env, DSH_HOME: home, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   child.stderr.pipe(out)
@@ -224,7 +237,7 @@ async function offAndOn(slug, rowId) {
   const offRow = offRows.get(slug)
   const listed = (await fetch(`${base}/api/widgets`, { headers: { cookie } }).then((answer) => answer.json())).widgets.map((widget) => widget.slug)
   check(`${slug}: Turn off keeps the row in the query with the status turned-off and the same state`,
-    off.body?.ok === true && off.body.result?.ok === true && offRow?.status?.kind === 'turned-off' && JSON.stringify(offRow.state) === JSON.stringify(before?.state)
+    off.body?.ok === true && off.body.result?.ok === true && offRow?.status?.kind === 'turned-off' && offRow.turnedOff === true && JSON.stringify(offRow.state) === JSON.stringify(before?.state)
       && offRow.rows?.length === 1 && offRow.rows[0].id === rowId && offRow.rows[0].enabled === false && !listed.includes(slug),
     JSON.stringify({ off: off.body, row: offRow, before: before?.state, listed }))
   check(`${slug}: a widget that is turned off has no title, catalog, actions, or window`,
@@ -263,6 +276,12 @@ async function hostPart() {
   const sampleAdded = await call('widget_call', { slug: 'sample', action: 'add', args: { by: 2 }, requestId: 'main-check-2' })
   check('widget_install installs the test widget, and add works', !installed.isError && installed.body?.application === 'applied' && added.body?.result?.count === 3 && sampleAdded.body?.result?.count === 2,
     JSON.stringify({ installed: installed.body?.error ?? installed.body?.application, added: added.body, sample: sampleAdded.body }))
+  // A second agent widget for the safe-mode part at the end.
+  const safeDir = join(work, 'agent', SAFE_SLUG)
+  mkdirSync(join(safeDir, 'src'), { recursive: true })
+  writeFileSync(join(safeDir, 'src', 'index.ts'), files[0].text.replaceAll(`'${SLUG}'`, `'${SAFE_SLUG}'`))
+  const safeInstalled = await call('widget_install', { dir: safeDir })
+  check('widget_install installs the second test widget', !safeInstalled.isError && safeInstalled.body?.application === 'applied', JSON.stringify(safeInstalled.body?.error ?? safeInstalled.body?.application))
 
   // ---- main_widget.widget: the MCP server does not show main ----
   const mainLive = await route('main', 'widgets')
@@ -347,6 +366,32 @@ async function hostPart() {
 
   const log = readFileSync(logPath, 'utf8')
   check('the host log has no refusal of the install records', !log.includes('can not use the install records') && !log.includes('can not run host code'), '')
+  await client.close().catch(() => undefined)
+  await safeModePart(port)
+}
+
+/**
+ * main_widget.widgets in safe mode: the agent widget SAFE_SLUG keeps the status safe-mode, and the field turnedOff
+ * follows Turn off and Turn on.
+ */
+async function safeModePart(port) {
+  await stopHost()
+  await startHost(port, { DEEPWIDGETS_SAFE_MODE: '1' })
+  let up = await route('main', 'widgets').catch(() => undefined)
+  for (let i = 0; i < 100 && up?.body?.ok !== true; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    up = await route('main', 'widgets').catch(() => undefined)
+  }
+  const first = await waitRows((rows) => rows.get(SAFE_SLUG)?.status?.kind === 'safe-mode')
+  check('safe mode: the agent widget has the status safe-mode and no turnedOff', first.get(SAFE_SLUG)?.status?.kind === 'safe-mode' && first.get(SAFE_SLUG)?.turnedOff === undefined, JSON.stringify(first.get(SAFE_SLUG)))
+  const off = await route('main', 'turnOff', { slug: SAFE_SLUG })
+  const offRow = (await waitRows((rows) => rows.get(SAFE_SLUG)?.turnedOff === true)).get(SAFE_SLUG)
+  check('safe mode: Turn off keeps the status safe-mode and sets turnedOff', off.body?.result?.ok === true && offRow?.status?.kind === 'safe-mode' && offRow.turnedOff === true && offRow.rows?.every((row) => row.enabled === false),
+    JSON.stringify({ off: off.body, row: offRow }))
+  const on = await route('main', 'turnOn', { slug: SAFE_SLUG })
+  const onRow = (await waitRows((rows) => rows.get(SAFE_SLUG)?.turnedOff === undefined)).get(SAFE_SLUG)
+  check('safe mode: Turn on keeps the status safe-mode and clears turnedOff', on.body?.result?.ok === true && onRow?.status?.kind === 'safe-mode' && onRow.turnedOff === undefined && onRow.rows?.every((row) => row.enabled === true),
+    JSON.stringify({ on: on.body, row: onRow }))
 }
 
 let exitCode = 1

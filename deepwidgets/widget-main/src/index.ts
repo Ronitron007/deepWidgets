@@ -83,6 +83,11 @@ export interface MainWidget {
   source?: string
   /** The plugin rows of the widget. An agent widget can have two during a replace (`widget_fv.replace`). */
   rows: MainWidgetRow[]
+  /**
+   * True when each plugin row of the widget is off. With the status `turned-off` it is always true. In safe mode, the
+   * status of an agent widget stays `safe-mode`, and this field shows the Turn off.
+   */
+  turnedOff?: true
   /** A live or failed widget has a widget window. `main.window_state` adds the hidden state. */
   window?: 'shown'
 }
@@ -186,11 +191,12 @@ export function apply(ctx: Context): void {
     for (const slug of [...slugs].sort()) {
       const summary = listed.get(slug)
       const own = rowsOfSlug(slug, rows)
+      const turnedOff = own.length > 0 && own.every((info) => !info.enabled)
       let status: MainWidgetStatus
       if (summary?.off !== undefined) status = { kind: 'safe-mode', message: summary.off.message }
       else if (summary?.failed !== undefined) status = { kind: 'failed', reason: summary.failed }
       else if (summary !== undefined) status = { kind: 'live' }
-      else if (own.every((info) => !info.enabled)) status = { kind: 'turned-off' }
+      else if (turnedOff) status = { kind: 'turned-off' }
       else {
         // A row that is on and has no entry: its plugin body failed, or it waits for a service.
         const on = own.filter((info) => info.enabled)
@@ -209,6 +215,7 @@ export function apply(ctx: Context): void {
         ...(live === undefined ? {} : { actions: live.actions }),
         ...(source === undefined ? {} : { source }),
         rows: own.map(rowOf),
+        ...(turnedOff ? { turnedOff: true as const } : {}),
         // The events route lists each entry of the runtime, also a failed one, so Electron main shows its window.
         ...(summary !== undefined && summary.off === undefined ? { window: 'shown' as const } : {}),
       })
