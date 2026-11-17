@@ -336,6 +336,11 @@ vi.mock('../src/deepwidgets-trace.ts', () => ({ DesktopTraceSteps: class {
   hostReady() {}
   hostGone() {}
 }, openTraceWindow() {} }))
+// deepWidgets menu bar (main_widget.menu_bar): electron-menubar imports the real electron module, which this file mocks.
+vi.mock('../src/deepwidgets-menu-bar.ts', () => ({ DesktopMenuBar: class {
+  open() {}
+  dispose() {}
+} }))
 vi.mock('node:fs/promises', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:fs/promises')>()
   return { ...original, readFile: vi.fn((path: Parameters<typeof original.readFile>[0], encoding?: 'utf8') => {
