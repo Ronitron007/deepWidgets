@@ -29,7 +29,9 @@
  * stream of main carries each change of another widget (main_widget.widgets). The row of sample opens with its state
  * viewer, Turn off, and no Remove. Turn off and Turn on in the page change its status. With the page open, 100 writes of
  * sample in a row take at most 3 times the time with no page of main, a burst of 100 parallel writes gives no failure,
- * and the page refreshes at most once for each 250 ms of writes (fanout_query_blocks_writes). The check saves two screenshots
+ * and the page refreshes at most once for each 250 ms of writes (fanout_query_blocks_writes). Last, the page loads again
+ * with a wrapper of EventSource: the check cuts the stream of main, writes sample while it is down, and opens it again.
+ * The row must show the new rev from the `data` frame after the `hello` of main. The check saves two screenshots
  * with webContents.capturePage(): $TMPDIR/deepwidgets-main-page/main-page.png, and main-page-state.png with the state of
  * sample open.
  * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://w-sample.widget/widget/?slug=sample.
@@ -1893,7 +1895,7 @@ async function checkSlugOrigins(deadline) {
 /** Read the page of main: the core diagnostics, the problems that it shows, and each widget row. */
 function mainReadExpression() {
   return `JSON.stringify({
-  dw: window.__dw === undefined ? null : { catalog: window.__dw.catalog, state: window.__dw.state, stream: window.__dw.stream, refreshes: window.__dw.refreshes, errors: window.__dw.errors },
+  dw: window.__dw === undefined ? null : { catalog: window.__dw.catalog, state: window.__dw.state, stream: window.__dw.stream, streamOpens: window.__dw.streamOpens, refreshes: window.__dw.refreshes, errors: window.__dw.errors },
   problems: [...document.querySelectorAll('[data-dw=state-error], [data-dw=query-error], [data-dw=main-problem], [data-dw=control-error]')].map((node) => node.textContent),
   tabs: [...document.querySelectorAll('[data-dw=tab]')].map((node) => node.textContent),
   rows: [...document.querySelectorAll('[data-dw=widget-row]')].map((row) => ({
@@ -1988,6 +1990,71 @@ async function checkMainWrites(target, closed, deadline) {
   return undefined
 }
 
+/**
+ * A wrapper of EventSource for the page of main: `cut()` closes each stream as a drop of the connection does, and
+ * `blocked` sends each new stream to a path that has no stream, so it fails and the page backs off and retries.
+ */
+function streamCutSource() {
+  return `(() => {
+  const Native = window.EventSource
+  const control = { blocked: false, live: new Set() }
+  control.cut = () => { for (const source of [...control.live]) { source.close(); source.dispatchEvent(new Event('error')) } }
+  window.__dwSmokeStream = control
+  window.EventSource = class extends Native {
+    constructor(url, init) {
+      const text = String(url)
+      super(control.blocked ? text.replace(/\\/stream(?=$|\\?)/, '/smoke-blocked') : text, init)
+      control.live.add(this)
+    }
+    close() { control.live.delete(this); super.close() }
+  }
+})()`
+}
+
+/**
+ * hello_catchup_unchecked: the page of main loads again with streamCutSource(). The check cuts the stream of main and
+ * keeps it down, writes sample, and checks that the row keeps the old rev: the frame of that write reached no stream.
+ * Then the stream opens again. Its `hello` names only the rev of main, so only the `data` frame after the `hello` can
+ * bring the new rev of sample into the row.
+ */
+async function checkMainCatchUp(target, deadline) {
+  const soon = () => Math.min(deadline, Date.now() + 20_000)
+  const sampleRow = (value) => value.rows?.find((row) => row.slug === 'sample')
+  const session = await cdpSession(target.webSocketDebuggerUrl, deadline)
+  let ready
+  try {
+    await cdpCall(session, 'Page.enable', {})
+    await cdpCall(session, 'Page.addScriptToEvaluateOnNewDocument', { source: streamCutSource() })
+    await cdpCall(session, 'Page.reload', {})
+    // The session stays open until the new document runs the script.
+    ready = await pollMain(target, soon(), (value) => value.dw?.stream === 'open' && /^\d+$/u.test(sampleRow(value)?.rev ?? ''))
+  } finally {
+    session.close()
+  }
+  const wrapped = await evaluate(target.webSocketDebuggerUrl, "typeof window.__dwSmokeStream?.cut === 'function'", deadline)
+  note(`main catch-up ready=${JSON.stringify(sampleRow(ready.value ?? {}))} wrapped=${String(wrapped)}`)
+  if (!ready.ok || wrapped !== true) return `main catch-up: the page did not load again with the stream wrapper: ${JSON.stringify(ready.value)}`
+  const opensBefore = ready.value.dw.streamOpens ?? 0
+  const revBefore = sampleRow(ready.value).rev
+  await evaluate(target.webSocketDebuggerUrl, 'window.__dwSmokeStream.blocked = true; window.__dwSmokeStream.cut(); true', deadline)
+  await delay(300)
+  const written = await hostWidgets(deadline, `async (widgets) => {
+    await widgets.update('sample', (state) => ({ count: state.count + 1 }), { by: 'smoke-main-catch-up' })
+    return widgets.get('sample').rev
+  }`, [])
+  // The frame to main trails a change by 250 ms. With the stream down, it reaches no page.
+  await delay(1000)
+  const down = await pollMain(target, soon(), () => true)
+  note(`main catch-up down=${JSON.stringify({ row: sampleRow(down.value), stream: down.value?.dw?.stream, written })}`)
+  if (sampleRow(down.value)?.rev !== revBefore) return `main catch-up: the row changed while the stream was down, so the check proves nothing: ${JSON.stringify(sampleRow(down.value))}`
+  await evaluate(target.webSocketDebuggerUrl, 'window.__dwSmokeStream.blocked = false; true', deadline)
+  const back = await pollMain(target, soon(), (value) => sampleRow(value)?.rev === String(written))
+  note(`main catch-up back=${JSON.stringify({ row: sampleRow(back.value), dw: back.value?.dw })}`)
+  if (!back.ok) return `main catch-up: after the stream came back, the row of sample did not show rev ${String(written)}: ${JSON.stringify(sampleRow(back.value) ?? back.value)}`
+  if ((back.value.dw?.streamOpens ?? 0) <= opensBefore) return `main catch-up: the row changed, but the stream did not open again: ${JSON.stringify(back.value.dw)}`
+  return undefined
+}
+
 async function checkMain(deadline) {
   const soon = () => Math.min(deadline, Date.now() + 15_000)
   // The test window takes the BrowserWindow class from the window of sample: Electron main opens none for main.
@@ -2064,7 +2131,7 @@ async function checkMain(deadline) {
       note(`main ${button}=${JSON.stringify({ row: sampleRow(changed.value), problems: changed.value?.problems })}`)
       if (!changed.ok) return `main: after ${button}, the status of sample is not ${status}: ${JSON.stringify(changed.value)}`
     }
-    return await checkMainWrites(target, closed, deadline)
+    return await checkMainWrites(target, closed, deadline) ?? await checkMainCatchUp(target, deadline)
   } finally {
     await withWidgetWindows(deadline, 'function () { globalThis.__deepwidgetsSmokeMain?.destroy(); delete globalThis.__deepwidgetsSmokeMain; return true }').catch(() => undefined)
   }
