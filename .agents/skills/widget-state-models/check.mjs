@@ -31,7 +31,9 @@ const CRASH_BREAKS = ['SampleNeverQuarantined', 'SampleLiveInSafeMode']
 const ACTION_HOLDS = ['TypeOK', 'AtMostOnce', 'ReplaySameResult', 'ReplayFlag', 'ConflictOnOtherArgs', 'NoLateWrite', 'OneAtATime', 'FIFO',
   'QueryNoQueue', 'BusyNeverRuns', 'NoAdmitAfterStop', 'DrainBeforeClose', 'RevCountsWrites', 'NoDeadlock']
 const INSTALL_HOLDS = ['TypeOK', 'GatesGuardHost', 'FailedReplaceKeepsOld', 'NeverRemoveLastGood', 'CommittedNotStandby', 'StateKept', 'BuiltInUntouched', 'OneBundlePerSlug', 'NewSeedSetsProgram',
-  'SameSeedKeepsProgram', 'SlugTakenOnlyForBuiltIn', 'QuarantineHolds', 'RollbackKeepsRecord', 'BuiltInSlugReserved', 'NoDeadlock']
+  'SameSeedKeepsProgram', 'SlugTakenOnlyForBuiltIn', 'QuarantineHolds', 'RollbackKeepsRecord', 'BuiltInSlugReserved',
+  // main.seed_refresh (main_widget.seed): the seed rule of a built-in row.
+  'BuiltInSeedFresh', 'BuiltInSameSeedKeepsProgram', 'NoDeadlock']
 
 const actionMutants = {
   any_turn: 'FIFO', dup_no_flag: 'ReplayFlag', no_cancel: 'BusyNeverRuns', no_drain: 'DrainBeforeClose',
@@ -55,6 +57,8 @@ const installMutants = {
   'M-oneName-QuarantineHolds': 'QuarantineHolds', 'M-offAllowed-BuiltInSlugReserved': 'BuiltInSlugReserved',
   'M-removeFirst-FailedReplaceKeepsOld': 'FailedReplaceKeepsOld', 'M-noLiveCheck-NeverRemoveLastGood': 'NeverRemoveLastGood',
   'M-noDefer-CommittedNotStandby': 'CommittedNotStandby',
+  // main.seed_refresh: builtinSkip is the code before that unit, and builtinAlways writes the seed at each start.
+  'M-builtinSkip-BuiltInSeedFresh': 'BuiltInSeedFresh', 'M-builtinAlways-BuiltInSameSeedKeepsProgram': 'BuiltInSameSeedKeepsProgram',
 }
 
 // For each run: the config, the rules that must break, and the rules that must hold.

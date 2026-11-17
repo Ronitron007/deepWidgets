@@ -16,6 +16,11 @@
 (* installs the new version under the name that is not installed. Its      *)
 (* registration waits as the standby of the old entry (W:1214-1384), and   *)
 (* the old bundle goes only after the new one registered.                  *)
+(*                                                                         *)
+(* main_widget.seed (unit main.seed_refresh): the start of the built-in    *)
+(* sample stores the seed program of its code when the seed hash in its    *)
+(* program record differs, also when the record has no hash. An app update *)
+(* can bring a new seed program at a host start (bcode).                   *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, TLC
 
@@ -37,6 +42,8 @@ Other(n) == IF n = "A" THEN "B" ELSE "A"
 Codes == {"v1", "v2", "bad", "lint"}
 Seed(c) == CASE c = "v1" -> "p1" [] c = "v2" -> "p2" [] c = "bad" -> "p3" [] c = "lint" -> "p4"
 Seeds == {"p1", "p2", "p3", "p4"}
+(* main_widget.seed: the seed programs of the code of the built-in sample. p0 is the seed of the first host start. *)
+BSeeds == {"p0", "p5"}
 GatePass(c) == c # "lint"               \* lint: a raw setTimeout, refused by the lint gate
 ApplyOk(c)  == c \in {"v1", "v2"}       \* bad: registers, then throws in the host only (passes the test run)
 
@@ -67,11 +74,16 @@ VARIABLES
   fallback,   \* [Slugs -> BOOLEAN]  W fallBack: the committed row failed in this host start (it threw, or it is held)
   committed,  \* [Slugs -> {None} \cup Names]  W: committed.json, the name of the last install that registered (commit)
   safe,       \* this host start is in safe mode (W:1216)
+  bcode,      \* main_widget.seed: the seed program of the built-in sample in the code of this host start
+  bLost,      \* ghost: a start of the built-in sample, whose record had the seed hash of its code, changed its program
   crashes, calls,
   job         \* the one running installer job
 
 vars == <<inst, enabled, folder, reg, row, sby, sbyCode, fallback, offMap, sampleOn, prog, state, everUsed,
-          pseed, lastInst, quar, bl, runBlamed, fallback, committed, safe, crashes, calls, job>>
+          pseed, lastInst, quar, bl, runBlamed, fallback, committed, safe, bcode, bLost, crashes, calls, job>>
+
+(* The variables of the built-in seed that only ToggleSample and Crash change (main_widget.seed). *)
+BI == <<bcode, bLost>>
 
 (* The runtime of one slug, as one record (below: RS and SetRS). *)
 rt == <<reg, row, sby, sbyCode, fallback, offMap, prog, pseed, state, quar, runBlamed, lastInst>>
@@ -92,14 +104,30 @@ TypeOK ==
   /\ sbyCode \in [Slugs -> {None} \cup Codes]
   /\ offMap \in [Slugs -> BOOLEAN]
   /\ sampleOn \in BOOLEAN
-  /\ prog \in [Slugs -> {None, "edit", "p0"} \cup Seeds]
+  /\ prog \in [Slugs -> {None, "edit"} \cup BSeeds \cup Seeds]
   /\ state \in [Slugs -> {"none", "init", "used"}]
-  /\ pseed \in [Slugs -> {None} \cup Seeds]
+  /\ pseed \in [Slugs -> {None} \cup BSeeds \cup Seeds]
   /\ quar \in [Slugs -> [Names -> BOOLEAN]]
   /\ bl \in [Slugs -> [Names -> BOOLEAN]]
   /\ committed \in [Slugs -> {None} \cup Names]
   /\ fallback \in [Slugs -> BOOLEAN]
   /\ safe \in BOOLEAN
+  /\ bcode \in BSeeds
+  /\ bLost \in BOOLEAN
+
+(* main_widget.seed, W seed() of a built-in row (`registration.builtIn`, set in W add): a record whose seed hash     *)
+(* differs from the hash of the seed program of the code, also a record with no hash, gets that seed program and its *)
+(* hash in one put. A record with the same hash stays, also an edit: W setProgram keeps the hash. An edit and a call  *)
+(* of the slug wait for the seed (`seeded`), so the seed is part of the step that starts the row.                    *)
+(* Mutant builtinSkip: the code before main.seed_refresh. Only a slug with no record gets the seed, with no hash.     *)
+(* Mutant builtinAlways: each start of the row writes its seed, with no compare.                                     *)
+BWrites(p, ps, c) == CASE Mutant = "builtinSkip" -> p = None
+                       [] Mutant = "builtinAlways" -> TRUE
+                       [] OTHER -> ps # c
+BSeedP(p, ps, c) == IF BWrites(p, ps, c) THEN c ELSE p
+BSeedS(p, ps, c) == IF BWrites(p, ps, c) THEN (IF Mutant = "builtinSkip" THEN None ELSE c) ELSE ps
+(* The ghost bLost: the record had the seed hash of the code, and the start changed the program. *)
+BLost(p, ps, c) == ps = c /\ BSeedP(p, ps, c) # p
 
 Init ==
   /\ inst = [s \in Slugs |-> [n \in Names |-> FALSE]]
@@ -111,11 +139,14 @@ Init ==
   /\ sbyCode = [s \in Slugs |-> None]
   /\ offMap = [s \in Slugs |-> FALSE]
   /\ sampleOn = TRUE
-  \* The built-in sample is live and seeded at start.
-  /\ prog = [s \in Slugs |-> IF s = BuiltIn THEN "p0" ELSE None]
+  \* The built-in sample is live and seeded at start. An older app stored its program p0 with no seed hash
+  \* (main_widget.seed), and this first host start of the code applies the seed rule of a built-in row to it.
+  /\ bcode = "p0"
+  /\ bLost = FALSE
+  /\ prog = [s \in Slugs |-> IF s = BuiltIn THEN BSeedP("p0", None, "p0") ELSE None]
   /\ state = [s \in Slugs |-> IF s = BuiltIn THEN "init" ELSE "none"]
   /\ everUsed = [s \in Slugs |-> FALSE]
-  /\ pseed = [s \in Slugs |-> None]
+  /\ pseed = [s \in Slugs |-> IF s = BuiltIn THEN BSeedS("p0", None, "p0") ELSE None]
   /\ lastInst = [s \in Slugs |-> None]
   /\ quar = [s \in Slugs |-> [n \in Names |-> FALSE]]
   /\ bl = [s \in Slugs |-> [n \in Names |-> FALSE]]
@@ -302,21 +333,21 @@ AgentInstall ==
        /\ job' = NewJob("install", s, c, "gates")
   /\ calls' = calls + 1
   /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, bl, safe, committed, crashes>>
-  /\ UNCHANGED rt
+  /\ UNCHANGED rt /\ UNCHANGED BI
 
 AgentReload ==
   /\ job = NoJob /\ calls < MaxCalls
   /\ \E s \in AgentSlugs, c \in Codes : job' = NewJob("reload", s, c, "reloadCheck")
   /\ calls' = calls + 1
   /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, bl, safe, committed, crashes>>
-  /\ UNCHANGED rt
+  /\ UNCHANGED rt /\ UNCHANGED BI
 
 AgentRemove ==
   /\ job = NoJob /\ calls < MaxCalls
   /\ \E s \in Slugs : job' = NewJob("remove", s, "v1", "removeCheck")
   /\ calls' = calls + 1
   /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, bl, safe, committed, crashes>>
-  /\ UNCHANGED rt
+  /\ UNCHANGED rt /\ UNCHANGED BI
 
 ---------------------------------------------------------------------------
 (* installNow (C:601-661) and loadNew (C:667-729), one await per step. *)
@@ -325,7 +356,7 @@ JS == job.s
 JC == job.c
 
 (* The variables that a job step that only moves the job keeps. *)
-Keep == <<inst, enabled, folder, sampleOn, everUsed, bl, committed, safe, crashes, calls>>
+Keep == <<inst, enabled, folder, sampleOn, everUsed, bl, committed, safe, bcode, bLost, crashes, calls>>
 
 (* C:557-565 reload: installedNames() and meta(). *)
 ReloadCheck ==
@@ -402,7 +433,7 @@ Decide ==
                \/ /\ Deselected(JS, new)
                   /\ UNCHANGED committed
                   /\ job' = [J EXCEPT !.pc = "err", !.err = "install-failed", !.wrote = Wrote(JS), !.lostGood = LostGood(JS)]
-  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, crashes, calls>>
+  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, crashes, calls>> /\ UNCHANGED BI
 
 (* C:647 writeBundle(folder, name) (C:415-431): rm the folder of the new name, then write it. *)
 WriteNew ==
@@ -410,7 +441,7 @@ WriteNew ==
   /\ folder' = [folder EXCEPT ![JS][job.name] = JC]
   /\ bl' = [bl EXCEPT ![JS][job.name] = FALSE]
   /\ Goto("snapshot")
-  /\ UNCHANGED <<inst, enabled, sampleOn, everUsed, safe, committed, crashes, calls>> /\ UNCHANGED rt
+  /\ UNCHANGED <<inst, enabled, sampleOn, everUsed, safe, committed, crashes, calls>> /\ UNCHANGED rt /\ UNCHANGED BI
 
 (* C:651-653 before = programRecord(slug) (W:1104-1109). Then holdLift(slug). beforeP and beforeS are *)
 (* the ghost of the record before the install, for the rule RollbackKeepsRecord; snapP and snapS are  *)
@@ -437,7 +468,7 @@ InstallNew ==
                                    !.wrote = job.wrote \/ R.p # prog[JS], !.pend = job.pend \cup R.pend]
      \/ /\ UNCHANGED <<inst, enabled>> /\ UNCHANGED rt
         /\ job' = [job EXCEPT !.app = "failed", !.pc = "waitReg"]
-  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, committed, crashes, calls>>
+  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, committed, crashes, calls>> /\ UNCHANGED BI
 
 (* C:682-684 applied && registeredName(slug, [name]) within 5 s: the row of the new name has the live *)
 (* entry or the standby. The wait can also time out when the widget registers late                    *)
@@ -456,7 +487,7 @@ Commit ==
   /\ committed' = [committed EXCEPT ![JS] = job.name]
   /\ SetRS(JS, CommitR(RS(JS), JS, job.name))
   /\ job' = [job EXCEPT !.pc = IF job.old # None /\ ~job.early THEN "removeOld" ELSE "live", !.wrote = Wrote(JS)]
-  /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, bl, safe, crashes, calls>>
+  /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, bl, safe, crashes, calls>> /\ UNCHANGED BI
 
 (* C:688-700 removeBundle(old). Its entry ends, and the standby of the new name takes its place.   *)
 (* When the removal fails and the new version is live (pnpm remove failed after the deselect, or the *)
@@ -473,7 +504,7 @@ RemoveOld ==
                               !.pc = IF job.early THEN "err"
                                      ELSE IF reg'[JS] = "live" /\ row'[JS] = job.name THEN "live" ELSE "undoCheck",
                               !.err = IF job.early THEN "install-failed" ELSE @]
-  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, committed, crashes, calls>>
+  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, committed, crashes, calls>> /\ UNCHANGED BI
 
 (* C:691 rm the folder of the old name. *)
 RmOld ==
@@ -481,7 +512,7 @@ RmOld ==
   /\ folder' = [folder EXCEPT ![JS][job.old] = None]
   /\ bl' = [bl EXCEPT ![JS][job.old] = FALSE]
   /\ Goto(IF job.early THEN "writeNew" ELSE "live")
-  /\ UNCHANGED <<inst, enabled, sampleOn, everUsed, safe, committed, crashes, calls>> /\ UNCHANGED rt
+  /\ UNCHANGED <<inst, enabled, sampleOn, everUsed, safe, committed, crashes, calls>> /\ UNCHANGED rt /\ UNCHANGED BI
 
 (* C:701-702 waitLive(slug): the slug shows in list(). On success, settleLift(slug, true) ends a  *)
 (* quarantine item that a load of other files marked.                                            *)
@@ -528,7 +559,7 @@ UndoCheck ==
   /\ committed' = [committed EXCEPT ![JS] = job.was]
   /\ SetRS(JS, CommitR(RS(JS), JS, job.was))
   /\ job' = [job EXCEPT !.pc = IF inst[JS][job.name] THEN "undoRemove" ELSE "rmFolder", !.wrote = Wrote(JS)]
-  /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, bl, safe, crashes, calls>>
+  /\ UNCHANGED <<inst, enabled, folder, sampleOn, everUsed, bl, safe, crashes, calls>> /\ UNCHANGED BI
 
 (* C:715-716 removeBundle of the new bundle; its result is only reported. Its standby is dropped. *)
 UndoRemove ==
@@ -537,7 +568,7 @@ UndoRemove ==
      \/ UNCHANGED <<inst, enabled>> /\ UNCHANGED rt
      \/ Deselected(JS, job.name)
   /\ job' = [job EXCEPT !.pc = "rmFolder", !.wrote = Wrote(JS)]
-  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, committed, crashes, calls>>
+  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, committed, crashes, calls>> /\ UNCHANGED BI
 
 (* C:718-719 clearOff(slug); rm the folder of the new name. *)
 RmFolder ==
@@ -546,7 +577,7 @@ RmFolder ==
   /\ bl' = [bl EXCEPT ![JS][job.name] = FALSE]
   /\ offMap' = [offMap EXCEPT ![JS] = IF JS = BuiltIn THEN @ ELSE FALSE]
   /\ Goto("restoreProgram")
-  /\ UNCHANGED <<inst, enabled, sampleOn, everUsed, safe, committed, crashes, calls>>
+  /\ UNCHANGED <<inst, enabled, sampleOn, everUsed, safe, committed, crashes, calls>> /\ UNCHANGED BI
   /\ UNCHANGED <<reg, row, sby, sbyCode, fallback, prog, pseed, state, quar, runBlamed, lastInst>>
 
 (* C:723-728 restoreProgram(slug, before) when no version of the slug is live (W:1111-1119; no record *)
@@ -584,7 +615,7 @@ RemoveBundle ==
           /\ End(FALSE, "install-failed")
        \/ /\ Deselected(JS, n)
           /\ End(FALSE, "install-failed")
-  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, committed, crashes, calls>>
+  /\ UNCHANGED <<folder, sampleOn, everUsed, bl, safe, committed, crashes, calls>> /\ UNCHANGED BI
 
 (* C remove: rm both folders; clearOff(slug); commit(slug, undefined). *)
 RemoveFolder ==
@@ -595,7 +626,7 @@ RemoveFolder ==
   \* commit(slug, undefined): the slug has no committed name.
   /\ committed' = [committed EXCEPT ![JS] = None]
   /\ End(TRUE, "")
-  /\ UNCHANGED <<inst, enabled, sampleOn, everUsed, safe, crashes, calls>>
+  /\ UNCHANGED <<inst, enabled, sampleOn, everUsed, safe, crashes, calls>> /\ UNCHANGED BI
   /\ UNCHANGED <<reg, row, sby, sbyCode, fallback, prog, pseed, state, quar, runBlamed, lastInst>>
 
 (* The tool call returns its result; the queue takes the next call. *)
@@ -614,33 +645,42 @@ UserCall ==
        /\ state' = [state EXCEPT ![s] = "used"]
        /\ everUsed' = [everUsed EXCEPT ![s] = TRUE]
   /\ UNCHANGED <<inst, enabled, folder, reg, row, sby, sbyCode, fallback, offMap, sampleOn, prog,
-                 pseed, lastInst, quar, bl, runBlamed, safe, committed, crashes, calls, job>>
+                 pseed, lastInst, quar, bl, runBlamed, safe, committed, crashes, calls, job>> /\ UNCHANGED BI
 
 (* A plugin or the widget edits the stored program: ctx.widgets.setProgram (W:1090-1102). The edit *)
 (* keeps the seed hash of the record. During a replace, the old version is live and takes edits.  *)
+(* main_widget.seed: a plugin can also edit the program of the built-in sample while it is on.    *)
 UserEdit ==
-  /\ \E s \in AgentSlugs :
-       /\ reg[s] = "live"
+  /\ \E s \in Slugs :
+       /\ IF s = BuiltIn THEN sampleOn /\ ~Installed(BuiltIn) ELSE reg[s] = "live"
        /\ prog' = [prog EXCEPT ![s] = "edit"]
        /\ job' = IF job # NoJob /\ job.s = s THEN [job EXCEPT !.edited = TRUE, !.editAfter = job.beforeP # "unset"] ELSE job
   /\ UNCHANGED <<inst, enabled, folder, reg, row, sby, sbyCode, fallback, offMap, sampleOn, state, everUsed,
-                 pseed, lastInst, quar, bl, runBlamed, safe, committed, crashes, calls>>
+                 pseed, lastInst, quar, bl, runBlamed, safe, committed, crashes, calls>> /\ UNCHANGED BI
 
-(* The user turns the built-in sample row off or on (PM setPluginEnabled). *)
+(* The user turns the built-in sample row off or on (PM setPluginEnabled). main_widget.seed: when it *)
+(* turns on, the row registers again, and W seed() applies the seed rule of a built-in row.         *)
 ToggleSample ==
   /\ sampleOn' = ~sampleOn
-  /\ UNCHANGED <<inst, enabled, folder, reg, row, sby, sbyCode, fallback, offMap, prog, state, everUsed,
-                 pseed, lastInst, quar, bl, runBlamed, safe, committed, crashes, calls, job>>
+  /\ IF sampleOn'
+       THEN /\ prog' = [prog EXCEPT ![BuiltIn] = BSeedP(prog[BuiltIn], pseed[BuiltIn], bcode)]
+            /\ pseed' = [pseed EXCEPT ![BuiltIn] = BSeedS(prog[BuiltIn], pseed[BuiltIn], bcode)]
+            /\ bLost' = (bLost \/ BLost(prog[BuiltIn], pseed[BuiltIn], bcode))
+       ELSE UNCHANGED <<prog, pseed, bLost>>
+  /\ UNCHANGED <<inst, enabled, folder, reg, row, sby, sbyCode, fallback, offMap, state, everUsed,
+                 lastInst, quar, bl, runBlamed, safe, committed, bcode, crashes, calls, job>>
 
 (* The host exits at once (I:claim), and the supervisor starts it again. A crash in running agent    *)
 (* code (the live row, or the row of the standby) is blamed on its row: the quarantine names the hash *)
 (* of the folder of that name. An unblamed crash can put the next start in safe mode. The running job *)
 (* dies with the host. At the start, each installed and selected agent bundle loads from its folder,  *)
 (* as Step does, in either order: the second row of a slug can wait as the standby of the first.      *)
+(* main_widget.seed: the new host can run the code of an app update, with another seed program of the *)
+(* built-in sample (bc). When the sample row is on, it registers, and W seed() applies the seed rule. *)
 NoBlame == <<None, None>>
 Crash ==
   /\ crashes < MaxCrashes
-  /\ \E b \in {NoBlame} \cup (AgentSlugs \X Names), f \in {NoBlame} \cup (AgentSlugs \X Names), sm \in BOOLEAN, first \in Names :
+  /\ \E b \in {NoBlame} \cup (AgentSlugs \X Names), f \in {NoBlame} \cup (AgentSlugs \X Names), sm \in BOOLEAN, first \in Names, bc \in BSeeds :
        /\ (b # NoBlame => (sm = FALSE /\ ((reg[b[1]] = "live" /\ row[b[1]] = b[2]) \/ sby[b[1]] = b[2])))
        /\ LET q0 == [s \in Slugs |-> [n \in Names |-> quar[s][n] \/ b = <<s, n>>]]
               b0 == [s \in Slugs |-> [n \in Names |-> bl[s][n] \/ b = <<s, n>>]]
@@ -655,8 +695,10 @@ Crash ==
              /\ sbyCode' = [s \in Slugs |-> R2(s).sc]
              /\ fallback' = [s \in Slugs |-> R2(s).fb]
              /\ offMap' = [s \in Slugs |-> R2(s).off]
-             /\ prog' = [s \in Slugs |-> R2(s).p]
-             /\ pseed' = [s \in Slugs |-> R2(s).ps]
+             /\ prog' = [s \in Slugs |-> IF s = BuiltIn /\ sampleOn THEN BSeedP(prog[s], pseed[s], bc) ELSE R2(s).p]
+             /\ pseed' = [s \in Slugs |-> IF s = BuiltIn /\ sampleOn THEN BSeedS(prog[s], pseed[s], bc) ELSE R2(s).ps]
+             /\ bcode' = bc
+             /\ bLost' = (bLost \/ (sampleOn /\ BLost(prog[BuiltIn], pseed[BuiltIn], bc)))
              /\ state' = [s \in Slugs |-> R2(s).st]
              /\ quar' = [s \in Slugs |-> R2(s).q]
              /\ runBlamed' = [s \in Slugs |-> R2(s).rb]
@@ -755,6 +797,16 @@ NeverRemoveLastGood == ~job.lostGood
 (* until the old name goes.                                                                                 *)
 CommittedNotStandby ==
   \A s \in AgentSlugs : job.s # s => ~(committed[s] # None /\ sby[s] = committed[s])
+
+(* builtin.seed_fresh: "While a built-in widget is on, its program record has the seed hash of the seed program of    *)
+(* its code, and the text is that seed program or a later edit." spec main_widget.seed; W seed(). An older app stored  *)
+(* the program of sample with no seed hash (Init), and an app update can bring a new seed program at a host start.     *)
+BuiltInSeedFresh ==
+  sampleOn => (pseed[BuiltIn] = bcode /\ prog[BuiltIn] \in {bcode, "edit"})
+
+(* builtin.same_seed: "A start of a built-in widget whose record has the seed hash of its code keeps the stored       *)
+(* program, also an edit. The rev of the record stays." spec main_widget.seed; W seed(), W setProgram.                 *)
+BuiltInSameSeedKeepsProgram == ~bLost
 
 (* builtin.reserved: "The slug of a built-in widget is reserved. widget_install gives slug-taken for   *)
 (* that slug, also when the built-in widget is off." spec widget_fv.install (widget.builtin_slugs).  *)
