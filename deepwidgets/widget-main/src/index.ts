@@ -9,11 +9,14 @@
  *
  * The plugin manager, the installer, and the install records are host code. The actions run them through
  * `widgetRecords.asHost`, so they run outside the store of this row: a crash in them is not blamed on this widget.
+ *
+ * An action that refuses gives a {@link MainRefusal} as its result, with a code, so the page routes by the code. Only a
+ * defect throws: the call then gives `handler-error`.
  * @module @deepwidgets/widget-main
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { ChangeResult, PluginInfo } from '@deepseek-ai/dsh-plugin-manager'
-import type {} from '@deepwidgets/mcp'
+import type { CreationErrorCode } from '@deepwidgets/mcp'
 import type { WidgetActionDescription, WidgetDescription } from '@deepwidgets/widgets'
 import { z } from 'zod'
 
@@ -86,8 +89,57 @@ export interface MainWidget {
 
 const slugInput = z.object({ slug: z.string() })
 
-/** A refusal of an action. The page shows the message; the code is its first word. */
-const refusal = (code: string, message: string): Error => new Error(`${code}: ${message}`)
+/** The code of a refusal of an action of `main`. The codes of the installer come from the remove path of `widget_remove`. */
+export type MainRefusalCode = 'unknown-widget' | 'built-in' | 'no-row' | 'unavailable' | 'change-failed' | CreationErrorCode
+
+/** A refusal of an action of `main`: the result of the action, so that the page routes by `code`, not by the message. */
+export interface MainRefusal {
+  ok: false
+  code: MainRefusalCode
+  message: string
+  /** The diagnostics of the plugin manager or of the installer, for example the output of pnpm. */
+  diagnostics?: string[]
+  /** What the operator can do next, from the installer. */
+  nextStep?: string
+}
+
+/** The answer of an action that can refuse. */
+export type MainAnswer<T> = ({ ok: true } & T) | MainRefusal
+
+/** Carries a refusal from the body of an action to {@link answer}. */
+class Refused extends Error {
+  constructor(readonly refusal: MainRefusal) {
+    super(refusal.message)
+    this.name = 'MainRefused'
+  }
+}
+
+function refuse(code: MainRefusalCode, message: string, extra: { diagnostics?: string[], nextStep?: string } = {}): never {
+  throw new Refused({ ok: false, code, message, ...extra })
+}
+
+/** Run the body of an action. A refusal becomes the result. Any other error is a defect and stays an error. */
+async function answer<T extends object>(body: () => Promise<T>): Promise<MainAnswer<T>> {
+  try {
+    return { ok: true, ...(await body()) }
+  } catch (error) {
+    if (error instanceof Refused) return error.refusal
+    throw error
+  }
+}
+
+/** The fields of a `CreationError` of `@deepwidgets/mcp`, read by shape: this package imports only its types. */
+function creationError(error: unknown): { code: CreationErrorCode, message: string, diagnostics: string[], nextStep: string | undefined } | undefined {
+  if (!(error instanceof Error) || error.name !== 'CreationError') return undefined
+  const { code, diagnostics, nextStep } = error as Error & { code?: unknown, diagnostics?: unknown, nextStep?: unknown }
+  if (typeof code !== 'string') return undefined
+  return {
+    code: code as CreationErrorCode,
+    message: error.message,
+    diagnostics: Array.isArray(diagnostics) ? diagnostics.filter((line): line is string => typeof line === 'string') : [],
+    nextStep: typeof nextStep === 'string' ? nextStep : undefined,
+  }
+}
 
 /** The slug that the row id of the entry `entryId` names, or undefined for a row that is not widget code. */
 function slugOfEntry(entryId: string): string | undefined {
@@ -166,17 +218,19 @@ export function apply(ctx: Context): void {
 
   /** Set each row of `slug` that is not `enabled` to `enabled` with the plugin manager. */
   async function setEnabled(slug: string, enabled: boolean): Promise<{ slug: string, rows: { id: string, application: ChangeResult['application'] }[] }> {
-    if (slug === widgetSlugs[0]) throw refusal('unknown-widget', 'the main widget can not turn itself off or on')
+    if (slug === widgetSlugs[0]) refuse('unknown-widget', 'the main widget can not turn itself off or on')
     const manager = ctx.get('pluginManager')
-    if (manager === undefined) throw refusal('unavailable', 'this host has no plugin manager')
+    if (manager === undefined) refuse('unavailable', 'this host has no plugin manager')
     const targets = rowsOfSlug(slug, await widgetRows()).filter((info) => info.enabled !== enabled)
-    if (targets.length === 0) throw refusal('no-row', `no plugin row of ${slug} is ${enabled ? 'off' : 'on'}`)
+    if (targets.length === 0) refuse('no-row', `no plugin row of ${slug} is ${enabled ? 'off' : 'on'}`)
     const changed: { id: string, application: ChangeResult['application'] }[] = []
     for (const info of targets) {
       const result = await manager.setPluginEnabled(info.entryId, enabled)
       if (result.application !== 'applied') {
         const done = changed.length === 0 ? '' : `; ${changed.map((item) => item.id).join(', ')} changed`
-        throw refusal('change-failed', `the plugin manager did not turn ${rowOf(info).id} ${enabled ? 'on' : 'off'}: ${result.application}${result.error === undefined ? '' : ` ${JSON.stringify(result.error)}`}${done}`)
+        refuse('change-failed', `the plugin manager did not turn ${rowOf(info).id} ${enabled ? 'on' : 'off'}: ${result.application}${done}`, {
+          diagnostics: result.error === undefined ? [] : [JSON.stringify(result.error)],
+        })
       }
       changed.push({ id: rowOf(info).id, application: result.application })
     }
@@ -184,14 +238,16 @@ export function apply(ctx: Context): void {
   }
 
   async function remove(slug: string): Promise<{ slug: string, application: ChangeResult['application'] }> {
-    if (slug === widgetSlugs[0] || await records.builtInSlug(slug)) throw refusal('built-in', `${slug} is a built-in widget; only an agent widget can be removed`)
+    if (slug === widgetSlugs[0] || await records.builtInSlug(slug)) refuse('built-in', `${slug} is a built-in widget; only an agent widget can be removed`)
     const installer = ctx.get('widgetInstaller')
-    if (installer === undefined) throw refusal('unavailable', 'this host has no widget installer')
+    if (installer === undefined) refuse('unavailable', 'this host has no widget installer')
     try {
       return await installer.remove(slug)
     } catch (error) {
-      const code = (error as { code?: unknown }).code
-      throw typeof code === 'string' && error instanceof Error ? refusal(code, error.message) : error
+      // An expected failure of the installer keeps its code, diagnostics, and next step (`widget_remove` gives the same).
+      const failed = creationError(error)
+      if (failed === undefined) throw error
+      return refuse(failed.code, failed.message, { diagnostics: failed.diagnostics, ...(failed.nextStep === undefined ? {} : { nextStep: failed.nextStep }) })
     }
   }
 
@@ -207,15 +263,15 @@ export function apply(ctx: Context): void {
         name: 'program',
         kind: 'query',
         args: slugInput,
-        handler: ({ slug }) => records.asHost(async () => {
+        handler: ({ slug }) => records.asHost(() => answer(async () => {
           const program = slug === widgetSlugs[0] ? undefined : await records.programRecord(slug)
-          if (program === undefined) throw refusal('unknown-widget', `no stored program for ${JSON.stringify(slug)}`)
+          if (program === undefined) return refuse('unknown-widget', `no stored program for ${JSON.stringify(slug)}`)
           return { slug, rev: program.rev, text: program.text }
-        }),
+        })),
       },
-      { name: 'turnOff', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => setEnabled(slug, false)) },
-      { name: 'turnOn', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => setEnabled(slug, true)) },
-      { name: 'remove', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => remove(slug)) },
+      { name: 'turnOff', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => answer(() => setEnabled(slug, false))) },
+      { name: 'turnOn', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => answer(() => setEnabled(slug, true))) },
+      { name: 'remove', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => answer(() => remove(slug))) },
     ],
   })
 }

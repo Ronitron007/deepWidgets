@@ -43,6 +43,8 @@ import type { CallToolResult, StandardSchemaWithJSON } from '@modelcontextprotoc
 import { z } from 'zod'
 import { CreationError, templateFiles, widgetTypesText, WidgetInstaller } from './creation.ts'
 import type { CreationErrorCode, GateName, InstallOutcome, PageState } from './creation.ts'
+
+export type { CreationErrorCode } from './creation.ts'
 import { fenceCount, fenceFindings } from './page-gate.ts'
 import type { RenderCheck, RenderCheckRequest, RenderCheckResult } from './page-gate.ts'
 

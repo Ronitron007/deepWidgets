@@ -224,7 +224,7 @@ async function offAndOn(slug, rowId) {
   const offRow = offRows.get(slug)
   const listed = (await fetch(`${base}/api/widgets`, { headers: { cookie } }).then((answer) => answer.json())).widgets.map((widget) => widget.slug)
   check(`${slug}: Turn off keeps the row in the query with the status turned-off and the same state`,
-    off.body?.ok === true && offRow?.status?.kind === 'turned-off' && JSON.stringify(offRow.state) === JSON.stringify(before?.state)
+    off.body?.ok === true && off.body.result?.ok === true && offRow?.status?.kind === 'turned-off' && JSON.stringify(offRow.state) === JSON.stringify(before?.state)
       && offRow.rows?.length === 1 && offRow.rows[0].id === rowId && offRow.rows[0].enabled === false && !listed.includes(slug),
     JSON.stringify({ off: off.body, row: offRow, before: before?.state, listed }))
   check(`${slug}: a widget that is turned off has no title, catalog, actions, or window`,
@@ -234,7 +234,7 @@ async function offAndOn(slug, rowId) {
   const onRows = await waitRows((rows) => rows.get(slug)?.status?.kind === 'live')
   const onRow = onRows.get(slug)
   check(`${slug}: Turn on brings back the widget with the same state`,
-    on.body?.ok === true && onRow?.status?.kind === 'live' && JSON.stringify(onRow.state) === JSON.stringify(before?.state) && onRow.rows?.[0]?.enabled === true,
+    on.body?.ok === true && on.body.result?.ok === true && onRow?.status?.kind === 'live' && JSON.stringify(onRow.state) === JSON.stringify(before?.state) && onRow.rows?.[0]?.enabled === true,
     JSON.stringify({ on: on.body, row: onRow?.status, state: onRow?.state, before: before?.state }))
 }
 
@@ -298,26 +298,30 @@ async function hostPart() {
   const testProblems = liveFields(rows.get(SLUG), { title: 'Main Check', agent: true, rowId: `deepwidgets-agent-${SLUG}`, packageName: `deepwidgets-agent-${SLUG}`, source: dir })
   check('the query of main lists the test widget with each field', testProblems.length === 0 && rows.get(SLUG)?.state?.data?.count === 3, `${testProblems.join('; ')} ${JSON.stringify(rows.get(SLUG))}`)
   const text = await route('main', 'program', { slug: 'sample' })
-  check('the query program of main gives the program text of sample', text.body?.ok === true && typeof text.body.result?.text === 'string' && text.body.result.text.includes('Card') && text.body.result.rev === rows.get('sample')?.program?.rev,
+  check('the query program of main gives the program text of sample', text.body?.ok === true && text.body.result?.ok === true && typeof text.body.result.text === 'string' && text.body.result.text.includes('Card') && text.body.result.rev === rows.get('sample')?.program?.rev,
     JSON.stringify(text.body).slice(0, 300))
 
   // ---- Turn off and Turn on ----
   await offAndOn('sample', 'deepwidgets-widget-sample')
   await offAndOn(SLUG, `deepwidgets-agent-${SLUG}`)
   const offMain = await route('main', 'turnOff', { slug: 'main' })
-  check('Turn off refuses main', offMain.body?.ok === false && offMain.body.error?.code === 'handler-error', JSON.stringify(offMain.body))
+  // main_widget.widgets: a refusal is the result of the action, with a code, not a handler-error with a code in its message.
+  check('Turn off refuses main with the code unknown-widget', offMain.body?.ok === true && offMain.body.result?.ok === false && offMain.body.result.code === 'unknown-widget', JSON.stringify(offMain.body))
 
   // ---- Remove ----
   const before = (await mainRows()).get(SLUG)?.state
   const refused = await route('main', 'remove', { slug: 'sample' })
   const sampleAfter = (await mainRows()).get('sample')
-  check('Remove refuses sample, and sample stays live', refused.body?.ok === false && refused.body.error?.code === 'handler-error' && String(refused.body.error?.message).includes('built-in') && sampleAfter?.status?.kind === 'live',
+  check('Remove refuses sample with the code built-in, and sample stays live', refused.body?.ok === true && refused.body.result?.ok === false && refused.body.result.code === 'built-in' && sampleAfter?.status?.kind === 'live',
     JSON.stringify({ refused: refused.body, sample: sampleAfter?.status }))
+  const none = await route('main', 'remove', { slug: 'no-such-widget' })
+  check('Remove of a slug with no agent bundle gives the code of the installer and its diagnostics', none.body?.ok === true && none.body.result?.ok === false && none.body.result.code === 'not-installed' && Array.isArray(none.body.result.diagnostics),
+    JSON.stringify(none.body))
   const removed = await route('main', 'remove', { slug: SLUG })
   const afterRows = await waitRows((items) => !items.has(SLUG))
   const stored = await inHost("return await loader.ctx.get('widgetRecords').stateRecord(arg)", SLUG)
   const listedAfter = (await call('widget_list')).body?.widgets?.map((widget) => widget.slug) ?? []
-  check('Remove removes the test widget', removed.body?.ok === true && removed.body.result?.application === 'applied' && !afterRows.has(SLUG) && !listedAfter.includes(SLUG),
+  check('Remove removes the test widget', removed.body?.ok === true && removed.body.result?.ok === true && removed.body.result.application === 'applied' && !afterRows.has(SLUG) && !listedAfter.includes(SLUG),
     JSON.stringify({ removed: removed.body, rows: [...afterRows.keys()], listed: listedAfter }))
   check('Remove keeps the state of the test widget in storage', stored !== undefined && JSON.stringify(stored) === JSON.stringify(before) && stored?.data?.count === 3, JSON.stringify({ stored, before }))
 
