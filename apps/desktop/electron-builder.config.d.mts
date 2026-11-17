@@ -19,12 +19,16 @@ export interface DesktopElectronBuilderConfig {
   readonly extraResources: readonly [
     { readonly from: string, readonly to: 'runtime' },
     { readonly from: string, readonly to: 'icon.png' },
-    ...{ readonly from: string, readonly to: 'tray.ico' }[],
+    // deepwidgets-trim: main_widget.menu_bar. Also the macOS template images of the menu bar icon.
+    // ...{ readonly from: string, readonly to: 'tray.ico' }[],
+    ...{ readonly from: string, readonly to: 'tray.ico' | 'trayTemplate.png' | 'trayTemplate@2x.png' }[],
   ]
   readonly mac: {
     readonly extendInfo: {
       readonly CFBundleLocalizations: readonly string[]
       readonly NSMicrophoneUsageDescription: string
+      // deepwidgets-trim: main_widget.menu_bar. An accessory app with no Dock icon; added line.
+      readonly LSUIElement: true
     }
     readonly entitlements: string
     readonly entitlementsInherit: string
