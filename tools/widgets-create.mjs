@@ -380,7 +380,9 @@ async function hostPart() {
   await startHost(port)
   client = await connect(base)
   try {
-    check('after a host restart the agent widget loads at start with its state', (await slugs()).includes(SLUG) && (await call('widget_call', { slug: SLUG, action: 'get' })).body?.result?.count === 6, JSON.stringify(await slugs()))
+    const restarted = await slugs()
+    const restartedGet = await call('widget_call', { slug: SLUG, action: 'get' })
+    check('after a host restart the agent widget loads at start with its state', restarted.includes(SLUG) && restartedGet.body?.result?.count === 6, JSON.stringify([restarted, restartedGet.body]))
 
     // An unhandled rejection in an agent widget ends the host. The test run gate skips the action: its args refuse {}.
     const crashSlug = 'create-crash'
