@@ -297,10 +297,11 @@ async function hostPart() {
 
     // A second install of the slug: a new action and a new seed program. The state stays.
     const replaced = await call('widget_install', { dir: writeWidget(`${SLUG}-v2`, files, (text) => addAction("{ name: 'double', kind: 'mutation', handler: (_args, w) => w.update((state) => ({ count: state.count * 2 })) }")(text).replace('"A counter"', '"A counter v2"')) })
-    const replacedActions = (await call('widget_describe', { slug: SLUG })).body?.actions?.map((action) => action.name) ?? []
+    const replacedDescribe = await call('widget_describe', { slug: SLUG })
+    const replacedActions = replacedDescribe.body?.actions?.map((action) => action.name) ?? []
     const afterReplace = await call('widget_call', { slug: SLUG, action: 'get' })
     check('a second install of the slug replaces the bundle; the state stays', !replaced.isError && replaced.body?.replaced === true && replacedActions.includes('double') && afterReplace.body?.result?.count === 2,
-      `${JSON.stringify(replaced.body)} actions=${JSON.stringify(replacedActions)} count=${String(afterReplace.body?.result?.count)}`)
+      `${JSON.stringify(replaced.body)} actions=${JSON.stringify(replacedDescribe.body?.error ?? replacedActions)} count=${JSON.stringify(afterReplace.body)}`)
     check('the replace sets the new seed program', replaced.body?.programUpdated === true, JSON.stringify(replaced.body?.error ?? replaced.body?.programUpdated))
 
     // widget_reload reads the folder of the last install again.
@@ -312,10 +313,11 @@ async function hostPart() {
     // A reinstall that passes the gates (the stand-in widgets service of the test run has no
     // setProgram) and throws in the host. The old bundle comes back with its actions and state.
     const broken = await call('widget_install', { dir: writeWidget(`${SLUG}-broken`, files, (text) => addAction("{ name: 'broken', kind: 'query', handler: () => 0 }")(addToApply("if ('setProgram' in ctx.widgets) throw new Error('host only failure')")(text))) })
-    const rolledActions = (await call('widget_describe', { slug: SLUG })).body?.actions?.map((action) => action.name) ?? []
+    const rolledDescribe = await call('widget_describe', { slug: SLUG })
+    const rolledActions = rolledDescribe.body?.actions?.map((action) => action.name) ?? []
     const rolledState = await call('widget_call', { slug: SLUG, action: 'get' })
     check('a reinstall that fails in the host is rolled back: the old actions and the state stay', broken.isError && broken.body?.error?.code === 'install-failed' && rolledActions.includes('triple') && !rolledActions.includes('broken') && rolledState.body?.result?.count === 6,
-      `actions=${JSON.stringify(rolledActions)} state=${JSON.stringify(rolledState.body)} install=${JSON.stringify(broken.body)}`)
+      `actions=${JSON.stringify(rolledDescribe.body?.error ?? rolledActions)} state=${JSON.stringify(rolledState.body)} install=${JSON.stringify(broken.body)}`)
 
     const timer = await call('widget_install', { dir: writeWidget('create-timer', files, (text) => addToApply("setTimeout(() => { ctx.logger.info('tick') }, 10)")(text).replaceAll(`'${SLUG}'`, "'create-timer'")) })
     const timerError = timer.body?.error
