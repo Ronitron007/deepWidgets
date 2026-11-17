@@ -209,6 +209,22 @@ The operator set these items for iterations after v1 on 2026-10-27.
 | `standing.later.build_checks` | Checks at build time for each widget bundle. |
 | `standing.later.metrics` | Performance metrics for each plugin. They show when to stop a plugin, or when to tell the user to change its code. |
 
+## Deferred by the operator `standing.deferred`
+
+Each item waits for a later decision of the operator. This list is the one place to look. Add an item when the operator defers something, and remove it when a spec takes it.
+
+| Item | State | Detail |
+|---|---|---|
+| `deferred.run_exclusive_limit` | Parked on 2026-11-10 until the whole system is designed. Not built. | `safe_host.hmr` still names a 5 s limit on `runExclusive`. The disposer limit of 5 s is built (#94). |
+| `deferred.kit_pins_security` | Deferred on 2026-11-17: may a security fix force the rebuild of a pinned widget? | `kit_spike.pin`, and the unit `kit.pins` of `agent_library.later` |
+| `deferred.mcp_consent` | Deferred: the consent server, the consent dialog, the agents list, and the bridge | `docs/specs/mcp-consent.md`. The work so far is in the worktree `.worktrees/rohan-mcp-consent-server`. |
+| `deferred.host_handover` | Recorded only: a new host starts while the old host stops, with fencing tokens | `docs/explore/widget-system/host-handover.md` |
+| `deferred.packaged_log_file` | Open: the packaged app has no terminal, so its host log has no reader | PR #118 prints the host log to stdout only. No maintained package writes a Cordis log file. |
+| `deferred.window_position` | Open: a reinstall closes the window of a widget and opens a new one at the default place | A replace sends `removed`, then `added` (`widget_fv.replace`). This was so before the agent library. |
+| `deferred.channels_push` | Later (2026-11-10): push to Claude Code through channels | `standing.design.agent` |
+| `deferred.mcp_prompts` | Not now (2026-11-10): MCP prompts as `/` shortcuts for the operator | `modes.later` |
+| `deferred.stylesheet_rules` | Decided in the free hour of 2026-11-16, open to the operator: `@plugin`, `@config`, and a PostCSS or Tailwind config file still refuse | `agent_library.fence_warn` |
+
 ## Hard problems that stay open `standing.hard`
 
 | Name | Problem | Best option now |
