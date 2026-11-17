@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useRef, useState, type ComponentType, type MutableRefObject, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ACTION_STEPS, Renderer, useRendererQuery, useTriggerAction, type OpenUIError, type RendererProps } from '@openuidev/react-lang'
-import { openChannel, type StreamState, type WidgetChannel } from './channel.ts'
+import { NoAnswerError, openChannel, type StreamState, type WidgetChannel } from './channel.ts'
 
 /** The props of `<Renderer.Root>` that the core makes. The child adds `library` and puts `children` inside. */
 export type RootProps = Required<Pick<RendererProps, 'response' | 'toolProvider' | 'queryLoader' | 'onParseResult' | 'onError' | 'onAction'>>
@@ -150,9 +150,9 @@ function Core({ env }: { env: Env }) {
       setLoad((current) => (current.status === 'removed' ? current : { status: 'ready', text: answer.text }))
     } catch (error) {
       // main_widget.panel: the panel loads its page from disk, also before the Host is ready. A load that started before
-      // the first `hello` and got no answer (a network error) keeps the loading state. When the `hello` came during the
+      // the first `hello` and got no answer (NoAnswerError) keeps the loading state. When the `hello` came during the
       // load, the Host is ready now, so the page loads again at once. Else the first `hello` loads the program again.
-      if (error instanceof TypeError && !hostSeen) {
+      if (error instanceof NoAnswerError && !hostSeen) {
         record('program-wait')
         if (helloRef.current) void loadProgram()
         else waitingRef.current = true
