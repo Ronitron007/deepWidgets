@@ -60,7 +60,7 @@ Class-side symbol keys: `Service.init`, `Service.check`, `Service.config`, `Serv
 5. Unload waits until no dependent still holds a provided service, then runs the collected disposers. They start in **reverse registration order** but are not chained (an async disposer does not hold back the next); unload awaits all of them and logs their errors. A `ctx.provide` disposer unregisters its service here.
 6. The fiber releases the services it required, state goes to `DISPOSED` (`internal/status`), and `fiber.dispose()` settles.
 
-Related: `fiber.restart()` disposes and reloads with current config; `fiber.update(config, noSave?)` validates new config, runs the `internal/update` waterfall (update hooks / HMR can veto), then restarts.
+Related: `fiber.restart()` is not a dispose: it unloads and reloads with current config, and keeps `uid` (on a disposed fiber it throws `INACTIVE_EFFECT`); `fiber.update(config, noSave?)` validates new config, runs the `internal/update` waterfall (update hooks / HMR can veto), then restarts.
 
 ## Event dispatch cheat sheet
 
