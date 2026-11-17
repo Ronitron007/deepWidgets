@@ -46,8 +46,8 @@
  *   template, and an example child with the catalog <slug>@1 and an example library that extends the shell library;
  * - a bundle from widget_template and library_template, with only catalog set in src/index.ts, passes each gate;
  * - with { "modes": { "library": false } }, library_template, widget_install of a bundle with page/, and widget_reload
- *   of a slug with page/ return mode-off with the mode library. A bundle with no page/ installs, and the installed page
- *   keeps its page link.
+ *   of a slug with page/ return mode-off with the mode library. So does an install whose page/ comes during the host
+ *   gates. A bundle with no page/ installs, and the installed page keeps its page link.
  * Allowed set (agent_library.fence_warn), before the host starts: allowedFolders follows the development dependencies
  * of the shell and the kit only, so it does not hold a workspace package that only the theme names as one.
  * Window part: it runs tools/smoke-desktop.mjs with DSH_SMOKE_CREATE set to a bundle with a good page and
@@ -65,7 +65,7 @@
  */
 import { spawn } from 'node:child_process'
 import { createHmac, randomBytes } from 'node:crypto'
-import { cpSync, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
@@ -777,6 +777,11 @@ async function libraryPart(call, slugs) {
   const link = linkTarget(pageDir)
 
   const otherDir = await libraryBundle(call, `${LIBRARY_SLUG}-off`, join(work, 'agent', `${LIBRARY_SLUG}-off`), { catalog: true })
+  // The bundle of the race: its page/ waits aside, and comes into the folder while the host gates of the install run.
+  const raceSlug = `${LIBRARY_SLUG}-race`
+  const raceDir = await libraryBundle(call, raceSlug, join(work, 'agent', raceSlug), { catalog: true })
+  const racePage = join(work, 'race-page')
+  renameSync(join(raceDir, 'page'), racePage)
   // The bundles of the window part: one with no catalog (wrong-catalog), and one whose program uses the example Note.
   libraryWindow.wrong = await libraryBundle(call, `${LIBRARY_SLUG}-wrong`, join(work, 'agent', `${LIBRARY_SLUG}-wrong`))
   libraryWindow.note = await libraryBundle(call, `${LIBRARY_SLUG}-note`, join(work, 'agent', `${LIBRARY_SLUG}-note`), {
@@ -804,6 +809,20 @@ async function libraryPart(call, slugs) {
       refusal.isError && error?.code === 'mode-off' && error.mode === 'library' && error.setting === 'modes.library' && error.settingsFile === settingsFile && error.message.includes('modes.library'),
       JSON.stringify(refusal.body))
   }
+  // The race: the folder has no page/ when the call comes, and page/ comes 400 ms later, while the host gates run. The
+  // one look at page/ after the host gates finds it, and the switch refuses it.
+  const racing = call('widget_install', { dir: raceDir })
+  await new Promise((done) => { setTimeout(done, 400) })
+  renameSync(racePage, join(raceDir, 'page'))
+  const wroteAt = Date.now()
+  const race = await racing
+  const answeredAt = Date.now()
+  const raceError = race.body?.error
+  const raceLink = join(profileDir, 'deepwidgets-widgets', raceSlug, 'page')
+  check('with library off, a page/ written 400 ms after widget_install, while the host gates run, gives mode-off with the mode library, and no page link',
+    answeredAt > wroteAt && race.isError && raceError?.code === 'mode-off' && raceError.mode === 'library' && raceError.setting === 'modes.library' && raceError.settingsFile === settingsFile
+      && linkTarget(raceLink) === null && !(await slugs()).includes(raceSlug),
+    JSON.stringify({ answerMs: answeredAt - wroteAt, body: race.body, link: linkTarget(raceLink) }))
   check('with library off, the refused page installs change no widget, and the installed page keeps its page link',
     !(await slugs()).includes(`${LIBRARY_SLUG}-off`) && (await slugs()).includes(LIBRARY_SLUG) && linkTarget(pageDir) === link && link !== null,
     JSON.stringify({ slugs: await slugs(), link, now: linkTarget(pageDir) }))

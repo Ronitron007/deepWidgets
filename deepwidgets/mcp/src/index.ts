@@ -27,7 +27,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createRequire } from 'node:module'
-import { dirname, isAbsolute, join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
@@ -46,7 +46,7 @@ import type { CreationErrorCode, GateName, InstallOutcome, PageState } from './c
 
 export type { CreationErrorCode } from './creation.ts'
 import { LIBRARY_GUIDE } from './library-guide.ts'
-import { fenceCount, fenceFindings, hasPage } from './page-gate.ts'
+import { fenceCount, fenceFindings } from './page-gate.ts'
 import type { RenderCheck, RenderCheckRequest, RenderCheckResult } from './page-gate.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -189,6 +189,14 @@ async function readSettings(file: string): Promise<Settings> {
   const checked = settingsSchema.safeParse(parsed)
   if (!checked.success) return { on: allOn, error: `the settings file does not match { "modes": { "create": true, "library": true } }: ${z.prettifyError(checked.error)}` }
   return { on: { create: checked.data.modes?.create ?? true, library: checked.data.modes?.library ?? true } }
+}
+
+/** A call that a mode that is off refuses after it started, such as an install that found `page/` (`agent_library.guide.mode`). */
+class ModeOffError extends Error {
+  constructor(readonly mode: GatedMode) {
+    super(`the mode ${mode} is off`)
+    this.name = 'ModeOffError'
+  }
 }
 
 /** The guide of the mode `interact` (`modes.guide`): the rules that the server instructions held before the modes. */
@@ -600,6 +608,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
 
   /** The answer of a failed tool call. A runtime error keeps its code; any other error is `internal-error`. */
   function failure(error: unknown): CallToolResult {
+    if (error instanceof ModeOffError) return modeOff(error.mode)
     if (isWidgetError(error)) return toolError(error.code, error.message, { rev: error.rev })
     if (error instanceof CreationError) return toolError(error.code, error.message, { gate: error.gate, diagnostics: error.diagnostics, nextStep: error.nextStep })
     ctx.logger.warn('mcp: a tool failed', error)
@@ -623,23 +632,14 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
 
   /**
    * Parse the tool input with `schema`, then run the tool body through {@link guarded}. With `mode`, the call first
-   * reads the settings file and does nothing when that mode is off (`modes.refusal`). With `page`, the call also
-   * does nothing when the folder that `page` gives has `page/` and the mode `library` is off (`agent_library.guide.mode`).
+   * reads the settings file and does nothing when that mode is off (`modes.refusal`).
    */
-  function tool<S extends z.ZodType>(schema: S, run: (input: z.infer<S>) => Record<string, unknown> | Promise<Record<string, unknown>>, options: { mode?: GatedMode, page?: (input: z.infer<S>) => string | undefined | Promise<string | undefined>, invalidNextStep?: string } = {}): (input: unknown) => Promise<CallToolResult> {
+  function tool<S extends z.ZodType>(schema: S, run: (input: z.infer<S>) => Record<string, unknown> | Promise<Record<string, unknown>>, options: { mode?: GatedMode, invalidNextStep?: string } = {}): (input: unknown) => Promise<CallToolResult> {
     return async (input) => {
-      const { mode, page } = options
+      const { mode } = options
       if (mode !== undefined && !(await readSettings(settingsFile)).on[mode]) return modeOff(mode)
       const parsed = schema.safeParse(input ?? {})
       if (!parsed.success) return toolError('invalid-args', z.prettifyError(parsed.error), { nextStep: options.invalidNextStep })
-      if (page !== undefined) {
-        try {
-          const dir = await page(parsed.data)
-          if (dir !== undefined && isAbsolute(dir) && await hasPage(dir) && !(await readSettings(settingsFile)).on.library) return modeOff('library')
-        } catch (error) {
-          return failure(error)
-        }
-      }
       return guarded(() => run(parsed.data))
     }
   }
@@ -749,12 +749,12 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     mcp.registerTool('widget_install', {
       description: 'Install the widget in a folder (absolute path, with src/index.ts). The gates compile, lint, type-check, and test-run the code first; code that fails a gate is not installed. A folder with page/ also runs the page gates: the fixed files, the type check, the build, and the render check. A page that imports or uses a file outside page/ installs with a warning. A second install of the same slug replaces the bundle; the state stays.',
       inputSchema: lenient(installInput),
-    }, tool(installInput, async ({ dir }) => withNextStep(logFence(await creator().install(dir)), 'Call widget_describe with the slug, then widget_call each action to check it.'), { mode: 'create', page: ({ dir }) => dir }))
+    }, tool(installInput, async ({ dir }) => withNextStep(logFence(await creator().install(dir)), 'Call widget_describe with the slug, then widget_call each action to check it.'), { mode: 'create' }))
 
     mcp.registerTool('widget_reload', {
       description: 'Run the gates again on the folder that the widget was installed from, and replace the bundle. Use it after you edit the files. The state stays.',
       inputSchema: lenient(slugInput),
-    }, tool(slugInput, async ({ slug }) => withNextStep(logFence(await creator().reload(slug)), 'Call widget_describe with the slug, then widget_call the changed actions.'), { mode: 'create', page: ({ slug }) => installer?.source(slug) }))
+    }, tool(slugInput, async ({ slug }) => withNextStep(logFence(await creator().reload(slug)), 'Call widget_describe with the slug, then widget_call the changed actions.'), { mode: 'create' }))
 
     mcp.registerTool('widget_remove', {
       description: 'Remove the bundle of a widget that widget_install installed. Its window closes. The state stays, so a later install of the slug gets it back.',
@@ -822,6 +822,11 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
           ctx.logger.warn('mcp: Electron main did not get the page state of the widgets', error)
         })
       } : undefined,
+      // agent_library.guide.mode: the installer asks at its one look at page/, so a page/ written during the host
+      // gates can not pass the switch.
+      checkPageMode: async () => {
+        if (!(await readSettings(settingsFile)).on.library) throw new ModeOffError('library')
+      },
     })
     new WidgetInstallerService(inner, installer)
     inner.effect(() => () => { installer = undefined }, 'mcp: the widget installer')

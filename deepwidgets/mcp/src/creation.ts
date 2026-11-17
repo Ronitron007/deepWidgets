@@ -172,6 +172,11 @@ export interface CreationServices {
    * (`agent_library.serving.changes`). Undefined in a CLI host. It must not throw.
    */
   readonly onPages?: ((state: PageState) => void) | undefined
+  /**
+   * agent_library.guide.mode: runs when the bundle has `page/`, before the page gates. The same look at `page/` decides
+   * both, so a `page/` that comes during the host gates can not pass a switch that is off. It throws to refuse the page.
+   */
+  readonly checkPageMode?: (() => Promise<void>) | undefined
 }
 
 /** Where the tools of the gates are. They resolve from this package, not from a working folder. */
@@ -468,9 +473,10 @@ export interface PageRoots {
 /**
  * Run the three gates on `dir/src/index.ts`, then the page gates when `dir` has `page/`. The first failed gate stops
  * the run. `renderCheck` runs the render check of the page; without it, that check is skipped with a warning.
+ * `checkPageMode` runs when `dir` has `page/`, before the page gates, and its error stops the run.
  * @throws {CreationError} `bad-source` when the folder has no `src/index.ts`.
  */
-export async function runGates(dir: string, pages: PageRoots, renderCheck?: RenderCheck): Promise<GatesOutcome> {
+export async function runGates(dir: string, pages: PageRoots, renderCheck?: RenderCheck, checkPageMode?: () => Promise<void>): Promise<GatesOutcome> {
   const staging = await stage(dir)
   try {
     const configs = await writeConfigs(staging)
@@ -487,6 +493,8 @@ export async function runGates(dir: string, pages: PageRoots, renderCheck?: Rend
     gates.push(relativize(report, staging))
     if (widget === undefined) return { gates }
     if (!await hasPage(dir)) return { gates, code, widget }
+    // agent_library.guide.mode: the look above decides the switch and the page gates.
+    await checkPageMode?.()
     const t = tools()
     const page = await runPageGates(dir, { slug: widget.slug, program: widget.program, catalog: widget.catalog, answers }, { oxlint: t.oxlint, tsgolint: t.tsgolint }, renderCheck,
       { slugDir: pages.slugDir(widget.slug), stagingRoot: pages.stagingRoot })
@@ -921,7 +929,7 @@ export class WidgetInstaller {
 
   private async installNow(dir: string, expected: string | undefined): Promise<InstallOutcome> {
     const pages: PageRoots = { slugDir: (slug) => this.folderOf(slug), stagingRoot: join(this.root, PAGE_STAGING) }
-    const outcome = await runGates(dir, pages, this.services.renderCheck)
+    const outcome = await runGates(dir, pages, this.services.renderCheck, this.services.checkPageMode)
     try {
       return await this.installGated(dir, expected, outcome)
     } catch (error) {
