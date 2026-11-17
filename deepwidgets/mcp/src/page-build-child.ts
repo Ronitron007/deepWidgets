@@ -1,8 +1,9 @@
 /**
  * The child of the build gate of a widget page (`agent_library.build_gate.gates`). It builds the staging copy of
- * `page/` with one Vite config: React, Tailwind, the target of the shell, and the `base` of the slug. The plugin
- * `importFence` refuses each import of a page file that is not on the allowed list. `outputFence` refuses the build
- * when any file that went into the page is outside `page/` and outside the allowed packages. Before the build,
+ * `page/` with one Vite config: React, Tailwind, the target of the shell, and the `base` of the slug. The fences report
+ * and do not refuse (`agent_library.fence_warn`): `importFence` gives a warning for each import of a page file that is
+ * not on the allowed list, and `outputFence` gives a warning for each file that went into the page from outside `page/`
+ * and outside the allowed packages. The build goes on, and the warnings go into the report. Before the build,
  * `stylesheetProblems` refuses config files, `@plugin`, and `@config`, and the inline PostCSS config means that Vite
  * loads no PostCSS config file of the page. The build runs in its own process, so a long synchronous step of
  * Rollup or Tailwind does not hold the host.
@@ -16,7 +17,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { readdir, readFile, realpath } from 'node:fs/promises'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { build, type Plugin } from 'vite'
@@ -45,9 +46,22 @@ export interface PageBuildJob {
 export interface PageBuildReport {
   ok: boolean
   diagnostics: string[]
+  /** The findings of the import fence and the output fence. They do not stop the build. */
+  warnings: string[]
 }
 
 const MAX_DIAGNOSTICS = 20
+
+/**
+ * The findings of the two fences, in the order of the build. `files` holds the real path of each file that a warning
+ * names already, so the output fence does not name a file of the import fence again.
+ */
+export interface FenceFindings {
+  warnings: string[]
+  files: Set<string>
+}
+
+export const newFindings = (): FenceFindings => ({ warnings: [], files: new Set() })
 
 const out = (report: PageBuildReport): void => { process.stdout.write(`RESULT ${JSON.stringify(report)}\n`) }
 
@@ -57,9 +71,11 @@ const isBare = (source: string): boolean => !source.startsWith('.') && !source.s
 /**
  * The import fence of `agent_library.build_gate.gates`. It checks only the imports of the files of the page.
  * A page file may import an allowed package, or a file in the page folder. A package that the page imports
- * imports its own files and packages, and the fence does not check those.
+ * imports its own files and packages, and the fence does not check those. Each other import adds a warning to
+ * `findings` that names the page file and the import (`agent_library.fence_warn`), and the build goes on. A bare
+ * import of a package with no link in the staging `node_modules` does not resolve, so the build fails on it.
  */
-export function importFence(job: Pick<PageBuildJob, 'root' | 'allowed' | 'allowedPrefixes'>): Plugin {
+export function importFence(job: Pick<PageBuildJob, 'root' | 'allowed' | 'allowedPrefixes'>, findings: FenceFindings): Plugin {
   const root = job.root.endsWith(sep) ? job.root : job.root + sep
   const modules = join(root, 'node_modules') + sep
   const inPage = (file: string): boolean => file.startsWith(root) && !file.startsWith(modules)
@@ -73,6 +89,9 @@ export function importFence(job: Pick<PageBuildJob, 'root' | 'allowed' | 'allowe
     return job.allowedPrefixes.some((prefix) => source.startsWith(prefix) && source.length > prefix.length)
   }
   const name = (file: string): string => `page/${relative(root, file)}`
+  const warn = (text: string): void => {
+    if (!findings.warnings.includes(text)) findings.warnings.push(text)
+  }
   return {
     name: 'deepwidgets-import-fence',
     enforce: 'pre',
@@ -82,13 +101,16 @@ export function importFence(job: Pick<PageBuildJob, 'root' | 'allowed' | 'allowe
       if (!inPage(from)) return null
       if (isBare(source)) {
         if (allow(source)) return null
-        this.error(`${name(from)}: the import "${source}" is not on the list of allowed imports. A page may import only: ${list}, and files in page/.`)
+        warn(`${name(from)}: the import "${source}" is not on the list of allowed imports. A page may import only: ${list}, and files in page/.`)
+        return null
       }
       const resolved = await this.resolve(source, importer, { ...options, skipSelf: true })
       if (resolved === null) return null
       const file = resolved.id.split('?')[0] ?? resolved.id
       if (resolved.external !== false || !inPage(file)) {
-        this.error(`${name(from)}: the import "${source}" is outside the page folder. A page may import only: ${list}, and files in page/.`)
+        const real = isAbsolute(file) ? await realpath(file).catch(() => file) : file
+        findings.files.add(real)
+        warn(`${name(from)}: the import "${source}" reaches ${real}, outside the page folder. A page may import only: ${list}, and files in page/.`)
       }
       return resolved
     },
@@ -143,10 +165,14 @@ function packageFolder(from: string, name: string): string | undefined {
   return found === undefined ? undefined : realpathSync(found)
 }
 
+/** The packages whose development dependencies `allowedFolders` follows, by the name in their manifest. */
+const DEV_FOLLOWED = new Set(['@deepwidgets/shell', '@deepwidgets/widget-kit'])
+
 /**
  * The folders that a built page may read: the allowed packages, which the staging `node_modules` links, and the
- * packages that they depend on, at any depth. A workspace package (not in a `node_modules` folder) adds its
- * development dependencies too, because its stylesheets import Tailwind and the DSH token sheets.
+ * packages that they depend on, at any depth. Only `@deepwidgets/shell` and `@deepwidgets/widget-kit` add their
+ * development dependencies too (`agent_library.fence_warn`), because the stylesheet of the shell imports Tailwind and
+ * the DSH token sheets. Another package, also a workspace package, adds no development dependency.
  */
 export function allowedFolders(modules: string): string[] {
   const roots: string[] = []
@@ -164,7 +190,7 @@ export function allowedFolders(modules: string): string[] {
     } catch {
       return
     }
-    const fields = ['dependencies', 'peerDependencies', 'optionalDependencies', ...folder.split(sep).includes('node_modules') ? [] : ['devDependencies']]
+    const fields = ['dependencies', 'peerDependencies', 'optionalDependencies', ...DEV_FOLLOWED.has(String(manifest.name)) ? ['devDependencies'] : []]
     for (const field of fields) {
       const deps = manifest[field]
       if (typeof deps !== 'object' || deps === null) continue
@@ -208,12 +234,13 @@ export function recordReads(): Set<string> {
 }
 
 /**
- * The output fence of `agent_library.build_gate.gates`, the guard of the build. At the end of the build it collects
- * each file that went into the page: each module, each file that a plugin read (the stylesheet imports and the
- * inlined assets of Vite and Tailwind), and the source of each emitted asset. The build fails when the real path of a
- * file is outside `page/` and outside the folders of `allowedFolders`. A virtual module of Vite has no path.
+ * The output fence of `agent_library.build_gate.gates`. At the end of the build it collects each file that went into
+ * the page: each module, each file that a plugin read (the stylesheet imports and the inlined assets of Vite and
+ * Tailwind), and the source of each emitted asset. Each file whose real path is outside `page/` and outside the
+ * folders of `allowedFolders` adds a warning to `findings` that names it (`agent_library.fence_warn`), and the build
+ * goes on. The list stops at `MAX_DIAGNOSTICS` files, with a count of the rest. A virtual module of Vite has no path.
  */
-export function outputFence(job: Pick<PageBuildJob, 'root'>, allowed: () => string[], reads: Set<string>): Plugin {
+export function outputFence(job: Pick<PageBuildJob, 'root'>, allowed: () => string[], reads: Set<string>, findings: FenceFindings): Plugin {
   const root = realpathSync(job.root)
   // The staging folder holds the configs of the gates, such as the tsconfig that Vite reads for the page files.
   const staging = dirname(root)
@@ -241,12 +268,18 @@ export function outputFence(job: Pick<PageBuildJob, 'root'>, allowed: () => stri
         if (real === undefined || inside(real, staging) || folders.some((folder) => inside(real, folder))) continue
         // A resolver reads each package.json on the way up from a file, and the TypeScript transform reads the tsconfig
         // files of the shell pieces, so a plain read of one is allowed. A module or an asset that is such a file outside
-        // the page is refused. A limit: a page can inline such a file of a folder above it with `new URL`.
+        // the page gets a warning. A limit: a page can inline such a file of a folder above it with `new URL`.
         if (CONFIG_READ.test(basename(real)) && !used.has(file)) continue
+        // The import fence named this file already.
+        if (findings.files.has(real) || outside.includes(real)) continue
         outside.push(real)
       }
-      if (outside.length > 0) {
-        this.error(`the page reads ${String(outside.length)} file(s) outside the page folder: ${outside.slice(0, 5).join(', ')}. A page may use only files in page/ and the allowed packages.`)
+      for (const real of outside.slice(0, MAX_DIAGNOSTICS)) {
+        findings.files.add(real)
+        findings.warnings.push(`${real}: the page uses this file, outside the page folder. A page may use only files in page/ and the allowed packages.`)
+      }
+      if (outside.length > MAX_DIAGNOSTICS) {
+        findings.warnings.push(`the page uses ${String(outside.length - MAX_DIAGNOSTICS)} more file(s) outside the page folder.`)
       }
     },
   }
@@ -270,10 +303,11 @@ async function main(): Promise<void> {
   const root = job.root.endsWith(sep) ? job.root : job.root + sep
   const problems = await stylesheetProblems(job)
   if (problems.length > 0) {
-    out({ ok: false, diagnostics: problems.slice(0, MAX_DIAGNOSTICS) })
+    out({ ok: false, diagnostics: problems.slice(0, MAX_DIAGNOSTICS), warnings: [] })
     return
   }
   const reads = recordReads()
+  const findings = newFindings()
   try {
     await build({
       configFile: false,
@@ -284,19 +318,22 @@ async function main(): Promise<void> {
       envDir: job.emptyDir,
       publicDir: false,
       cacheDir: job.cacheDir,
-      plugins: [importFence(job), react(), tailwindcss(), outputFence(job, () => allowedFolders(job.modules), reads)],
+      plugins: [importFence(job, findings), react(), tailwindcss(), outputFence(job, () => allowedFolders(job.modules), reads, findings)],
       resolve: { dedupe: ['react', 'react-dom'] },
       // An inline config: Vite does not look for a PostCSS config file of the page.
       css: { postcss: {} },
       build: { outDir: job.outDir, emptyOutDir: true, target: 'chrome140', reportCompressedSize: false },
     })
-    out({ ok: true, diagnostics: [] })
+    out({ ok: true, diagnostics: [], warnings: findings.warnings })
   } catch (error) {
-    out({ ok: false, diagnostics: errorLines(error, root).slice(0, MAX_DIAGNOSTICS) })
+    out({ ok: false, diagnostics: errorLines(error, root).slice(0, MAX_DIAGNOSTICS), warnings: findings.warnings })
   }
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(`page-build-child: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`)
-  process.exit(2)
-})
+// The checks import this module for `allowedFolders`. Only the build process runs `main`.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+  main().catch((error: unknown) => {
+    process.stderr.write(`page-build-child: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`)
+    process.exit(2)
+  })
+}

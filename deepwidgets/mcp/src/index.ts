@@ -42,7 +42,8 @@ import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import type { CallToolResult, StandardSchemaWithJSON } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { CreationError, templateFiles, widgetTypesText, WidgetInstaller } from './creation.ts'
-import type { CreationErrorCode, GateName } from './creation.ts'
+import type { CreationErrorCode, GateName, InstallOutcome } from './creation.ts'
+import { fenceCount, fenceFindings } from './page-gate.ts'
 import type { RenderCheck, RenderCheckRequest, RenderCheckResult } from './page-gate.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -703,20 +704,38 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     }))
 
     mcp.registerTool('widget_install', {
-      description: 'Install the widget in a folder (absolute path, with src/index.ts). The gates compile, lint, type-check, and test-run the code first; code that fails a gate is not installed. A folder with page/ also runs the page gates: the fixed files, the type check, the build, and the render check. A second install of the same slug replaces the bundle; the state stays.',
+      description: 'Install the widget in a folder (absolute path, with src/index.ts). The gates compile, lint, type-check, and test-run the code first; code that fails a gate is not installed. A folder with page/ also runs the page gates: the fixed files, the type check, the build, and the render check. A page that imports or uses a file outside page/ installs with a warning. A second install of the same slug replaces the bundle; the state stays.',
       inputSchema: lenient(installInput),
-    }, tool(installInput, async ({ dir }) => ({ ...await creator().install(dir), nextStep: 'Call widget_describe with the slug, then widget_call each action to check it.' }), { mode: 'create' }))
+    }, tool(installInput, async ({ dir }) => ({ ...logFence(await creator().install(dir)), nextStep: 'Call widget_describe with the slug, then widget_call each action to check it.' }), { mode: 'create' }))
 
     mcp.registerTool('widget_reload', {
       description: 'Run the gates again on the folder that the widget was installed from, and replace the bundle. Use it after you edit the files. The state stays.',
       inputSchema: lenient(slugInput),
-    }, tool(slugInput, async ({ slug }) => ({ ...await creator().reload(slug), nextStep: 'Call widget_describe with the slug, then widget_call the changed actions.' }), { mode: 'create' }))
+    }, tool(slugInput, async ({ slug }) => ({ ...logFence(await creator().reload(slug)), nextStep: 'Call widget_describe with the slug, then widget_call the changed actions.' }), { mode: 'create' }))
 
     mcp.registerTool('widget_remove', {
       description: 'Remove the bundle of a widget that widget_install installed. Its window closes. The state stays, so a later install of the slug gets it back.',
       inputSchema: lenient(slugInput),
     }, tool(slugInput, async ({ slug }) => ({ ...await creator().remove(slug) }), { mode: 'create' }))
     return mcp
+  }
+
+  /**
+   * agent_library.fence_warn: one log line for an install whose page used an import or a file outside the fences.
+   * Each warning of the gate `page-build` is a fence warning. A warning of the output fence starts with the path of the
+   * file, and a warning of the import fence names the file that the import reaches, or the import.
+   */
+  function logFence(outcome: InstallOutcome): InstallOutcome {
+    const fence = outcome.gates.find((gate) => gate.gate === 'page-build')?.warnings ?? []
+    // The caps of the fences and of the gate add summary lines such as `3 more fence warning(s)`: the count is of findings.
+    const findings = fenceFindings(fence)
+    const count = fenceCount(fence)
+    if (count > 0) {
+      const path = (line: string): string => / reaches (.+?), outside the page folder/.exec(line)?.[1] ?? / the import (".+?")/.exec(line)?.[1] ?? line.split(': ')[0] ?? line
+      const first = findings.slice(0, 3).map(path).join(', ')
+      ctx.logger.warn(`mcp: the page of ${outcome.slug} installed with ${String(count)} fence warning(s): ${first}`)
+    }
+    return outcome
   }
 
   /** The installer, while the plugin manager and the profile are there (`widget_phase2.creation`). */
