@@ -233,6 +233,18 @@ When the mode is off:
 
 - For this, the shell exports its library as `@deepwidgets/shell/library`, and that import joins the allowed imports of a page.
 
+### The catalog of a page `agent_library.guide.catalog`
+
+- The example child of `library_template` has its own catalog id, `<slug>@1`. The example library extends the shell library, but the id names this new set, not `shadcn-widgets@1` (`main_widget.catalog`).
+
+- The widget sets the field `catalog` of its definition to the id of its child. The page guide tells the agent to set it. `widget_template` does not change, so its default stays `shadcn-widgets@1`.
+
+- The render check gives the core the catalog of the widget. When the child has another id, the core refuses the program, and the install fails with the code `wrong-catalog`. The next step tells the agent to set `catalog` in `src/index.ts` to the `CATALOG_ID` of `page/child.tsx`.
+
+- When an agent page fails and its window shows the shared shell with the notice, the shell refuses the program of that page. The notice already tells the user that the page failed.
+
+- This part needs the field `catalog` of unit `main.runtime`. Thus `library.guide` is stacked on that unit.
+
 ### The guide `agent_library.guide.text`
 
 `widget_guide` with the mode `library` gives the page guide. It holds these parts:
@@ -258,7 +270,8 @@ The page guide does not repeat the guide of the program language. It tells the a
 | The page work is the mode `library` | `modes.list` names `library` as a later mode, and each stage adds its own mode |
 | The mode has a setting, and the default is on | Page code runs in a window with no review, so the operator gets a switch. `modes.settings` makes a missing key mean on. |
 | A new tool `library_template`, not a change to `widget_template` | `modes.names`: a tool name starts with the area of its mode. The page files are about 2,100 characters with no example, and an agent with no page does not need them. |
-| The example library extends the shell library | The operator chose the shell pieces as a base for agent pages (2026-11-11). `standing.checked.component_extend` verified `library.extend`. With it, the template program renders with no change. |
+| The example library extends the shell library | The operator chose the shell pieces as a base for agent pages (2026-11-11). `standing.checked.component_extend` verified `library.extend`. With it, the template program renders when the widget sets `catalog`. |
+| A page has its own catalog id, and the render check compares it (2026-11-17) | `main_widget.catalog` makes one id name one set, and the main widget has its own id. Before this decision, the render check sent no catalog, so a wrong id passed each gate and failed only in the window, where no agent looks. |
 | The page guide is short and points at the create guide | The create guide is about 21,000 characters. A second copy doubles the cost. |
 
 ## Later `agent_library.later`
