@@ -81,7 +81,7 @@ let inspectPort = 0
 
 function check(name, ok, detail = '') {
   results.push({ name, ok: Boolean(ok) })
-  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail === '' ? '' : `: ${String(detail).slice(0, 600)}`}`)
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail === '' ? '' : `: ${String(detail).slice(0, 1200)}`}`)
 }
 
 function freePort() {
