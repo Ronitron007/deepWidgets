@@ -1666,7 +1666,20 @@ async function checkServing(slug, dir, tool, deadline) {
   failed = await step('after two crashes', (value) => value.url === failedUrl && value.origin === origin && value.catalog === 'shadcn-widgets@1'
     && typeof value.notice === 'string' && value.notice.includes('failed'))
   if (failed !== undefined) return failed
-  // The window keeps the notice until the page link changes: a new link loads the page again.
+  // The window keeps the notice until the page state changes. A new stamp of the slug, with no replace, must load the
+  // page again in the same window. Main gets the stamp the way the IPC message gives it, with only the stamp changed.
+  const before = await withWidgetWindows(deadline, windowId)
+  await withWidgetWindows(deadline, `function () {
+    const pages = new Map(this.pages.pages)
+    pages.set(${JSON.stringify(slug)}, pages.get(${JSON.stringify(slug)}) + '-smoke')
+    this.setPages({ root: this.pages.root, pages })
+    return true
+  }`)
+  failed = await step('page in the same window after the notice', onPage())
+  if (failed !== undefined) return failed
+  const after = await withWidgetWindows(deadline, windowId)
+  if (typeof before !== 'number' || after !== before) return `the page change after the notice used window ${String(after)}, not the window ${String(before)} that showed the notice`
+  // A new link from an install (a replace opens a new window) also shows the page.
   failed = await install('next after the notice', next) ?? await step('next page after the notice', onPage('next: '))
   if (failed !== undefined) return failed
   return await install('page at the end', dir) ?? await step('page at the end', onPage())
