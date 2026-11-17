@@ -4,16 +4,21 @@
  *
  * Its actions are the host half of the Widgets tab (`main_widget.widgets`): the query `widgets` lists each other widget,
  * also a widget that is turned off or that safe mode keeps off. The mutations `turnOff` and `turnOn` change the plugin
- * rows of a widget through the DSH plugin manager. The mutation `remove` removes an agent widget through the remove path
- * of `widget_remove` (the service `widgetInstaller` of `@deepwidgets/mcp`). The state of a widget stays in each case.
+ * rows of a widget through the DSH plugin manager, in the queue of the installer (the service `widgetInstaller` of
+ * `@deepwidgets/mcp`). The installer keeps a Turn off, so a later `widget_install` or `widget_reload` of the slug installs
+ * the new row off. The mutation `remove` removes an agent widget through the remove path of `widget_remove`. The state of
+ * a widget stays in each case.
  *
  * The plugin manager, the installer, and the install records are host code. The actions run them through
  * `widgetRecords.asHost`, so they run outside the store of this row: a crash in them is not blamed on this widget.
+ *
+ * An action that refuses gives a {@link MainRefusal} as its result, with a code, so the page routes by the code. Only a
+ * defect throws: the call then gives `handler-error`.
  * @module @deepwidgets/widget-main
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { ChangeResult, PluginInfo } from '@deepseek-ai/dsh-plugin-manager'
-import type {} from '@deepwidgets/mcp'
+import type { CreationErrorCode } from '@deepwidgets/mcp'
 import type { WidgetActionDescription, WidgetDescription } from '@deepwidgets/widgets'
 import { z } from 'zod'
 
@@ -88,14 +93,68 @@ export interface MainWidget {
   source?: string
   /** The plugin rows of the widget. An agent widget can have two during a replace (`widget_fv.replace`). */
   rows: MainWidgetRow[]
+  /**
+   * True when each plugin row of the widget is off. With the status `turned-off` it is always true. In safe mode, the
+   * status of an agent widget stays `safe-mode`, and this field shows the Turn off.
+   */
+  turnedOff?: true
   /** A live or failed widget has a widget window. `main.window_state` adds the hidden state. */
   window?: 'shown'
 }
 
 const slugInput = z.object({ slug: z.string() })
 
-/** A refusal of an action. The page shows the message; the code is its first word. */
-const refusal = (code: string, message: string): Error => new Error(`${code}: ${message}`)
+/** The code of a refusal of an action of `main`. The codes of the installer come from the remove path of `widget_remove`. */
+export type MainRefusalCode = 'unknown-widget' | 'built-in' | 'no-row' | 'unavailable' | 'change-failed' | CreationErrorCode
+
+/** A refusal of an action of `main`: the result of the action, so that the page routes by `code`, not by the message. */
+export interface MainRefusal {
+  ok: false
+  code: MainRefusalCode
+  message: string
+  /** The diagnostics of the plugin manager or of the installer, for example the output of pnpm. */
+  diagnostics?: string[]
+  /** What the operator can do next, from the installer. */
+  nextStep?: string
+}
+
+/** The answer of an action that can refuse. */
+export type MainAnswer<T> = ({ ok: true } & T) | MainRefusal
+
+/** Carries a refusal from the body of an action to {@link answer}. */
+class Refused extends Error {
+  constructor(readonly refusal: MainRefusal) {
+    super(refusal.message)
+    this.name = 'MainRefused'
+  }
+}
+
+function refuse(code: MainRefusalCode, message: string, extra: { diagnostics?: string[], nextStep?: string } = {}): never {
+  throw new Refused({ ok: false, code, message, ...extra })
+}
+
+/** Run the body of an action. A refusal becomes the result. Any other error is a defect and stays an error. */
+async function answer<T extends object>(body: () => Promise<T>): Promise<MainAnswer<T>> {
+  try {
+    return { ok: true, ...(await body()) }
+  } catch (error) {
+    if (error instanceof Refused) return error.refusal
+    throw error
+  }
+}
+
+/** The fields of a `CreationError` of `@deepwidgets/mcp`, read by shape: this package imports only its types. */
+function creationError(error: unknown): { code: CreationErrorCode, message: string, diagnostics: string[], nextStep: string | undefined } | undefined {
+  if (!(error instanceof Error) || error.name !== 'CreationError') return undefined
+  const { code, diagnostics, nextStep } = error as Error & { code?: unknown, diagnostics?: unknown, nextStep?: unknown }
+  if (typeof code !== 'string') return undefined
+  return {
+    code: code as CreationErrorCode,
+    message: error.message,
+    diagnostics: Array.isArray(diagnostics) ? diagnostics.filter((line): line is string => typeof line === 'string') : [],
+    nextStep: typeof nextStep === 'string' ? nextStep : undefined,
+  }
+}
 
 /** The slug that the row id of the entry `entryId` names, or undefined for a row that is not widget code. */
 function slugOfEntry(entryId: string): string | undefined {
@@ -132,28 +191,58 @@ export function apply(ctx: Context): void {
     }
   }
 
+  /**
+   * fanout_query_blocks_writes: the plugin rows and the source folders of the widgets, cached. `listPlugins` and the
+   * bundle list take 100 ms and more, so the query `widgets`, which runs after each change of a widget, does not read
+   * them each time. A change of the plugin manager or of a fiber state drops the cache, and so does a new set of
+   * listed slugs. A state write changes none of these.
+   */
+  let plugins: { key: string, value: Promise<{ rows: PluginInfo[], sources: Map<string, string> }> } | undefined
+  const forget = (): void => { plugins = undefined }
+  ctx.on('plugin-manager/changed', forget)
+  ctx.on('internal/status', forget)
+
+  function pluginSnapshot(listed: readonly string[]): Promise<{ rows: PluginInfo[], sources: Map<string, string> }> {
+    const key = [...listed].sort().join('\n')
+    if (plugins?.key === key) return plugins.value
+    const value = (async () => {
+      const rows = await widgetRows()
+      const slugs = new Set([...listed, ...rows.flatMap((info) => slugOfEntry(info.entryId) ?? [])])
+      const installer = ctx.get('widgetInstaller')
+      // widgets_query_cost: one read of the bundle list for each snapshot, not one for each slug.
+      const sources = installer === undefined ? new Map<string, string>() : await installer.sources([...slugs])
+      return { rows, sources }
+    })()
+    const entry = { key, value }
+    plugins = entry
+    // A failed read is not kept: the next query reads again.
+    value.catch(() => { if (plugins === entry) plugins = undefined })
+    return value
+  }
+
   async function describeAll(): Promise<MainWidget[]> {
-    const rows = await widgetRows()
     const listed = new Map(ctx.widgets.list().map((summary) => [summary.slug, summary]))
+    const { rows, sources } = await pluginSnapshot([...listed.keys()])
     const slugs = new Set([...listed.keys(), ...rows.flatMap((info) => slugOfEntry(info.entryId) ?? [])])
     slugs.delete(widgetSlugs[0])
-    const installer = ctx.get('widgetInstaller')
     const out: MainWidget[] = []
     for (const slug of [...slugs].sort()) {
       const summary = listed.get(slug)
       const own = rowsOfSlug(slug, rows)
+      const turnedOff = own.length > 0 && own.every((info) => !info.enabled)
       let status: MainWidgetStatus
       if (summary?.off !== undefined) status = { kind: 'safe-mode', message: summary.off.message }
       else if (summary?.failed !== undefined) status = { kind: 'failed', reason: summary.failed }
       else if (summary !== undefined) status = { kind: 'live' }
-      else if (own.every((info) => !info.enabled)) status = { kind: 'turned-off' }
+      else if (turnedOff) status = { kind: 'turned-off' }
       else {
         // A row that is on and has no entry: its plugin body failed, or it waits for a service.
         const on = own.filter((info) => info.enabled)
         status = { kind: 'failed', reason: on.map((info) => info.diagnostic ?? `the row ${rowOf(info).id} is ${info.fiberPhase ?? 'not running'} and did not register ${slug}`).join('; ') }
       }
       const live = status.kind === 'live' ? describeLive(slug) : undefined
-      const [state, program, source] = await Promise.all([records.stateRecord(slug), records.programRecord(slug), installer?.source(slug)])
+      const source = sources.get(slug)
+      const [state, program] = await Promise.all([records.stateRecord(slug), records.programRecord(slug)])
       out.push({
         slug,
         ...(summary === undefined ? {} : { title: summary.title }),
@@ -165,6 +254,7 @@ export function apply(ctx: Context): void {
         ...(live === undefined ? {} : { actions: live.actions }),
         ...(source === undefined ? {} : { source }),
         rows: own.map(rowOf),
+        ...(turnedOff ? { turnedOff: true as const } : {}),
         // The events route lists each entry of the runtime, also a failed one, so Electron main shows its window.
         ...(summary !== undefined && summary.off === undefined ? { window: 'shown' as const } : {}),
       })
@@ -172,34 +262,48 @@ export function apply(ctx: Context): void {
     return out
   }
 
-  /** Set each row of `slug` that is not `enabled` to `enabled` with the plugin manager. */
+  /**
+   * Set each row of `slug` that is not `enabled` to `enabled` with the plugin manager. With the installer, the change runs
+   * in its queue, and the installer keeps the choice: a later install or reload of the slug keeps a Turn off.
+   */
   async function setEnabled(slug: string, enabled: boolean): Promise<{ slug: string, rows: { id: string, application: ChangeResult['application'] }[] }> {
-    if (slug === widgetSlugs[0]) throw refusal('unknown-widget', 'the main widget can not turn itself off or on')
+    if (slug === widgetSlugs[0]) refuse('unknown-widget', 'the main widget can not turn itself off or on')
     const manager = ctx.get('pluginManager')
-    if (manager === undefined) throw refusal('unavailable', 'this host has no plugin manager')
-    const targets = rowsOfSlug(slug, await widgetRows()).filter((info) => info.enabled !== enabled)
-    if (targets.length === 0) throw refusal('no-row', `no plugin row of ${slug} is ${enabled ? 'off' : 'on'}`)
-    const changed: { id: string, application: ChangeResult['application'] }[] = []
-    for (const info of targets) {
-      const result = await manager.setPluginEnabled(info.entryId, enabled)
-      if (result.application !== 'applied') {
-        const done = changed.length === 0 ? '' : `; ${changed.map((item) => item.id).join(', ')} changed`
-        throw refusal('change-failed', `the plugin manager did not turn ${rowOf(info).id} ${enabled ? 'on' : 'off'}: ${result.application}${result.error === undefined ? '' : ` ${JSON.stringify(result.error)}`}${done}`)
+    if (manager === undefined) return refuse('unavailable', 'this host has no plugin manager')
+    // The rows are read in the queue, after each install or replace before this change.
+    const change = async (): Promise<{ id: string, application: ChangeResult['application'] }[]> => {
+      const targets = rowsOfSlug(slug, await widgetRows()).filter((info) => info.enabled !== enabled)
+      // A refusal inside the change: the installer stores nothing for it.
+      if (targets.length === 0) refuse('no-row', `no plugin row of ${slug} is ${enabled ? 'off' : 'on'}`)
+      const changed: { id: string, application: ChangeResult['application'] }[] = []
+      for (const info of targets) {
+        const result = await manager.setPluginEnabled(info.entryId, enabled)
+        if (result.application !== 'applied') {
+          const done = changed.length === 0 ? '' : `; ${changed.map((item) => item.id).join(', ')} changed`
+          refuse('change-failed', `the plugin manager did not turn ${rowOf(info).id} ${enabled ? 'on' : 'off'}: ${result.application}${done}`, {
+            diagnostics: result.error === undefined ? [] : [JSON.stringify(result.error)],
+          })
+        }
+        changed.push({ id: rowOf(info).id, application: result.application })
       }
-      changed.push({ id: rowOf(info).id, application: result.application })
+      return changed
     }
+    const installer = ctx.get('widgetInstaller')
+    const changed = installer === undefined ? await change() : await installer.turn(slug, !enabled, change)
     return { slug, rows: changed }
   }
 
   async function remove(slug: string): Promise<{ slug: string, application: ChangeResult['application'] }> {
-    if (slug === widgetSlugs[0] || await records.builtInSlug(slug)) throw refusal('built-in', `${slug} is a built-in widget; only an agent widget can be removed`)
+    if (slug === widgetSlugs[0] || await records.builtInSlug(slug)) refuse('built-in', `${slug} is a built-in widget; only an agent widget can be removed`)
     const installer = ctx.get('widgetInstaller')
-    if (installer === undefined) throw refusal('unavailable', 'this host has no widget installer')
+    if (installer === undefined) refuse('unavailable', 'this host has no widget installer')
     try {
       return await installer.remove(slug)
     } catch (error) {
-      const code = (error as { code?: unknown }).code
-      throw typeof code === 'string' && error instanceof Error ? refusal(code, error.message) : error
+      // An expected failure of the installer keeps its code, diagnostics, and next step (`widget_remove` gives the same).
+      const failed = creationError(error)
+      if (failed === undefined) throw error
+      return refuse(failed.code, failed.message, { diagnostics: failed.diagnostics, ...(failed.nextStep === undefined ? {} : { nextStep: failed.nextStep }) })
     }
   }
 
@@ -215,15 +319,15 @@ export function apply(ctx: Context): void {
         name: 'program',
         kind: 'query',
         args: slugInput,
-        handler: ({ slug }) => records.asHost(async () => {
+        handler: ({ slug }) => records.asHost(() => answer(async () => {
           const program = slug === widgetSlugs[0] ? undefined : await records.programRecord(slug)
-          if (program === undefined) throw refusal('unknown-widget', `no stored program for ${JSON.stringify(slug)}`)
+          if (program === undefined) return refuse('unknown-widget', `no stored program for ${JSON.stringify(slug)}`)
           return { slug, rev: program.rev, text: program.text }
-        }),
+        })),
       },
-      { name: 'turnOff', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => setEnabled(slug, false)) },
-      { name: 'turnOn', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => setEnabled(slug, true)) },
-      { name: 'remove', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => remove(slug)) },
+      { name: 'turnOff', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => answer(() => setEnabled(slug, false))) },
+      { name: 'turnOn', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => answer(() => setEnabled(slug, true))) },
+      { name: 'remove', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => answer(() => remove(slug))) },
     ],
   })
 }

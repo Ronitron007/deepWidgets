@@ -43,6 +43,8 @@ import type { CallToolResult, StandardSchemaWithJSON } from '@modelcontextprotoc
 import { z } from 'zod'
 import { CreationError, templateFiles, widgetTypesText, WidgetInstaller } from './creation.ts'
 import type { CreationErrorCode, GateName, InstallOutcome, PageState } from './creation.ts'
+
+export type { CreationErrorCode } from './creation.ts'
 import { fenceCount, fenceFindings } from './page-gate.ts'
 import type { RenderCheck, RenderCheckRequest, RenderCheckResult } from './page-gate.ts'
 
@@ -538,12 +540,27 @@ export class WidgetInstallerService extends Service {
     return this.installer.source(slug)
   }
 
+  /** The source folder of each agent widget of `slugs`, with one read of the bundle list. A slug that is not an agent widget has no item. */
+  sources(slugs: readonly string[]): Promise<Map<string, string>> {
+    return this.installer.sources(slugs)
+  }
+
   /**
-   * Remove the agent bundle of `slug`, as `widget_remove` does. Its window closes, and its state stays.
+   * Remove the agent bundle of `slug` for the operator, with the remove path of `widget_remove`. Its window closes, and
+   * its state stays. Unlike `widget_remove` of an agent, it also ends a Turn off of the slug.
    * @throws {CreationError} `not-installed` when no agent bundle has the slug, or `install-failed`.
    */
   remove(slug: string): ReturnType<WidgetInstaller['remove']> {
-    return this.installer.remove(slug)
+    return this.installer.remove(slug, { operator: true })
+  }
+
+  /**
+   * Turn off (`off`) or Turn on `slug` for the operator: `change` sets the plugin rows of the slug. It runs in the queue of
+   * the installer, so never during an install, a replace, or a remove. The choice lasts across host starts: while it is
+   * off, `widget_install` and `widget_reload` of the slug install the new row off.
+   */
+  turn<T>(slug: string, off: boolean, change: () => Promise<T>): Promise<T> {
+    return this.installer.turn(slug, off, change)
   }
 }
 
@@ -711,18 +728,27 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     mcp.registerTool('widget_install', {
       description: 'Install the widget in a folder (absolute path, with src/index.ts). The gates compile, lint, type-check, and test-run the code first; code that fails a gate is not installed. A folder with page/ also runs the page gates: the fixed files, the type check, the build, and the render check. A page that imports or uses a file outside page/ installs with a warning. A second install of the same slug replaces the bundle; the state stays.',
       inputSchema: lenient(installInput),
-    }, tool(installInput, async ({ dir }) => ({ ...logFence(await creator().install(dir)), nextStep: 'Call widget_describe with the slug, then widget_call each action to check it.' }), { mode: 'create' }))
+    }, tool(installInput, async ({ dir }) => withNextStep(logFence(await creator().install(dir)), 'Call widget_describe with the slug, then widget_call each action to check it.'), { mode: 'create' }))
 
     mcp.registerTool('widget_reload', {
       description: 'Run the gates again on the folder that the widget was installed from, and replace the bundle. Use it after you edit the files. The state stays.',
       inputSchema: lenient(slugInput),
-    }, tool(slugInput, async ({ slug }) => ({ ...logFence(await creator().reload(slug)), nextStep: 'Call widget_describe with the slug, then widget_call the changed actions.' }), { mode: 'create' }))
+    }, tool(slugInput, async ({ slug }) => withNextStep(logFence(await creator().reload(slug)), 'Call widget_describe with the slug, then widget_call the changed actions.'), { mode: 'create' }))
 
     mcp.registerTool('widget_remove', {
       description: 'Remove the bundle of a widget that widget_install installed. Its window closes. The state stays, so a later install of the slug gets it back.',
       inputSchema: lenient(slugInput),
     }, tool(slugInput, async ({ slug }) => ({ ...await creator().remove(slug) }), { mode: 'create' }))
     return mcp
+  }
+
+  /**
+   * The answer of `widget_install` and `widget_reload` with its next step. main_widget.widgets: when the user turned the
+   * widget off in the main window, the new version is off, and the agent asks the user to turn it on.
+   */
+  function withNextStep(outcome: InstallOutcome, nextStep: string): Record<string, unknown> {
+    if (outcome.turnedOff === undefined) return { ...outcome, nextStep }
+    return { ...outcome, nextStep: 'The user turned this widget off in the main window of deepWidgets, so the new version is installed off and does not run. Ask the user to turn it on in the main window. Until then, widget_describe and widget_call do not find it.' }
   }
 
   /**

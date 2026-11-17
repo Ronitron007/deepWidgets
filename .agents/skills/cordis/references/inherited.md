@@ -23,7 +23,8 @@ This file is GENERATED from source (`scripts/gen-cordis-catalog.ts`) and verifie
 
 ## Inherited events (cordis core + loader/hmr/timer)
 
-- `internal/plugin` — A plugin fiber was created. ([`vendor/cordis/src/events.ts:331`](../../vendor/cordis/src/events.ts))
+<!-- deepwidgets: the line below is edited to match the JSDoc at vendor/cordis/src/events.ts:336. The upstream generator text says "was created" only. -->
+- `internal/plugin` — A plugin fiber was created or its uid was cleared on disposal. ([`vendor/cordis/src/events.ts:337`](../../vendor/cordis/src/events.ts))
 - `internal/status` — A fiber changed lifecycle state. ([`vendor/cordis/src/events.ts:333`](../../vendor/cordis/src/events.ts))
 - `internal/service` — Interception hook for a service binding (no core producer). ([`vendor/cordis/src/events.ts:341`](../../vendor/cordis/src/events.ts))
 - `internal/update` — Waterfall: a fiber config update is being applied. ([`vendor/cordis/src/events.ts:343`](../../vendor/cordis/src/events.ts))

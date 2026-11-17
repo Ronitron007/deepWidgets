@@ -58,7 +58,7 @@ The smoke check `tools/smoke-desktop.mjs` boots the app. Each flag below adds a 
 
 - `DSH_SMOKE_WIDGET=<slug>` checks the widget page at the widget origin of the slug, and its live refresh. It also checks that the slugs `xn--abc`, `a-`, and a slug of 63 characters each get a window that loads.
 
-- `DSH_SMOKE_MAIN=1` checks the menu bar app. The Dock must have no icon, and the menu bar icon must exist. A click on the icon must open the panel with the page of `main`, `dsh-app://w-main.widget/widget/main.html?slug=main`. In the panel, the page must show a row for `sample` with its state rev. A state write of `sample` must change that rev. The row of `sample` must open with its state viewer, and Turn off and Turn on must change its status. Then a second click must close the panel, "Open deepWidgets" must open it, and a loss of focus must close it. A second launch of the dev app must exit by itself and open the panel. The check saves two screenshots in `$TMPDIR/deepwidgets-main-page/` and `panel.png` in `$TMPDIR/deepwidgets-app-menu-bar/`.
+- `DSH_SMOKE_MAIN=1` checks the menu bar app. The Dock must have no icon, and the menu bar icon must exist. A click on the icon must open the panel with the page of `main`, `dsh-app://w-main.widget/widget/main.html?slug=main`. In the panel, the page must show a row for `sample` with its state rev. A state write of `sample` must change that rev. The row of `sample` must open with its state viewer, and Turn off and Turn on must change its status. With the page open, 100 writes of `sample` in a row must take at most 3 times the time with no page of `main`, and a burst of 100 parallel writes must give no failure. A write of `sample` while the stream of `main` is down must show in the row after the stream opens again. Then a second click must close the panel, "Open deepWidgets" must open it, and a loss of focus must close it. A second launch of the dev app must exit by itself and open the panel. The check saves two screenshots in `$TMPDIR/deepwidgets-main-page/` and `panel.png` in `$TMPDIR/deepwidgets-app-menu-bar/`.
 
 - `DSH_SMOKE_OLD_PROFILE=1` starts the app with a desktop profile that has no `@deepwidgets/widget-main`, as a profile from before the unit `main.runtime`. The boot must add the bundle in its template place. Use it with `DSH_SMOKE_MAIN=1`.
 
@@ -107,6 +107,8 @@ These scripts run with no app, unless the item says otherwise:
 - `tools/widgets-install-replay.mjs` runs the `widget_install` replays of the `widget-state-models` skill on a host.
 
 - `tools/widgets-hmr-guards.mjs` checks the HMR guards of `safe_host` with a host.
+
+- `tools/widgets-row-toggle.mjs` turns the row of an agent widget off and on with `setPluginEnabled` on a host. The widget must come back with its state, and a call must work.
 
 - `tools/widgets-crash-replay.mjs` checks the crash records of `widget_fv.crash` and `safe_host`, and the cleanup at a crash. First it runs the replays and the specs with vitest and no host. Then it runs the crash cases with a host.
 
@@ -207,6 +209,7 @@ node tools/host-log.mjs
 node tools/widgets-action-replay.mjs
 node tools/widgets-install-replay.mjs
 node tools/widgets-hmr-guards.mjs
+node tools/widgets-row-toggle.mjs
 node tools/widgets-crash-replay.mjs
 node tools/widget-kit-imports.mjs
 node tools/in-host-pin.mjs

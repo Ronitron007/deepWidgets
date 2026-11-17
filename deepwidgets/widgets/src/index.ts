@@ -151,6 +151,11 @@ async function builtInSlugs(ctx: Context): Promise<Set<string>> {
 }
 
 const PING_MS = 15_000
+/**
+ * main_widget.widgets: the page of main gets at most one `data` frame for the changes of other widgets in this time.
+ * Each frame runs the query `widgets` of main, so a widget that writes often does not make main query as often.
+ */
+const MAIN_FRAME_MS = 250
 const encoder = new TextEncoder()
 
 /** The error codes of `widget_mvp.runtime.contract`, each with its HTTP status. */
@@ -829,10 +834,20 @@ export function apply(ctx: Context, config: Config): void {
     seq += 1
     log.push({ seq, at: Date.now(), ...change })
     if (log.length > CHANGE_LOG_SIZE) log.shift()
-    // main_widget.widgets: the Widgets tab of main shows each change of each other widget. A `data` frame with no rev
-    // makes the page of main run its queries again. The state of main does not change, so nothing is written.
-    if (change.slug !== MAIN_SLUG) push(MAIN_SLUG, { type: 'data' })
+    if (change.slug !== MAIN_SLUG) signalMain()
   }
+  // main_widget.widgets: the Widgets tab of main shows each change of each other widget. A `data` frame with no rev
+  // makes the page of main run its queries again. The state of main does not change, so nothing is written. The frame
+  // trails the first change by MAIN_FRAME_MS, so the changes in that time give one frame.
+  let mainFrame: ReturnType<typeof setTimeout> | undefined
+  function signalMain(): void {
+    if (mainFrame !== undefined) return
+    mainFrame = setTimeout(() => {
+      mainFrame = undefined
+      push(MAIN_SLUG, { type: 'data' })
+    }, MAIN_FRAME_MS)
+  }
+  ctx.effect(() => () => { clearTimeout(mainFrame) }, 'widgets: stop the frame of main')
   const cursor = (): string => `${epoch}:${String(seq)}`
   function changes(since: string | undefined): { cursor: string, changes: WidgetChange[], reset?: true } {
     const now = cursor()
