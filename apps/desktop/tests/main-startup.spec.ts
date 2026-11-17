@@ -2222,7 +2222,9 @@ describe('desktop main startup', () => {
     expect(host.updateTasks.mock.calls).toEqual([['inspect'], ['lock'], ['unlock']])
   })
 
-  // deepwidgets-trim: widget_phase2.isolation.supervisor restarts a Host that failed after a ready. It shows no fatal dialog.
+  // deepwidgets-trim: widget_phase2.isolation.supervisor stays armed from the first Host. It also restarts a replacement Host
+  // that could not boot, behind the fatal dialog, so the next update preparation sees that restart, not the startup error.
+  // Open bug `supervisor.replacement_restart` (Ronitron007/deepWidgets#133). Unskip this case when that bug is fixed.
   // it('reports replacement startup failure without authorizing installation or retrying automatically', async () => {
   it.skip('reports replacement startup failure without authorizing installation or retrying automatically', async () => {
     const host = await readyForUpdate()
