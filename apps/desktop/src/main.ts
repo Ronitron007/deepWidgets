@@ -1231,6 +1231,8 @@ async function main(): Promise<void> {
       iconPath: development ? join(app.getAppPath(), 'resources', 'trayTemplate.png') : join(process.resourcesPath, 'trayTemplate.png'),
       quit: () => { app.quit() },
       failed: (error) => { reportFatal(error, 'main') },
+      // The DSH window never shows on macOS, so the panel is the user attention that ends a cancelled shutdown.
+      attention: () => { sessionEnding = false },
     })
   }
   const backgroundNotice = process.platform === 'win32'

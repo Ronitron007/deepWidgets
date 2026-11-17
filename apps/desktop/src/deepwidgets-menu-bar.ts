@@ -29,6 +29,8 @@ export interface DesktopMenuBarOptions {
   readonly quit: () => void
   /** The menu bar can not work: Electron main shows the fatal dialog, the way out of an app with no Dock icon. */
   readonly failed: (error: Error) => void
+  /** The operator looks at the app: the panel shows or takes the focus. */
+  readonly attention: () => void
 }
 
 /** The menu bar icon for the whole run, and the panel with the page of the main widget. */
@@ -46,7 +48,7 @@ export class DesktopMenuBar {
    * Create the icon and the panel. The panel loads its page at once, from disk, so it needs no Host to load
    * (`main_widget.panel`). The page shows the loading state of the core until the Host is ready.
    * @param app - the Electron application.
-   * @param options - the icon path, the quit action, and the failure report.
+   * @param options - the icon path, the quit action, the failure report, and the attention of the operator.
    */
   constructor(app: App, options: DesktopMenuBarOptions) {
     const image = nativeImage.createFromPath(options.iconPath)
@@ -91,6 +93,7 @@ export class DesktopMenuBar {
       options.failed(new Error(`deepwidgets-menu-bar: the menu bar did not start in ${String(READY_DEADLINE_MS / 1000)} s; the icon has no click and no menu`))
     }, READY_DEADLINE_MS)
     this.menubar.once('ready', () => { clearTimeout(this.readyDeadline) })
+    this.menubar.on('after-show', () => { options.attention() })
     this.menubar.on('after-hide', () => {
       if (this.closingByClick) this.giveFocusBack(app)
       this.closingByClick = false
@@ -100,6 +103,7 @@ export class DesktopMenuBar {
       if (panel === undefined) return
       panel.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
       panel.webContents.on('will-navigate', (event) => { event.preventDefault() })
+      panel.on('focus', () => { options.attention() })
     })
   }
 
