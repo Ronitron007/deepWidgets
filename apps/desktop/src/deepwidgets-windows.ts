@@ -29,6 +29,8 @@ const RETRY_FIRST_MS = 500
 const RETRY_MAX_MS = 10_000
 /** A second failure of an agent page in this time puts its window on the shared shell (`agent_library.serving.failures`). */
 const PAGE_FAILURE_WINDOW_MS = 60_000
+/** The wait before a failed load of an agent page counts, so the gone event of the same load counts first. */
+const LOAD_FAILURE_SETTLE_MS = 250
 
 /**
  * Check one slug against the Host pattern. An invalid slug writes one warning.
@@ -67,6 +69,8 @@ interface WidgetWindow {
   stamp: string | undefined
   /** The count of loads. The result of an older load is not used. */
   loads: number
+  /** The last load whose failure the policy counted. Each load attempt counts one failure at most. */
+  counted: number
   /** The times of the recent failures of the agent page. */
   failures: number[]
 }
@@ -233,14 +237,14 @@ export class DesktopWidgetWindows {
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
     })
     const stamp = this.pages?.pages.get(slug)
-    const entry: WidgetWindow = { window, mode: stamp === undefined ? 'shell' : 'page', stamp, loads: 0, failures: [] }
+    const entry: WidgetWindow = { window, mode: stamp === undefined ? 'shell' : 'page', stamp, loads: 0, counted: 0, failures: [] }
     this.windows.set(slug, entry)
     window.once('closed', () => { if (this.windows.get(slug) === entry) this.windows.delete(slug) })
     window.setVisibleOnAllWorkspaces(true, { skipTransformProcessType: true })
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     window.webContents.on('will-navigate', (event) => { event.preventDefault() })
     window.webContents.on('render-process-gone', (_event, details) => {
-      if (entry.mode === 'page' && !this.stopped && !window.isDestroyed()) this.pageFailed(slug, entry, `its renderer ended (${details.reason})`)
+      if (entry.mode === 'page' && !this.stopped && !window.isDestroyed()) this.pageFailed(slug, entry, entry.loads, `its renderer ended (${details.reason})`)
     })
     this.load(slug, entry)
   }
@@ -260,17 +264,23 @@ export class DesktopWidgetWindows {
       // A newer load stopped this one.
       if (window.isDestroyed() || load !== entry.loads) return
       console.warn(`deepwidgets-windows: the window of ${slug} did not load ${url}`, error)
-      if (mode === 'page' && !this.stopped) this.pageFailed(slug, entry, 'its load failed')
-      else window.destroy()
+      if (mode !== 'page' || this.stopped) { window.destroy(); return }
+      // A renderer that ends during the load also rejects the load. The wait lets the gone event of the same attempt
+      // count first, so the attempt counts one failure, not two.
+      setTimeout(() => { if (!window.isDestroyed()) this.pageFailed(slug, entry, load, 'its load failed') }, LOAD_FAILURE_SETTLE_MS)
     })
   }
 
   /**
-   * The failure policy of an agent page (`agent_library.serving.failures`): load the page one more time. A second
+   * The failure policy of an agent page (`agent_library.serving.failures`), for one failed load attempt: load the page
+   * one more time. A second
    * failure in {@link PAGE_FAILURE_WINDOW_MS} loads the shared shell with the notice. The window keeps it until the
    * page link of the slug changes or the app starts again.
    */
-  private pageFailed(slug: string, entry: WidgetWindow, reason: string): void {
+  private pageFailed(slug: string, entry: WidgetWindow, attempt: number, reason: string): void {
+    // A signal of an older load, or a second signal of the same load, does not count.
+    if (attempt !== entry.loads || entry.counted === attempt || entry.mode !== 'page' || this.stopped) return
+    entry.counted = attempt
     const now = Date.now()
     entry.failures = [...entry.failures.filter(at => now - at < PAGE_FAILURE_WINDOW_MS), now]
     if (entry.failures.length >= 2) {
