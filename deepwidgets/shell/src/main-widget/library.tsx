@@ -6,7 +6,7 @@
  */
 import { LayoutGrid } from 'lucide-react'
 import { z } from 'zod'
-import { action, createLibrary, defineComponent, useTriggerAction } from '@openuidev/react-lang'
+import { action, createLibrary, defineComponent, useRendererQuery, useTriggerAction } from '@openuidev/react-lang'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs.tsx'
 import { ActionListView, StateView, StatusPill } from './parts.tsx'
 import { ActionSchema, StateSchema, StatusSchema, WidgetSchema, type Widget } from './schema.ts'
@@ -82,8 +82,11 @@ function summary(widgets: Widget[]): string {
 
 function WidgetTableView({ widgets, refresh }: { widgets: unknown, refresh: TriggerPlan | undefined }) {
   const trigger = useTriggerAction()
-  // The default of the query is null: the list has not loaded yet.
+  const query = useRendererQuery()
+  // The default of the query is null: the list has not loaded yet. When the first query failed, the list stays null,
+  // and the core shows the error with Retry, so the table shows nothing.
   if (widgets === null || widgets === undefined) {
+    if (query.errors.length > 0) return null
     return <div className="flex flex-col gap-2 py-1" aria-busy="true" data-dw="widget-table-loading"><div className="dw-skeleton" /><div className="dw-skeleton" /></div>
   }
   if (!Array.isArray(widgets)) return <Problem title="Could not read the widget list" detail={`The host gave ${typeof widgets}, not a list.`} />
