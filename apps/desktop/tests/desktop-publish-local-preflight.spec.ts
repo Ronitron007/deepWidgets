@@ -35,7 +35,9 @@ it('checks the retained preset before approval and the approved preset before up
   }
 })
 
-it('runs the local preflight before dependency installation in both self-hosted jobs', async () => {
+// deepwidgets-trim: the fork has no `.github` folder (36aa163595), so the workflow file to read is gone.
+// it('runs the local preflight before dependency installation in both self-hosted jobs', async () => {
+it.skip('runs the local preflight before dependency installation in both self-hosted jobs', async () => {
   const workflow = await readFile('.github/workflows/desktop-publish.yml', 'utf8')
   for (const job of ['prepare', 'publish']) {
     const section = workflow.split(`\n  ${job}:`)[1]!.split(/\n  \w+:/u)[0]!

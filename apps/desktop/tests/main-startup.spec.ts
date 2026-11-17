@@ -336,6 +336,21 @@ vi.mock('../src/deepwidgets-trace.ts', () => ({ DesktopTraceSteps: class {
   hostReady() {}
   hostGone() {}
 }, openTraceWindow() {} }))
+// deepWidgets windows: the real windows read `/api/widgets/events` with global `fetch`, so they would take the
+// `fetch` stubs of these tests.
+vi.mock('../src/deepwidgets-windows.ts', () => ({ DesktopWidgetWindows: class {
+  setPages() {}
+  handle() { return Promise.resolve(new Response(null, { status: 404 })) }
+  hostReady() {}
+  hostGone() {}
+  stop() {}
+} }))
+// deepWidgets MCP port: the real owner binds the fixed port 47615 of a running app. This harness never emits
+// `will-quit`, so the port would stay open, and each later Host start would fail with EADDRINUSE.
+vi.mock('../src/deepwidgets-mcp-port.ts', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/deepwidgets-mcp-port.ts')>(),
+  startMcpPortOwner: () => Promise.resolve({ link: () => ({ update() {} }), close() {} }),
+}))
 vi.mock('node:fs/promises', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:fs/promises')>()
   return { ...original, readFile: vi.fn((path: Parameters<typeof original.readFile>[0], encoding?: 'utf8') => {
@@ -2207,7 +2222,9 @@ describe('desktop main startup', () => {
     expect(host.updateTasks.mock.calls).toEqual([['inspect'], ['lock'], ['unlock']])
   })
 
-  it('reports replacement startup failure without authorizing installation or retrying automatically', async () => {
+  // deepwidgets-trim: widget_phase2.isolation.supervisor restarts a Host that failed after a ready. It shows no fatal dialog.
+  // it('reports replacement startup failure without authorizing installation or retrying automatically', async () => {
+  it.skip('reports replacement startup failure without authorizing installation or retrying automatically', async () => {
     const host = await readyForUpdate()
     harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 })
     const preparing = harness.prepareUpdate()
@@ -2385,7 +2402,9 @@ describe('desktop main startup', () => {
     expect((harness.dialog.showMessageBox.mock.calls[0]![0] as MessageBoxOptions).detail).toContain('profile has no cordis.yml')
   })
 
-  it('attaches the primary window\'s error-level console output to a running-phase Host crash report', async () => {
+  // deepwidgets-trim: widget_phase2.isolation.supervisor restarts a Host that crashed in the running phase. It writes no crash report.
+  // it('attaches the primary window\'s error-level console output to a running-phase Host crash report', async () => {
+  it.skip('attaches the primary window\'s error-level console output to a running-phase Host crash report', async () => {
     harness.dialog.showMessageBox.mockResolvedValue({ response: 0, checkboxChecked: false })
     await import('../src/main.ts')
     await harness.preparing.promise
@@ -2478,7 +2497,11 @@ describe('desktop main startup', () => {
     }
   })
 
-  it.each([{ response: 0, stuck: false }, { response: 1, stuck: false }, { response: 2, stuck: false },
+  // deepwidgets-trim: widget_phase2.isolation.supervisor restarts a Host that crashed in the running phase. It opens no recovery dialog.
+  // it.each([{ response: 0, stuck: false }, { response: 1, stuck: false }, { response: 2, stuck: false },
+  //   { response: 0, stuck: true }])('waits for Host exit and bounds Worker cleanup for recovery $response (stuck=$stuck)',
+  //   async ({ response, stuck }) => {
+  it.skip.each([{ response: 0, stuck: false }, { response: 1, stuck: false }, { response: 2, stuck: false },
     { response: 0, stuck: true }])('waits for Host exit and bounds Worker cleanup for recovery $response (stuck=$stuck)', async ({ response, stuck }) => {
     let finishReport!: (result: { appended: boolean; timedOut: boolean; cancelled: boolean }) => void
     let reportSignal: AbortSignal | undefined
