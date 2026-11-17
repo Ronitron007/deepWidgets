@@ -128,6 +128,14 @@ When a mode is off, its tools stay in the tool list. A call of `widget_install`,
 
 Code that fails a gate does not go into the host. The plugin manager installs a bundle that passes from the folder `<profile>/deepwidgets-widgets/<slug>`.
 
+A widget folder with `page/` also runs the page gates (`src/page-gate.ts`). The build gate `page-build` has two fences:
+
+- The import fence finds each import of a page file that is not on the allowed list.
+
+- The output fence finds each file that went into the page from outside `page/` and outside the allowed packages.
+
+The fences do not refuse the page (spec `agent_library.fence_warn`). Each finding is a warning of the gate `page-build`, and the install answer lists it. The host writes one warning line to its logger for each install that has such a warning. A PostCSS or Tailwind config file, `@plugin`, and `@config` still refuse the page.
+
 ## Limits `mcp_readme.limits`
 
 - The server accepts only requests from this computer (loopback addresses). It refuses browser requests.

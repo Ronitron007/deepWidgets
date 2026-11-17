@@ -7,8 +7,10 @@
  * 2. `page-types`: the type check of oxlint (the type gate of the host gates) on a staging copy of `page/`. The copy
  *    has a `node_modules` folder with links to the allowed packages only, so an import of another package does not
  *    resolve.
- * 3. `page-build`: Vite builds the copy in a child process (`page-build-child.ts`). Its import fence refuses each
- *    import of a page file that is not on the allowed list.
+ * 3. `page-build`: Vite builds the copy in a child process (`page-build-child.ts`). Its import fence and its output
+ *    fence do not refuse the build (`agent_library.fence_warn`): each import that is not on the allowed list, and each
+ *    file outside `page/` and the allowed packages, is a warning of this gate. A config file, `@plugin`, `@config`,
+ *    and a build error refuse it.
  * 4. `page-render`: Electron main loads the built page in a hidden window, with the program and the query answers
  *    of the test run. A CLI host has no Electron main, so the check does not run there, and the gate gives a warning.
  *
@@ -122,7 +124,7 @@ export interface PageOutcome {
 export const PAGE_NEXT_STEP: Record<PageGateName, string> = {
   'page-files': 'Restore page/index.html, page/main.tsx, and the dw-core block of page/styles.css from the template, and replace each symbolic link in page/ with a file. Write your styles below the block. Then call widget_install again. Nothing was installed.',
   'page-types': `Fix the type error at each diagnostic, then call widget_install again. A page may import only: ${ALLOWED_TEXT}, and files in page/. Nothing was installed.`,
-  'page-build': `Fix the build error at each diagnostic, then call widget_install again. A page may import only: ${ALLOWED_TEXT}, and files in page/. Nothing was installed.`,
+  'page-build': `Fix the build error at each diagnostic, then call widget_install again. A page may have no PostCSS or Tailwind config file, and no @plugin or @config in a stylesheet. A page may import only: ${ALLOWED_TEXT}, and files in page/; another import or a file outside page/ installs with a warning. Nothing was installed.`,
   'page-render': 'The page failed in the render check with the program and the query answers of the test run. Fix the component or the styles at each diagnostic, then call widget_install again. Nothing was installed.',
 }
 
@@ -296,6 +298,18 @@ async function typesGate(staging: string, tools: PageTools): Promise<GateReport>
   return { gate: 'page-types', ok: false, ms: elapsed(started), diagnostics: diagnostics.slice(0, MAX_DIAGNOSTICS), warnings: [] }
 }
 
+/** The count of a summary line of a fence cap, such as `3 more fence warning(s)`. Undefined for a finding. */
+function summaryCount(line: string): number | undefined {
+  const count = /^(?:the page uses )?(\d+) more /.exec(line)?.[1]
+  return count === undefined ? undefined : Number(count)
+}
+
+/** The fence warning lines that are findings, not summary lines of a cap. */
+export const fenceFindings = (warnings: string[]): string[] => warnings.filter((line) => summaryCount(line) === undefined)
+
+/** The count of the findings of fence warning lines: one for each finding, and the count of each summary line. */
+export const fenceCount = (warnings: string[]): number => warnings.reduce((sum, line) => sum + (summaryCount(line) ?? 1), 0)
+
 /** Gate `page-build`: Vite in a child process. */
 async function buildGate(staging: string, slug: string, outDir: string): Promise<{ report: GateReport, built?: string }> {
   const started = performance.now()
@@ -335,7 +349,10 @@ async function buildGate(staging: string, slug: string, outDir: string): Promise
   } catch {
     result = undefined
   }
-  const report = (ok: boolean, diagnostics: string[]): GateReport => ({ gate: 'page-build', ok, ms: elapsed(started), diagnostics: diagnostics.slice(0, MAX_DIAGNOSTICS), warnings: [] })
+  // agent_library.fence_warn: the findings of the import fence and the output fence are warnings of this gate.
+  const found = result?.warnings ?? []
+  const warnings = found.length > MAX_DIAGNOSTICS ? [...found.slice(0, MAX_DIAGNOSTICS), `${String(fenceCount(found.slice(MAX_DIAGNOSTICS)))} more fence warning(s)`] : found
+  const report = (ok: boolean, diagnostics: string[]): GateReport => ({ gate: 'page-build', ok, ms: elapsed(started), diagnostics: diagnostics.slice(0, MAX_DIAGNOSTICS), warnings })
   if (killed) return { report: report(false, [`the build took longer than ${String(BUILD_LIMIT_MS)} ms`]) }
   if (result === undefined) return { report: report(false, [`the build process ended with ${String(code)}: ${stderr.trim().split('\n').slice(0, 3).join(' | ').slice(0, 400)}`]) }
   if (!result.ok) return { report: report(false, result.diagnostics) }

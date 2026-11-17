@@ -30,12 +30,19 @@
  *   check was skipped. <profile>/deepwidgets-widgets/<slug>/page is a link to the build page-<hash>, with the base
  *   /widget/<slug>/;
  * - a replace with the same sources keeps the build; new sources get a new build, and a slug keeps its last 3 builds;
- * - the install refuses a page with a type error, an import of a package that is not on the list, an import of a file
- *   outside the page folder, a changed fixed file, a changed dw-core block, an @plugin, a postcss.config.mjs, and a
- *   symbolic link. The output fence refuses each page that pulls a secret file from outside page/: a stylesheet
- *   @import, also with no space and with a comment, a bare image-set() string, and new URL in a .tsx file. The old bundle and its page link stay, and no
- *   .tmp build or staging copy stays;
+ * - a good page installs with no fence warning;
+ * - the install refuses a page with a type error, an import of a package that is not on the list, a changed fixed
+ *   file, a changed dw-core block, an @plugin, a postcss.config.mjs, and a symbolic link. The old bundle and its page
+ *   link stay, and no .tmp build or staging copy stays;
+ * - the fences report (agent_library.fence_warn): a page that imports a file outside the page folder, and each page
+ *   that pulls a secret file from outside page/ (a stylesheet @import, also with no space and with a comment, a bare
+ *   image-set() string, and new URL in a .tsx file), installs. So does an off-list import that resolves
+ *   (react-dom/server). Its answer has a warning that names the file or the import, and the host log has a line for
+ *   it. The page link points at the new build, and no .tmp build or staging copy stays. widget_reload of such a page
+ *   logs a line too;
  * - a bundle with no page/ installs with the host gates only. The page link goes, and the builds stay.
+ * Allowed set (agent_library.fence_warn), before the host starts: allowedFolders follows the development dependencies
+ * of the shell and the kit only, so it does not hold a workspace package that only the theme names as one.
  * Window part: it runs tools/smoke-desktop.mjs with DSH_SMOKE_CREATE set to a bundle with a good page and
  * DSH_SMOKE_CREATE_CASES set to render cases that install first: a page that loops forever (not-ready), a page whose
  * component throws (render-error), a page that overrides a dw-core style (lost-core-styles), and a page with no body
@@ -49,7 +56,7 @@
  */
 import { spawn } from 'node:child_process'
 import { createHmac, randomBytes } from 'node:crypto'
-import { cpSync, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
@@ -569,6 +576,11 @@ async function pagePart(call, slugs) {
   check('a bundle with a good page, whose components have zod schemas, passes the page gates in the CLI host', !good.isError && good.body?.application === 'applied' && good.body?.gates?.map((gate) => gate.gate).join() === PAGE_GATES && (await slugs()).includes(PAGE) && LIBRARY.includes('z.object('),
     JSON.stringify(good.body?.error ?? good.body?.gates?.map((gate) => [gate.gate, gate.ok, gate.diagnostics])))
   check('in a CLI host, the install answer has the warning that the render check was skipped', good.body?.warnings?.some((line) => line.includes('render check') && line.includes('skipped')) === true, JSON.stringify(good.body?.warnings))
+  // agent_library.fence_warn: the good page imports page.css of the shell, Tailwind, and the DSH token sheets. The
+  // narrower walk of allowedFolders must keep each of them.
+  const goodFence = good.body?.gates?.find((gate) => gate.gate === 'page-build')?.warnings
+  check('a good page installs with no fence warning', Array.isArray(goodFence) && goodFence.length === 0 && good.body?.warnings?.some((line) => line.includes('outside the page folder')) === false,
+    JSON.stringify({ fence: goodFence, warnings: good.body?.warnings }))
   const first = linkTarget(pageDir)
   check('<profile>/deepwidgets-widgets/<slug>/page is a link to the build page-<hash>, with the base /widget/<slug>/', good.body?.page === pageDir && BUILD.test(first ?? '') && index.includes(`/widget/${PAGE}/assets/`),
     `page=${JSON.stringify(good.body?.page)} link=${String(first)} index=${index.slice(0, 300)}`)
@@ -595,20 +607,13 @@ async function pagePart(call, slugs) {
   const widgetRoot = join(profileDir, 'deepwidgets-widgets')
   writeFileSync(join(widgetRoot, 'secret-page.css'), '.secret-leak { color: red; }\n')
   writeFileSync(join(widgetRoot, 'secret-page.txt'), 'SECRET-PAGE-TEXT')
-  const pulls = (line) => line.includes('outside the page folder') && line.includes('secret-page.')
   const sheet = (text) => ({ 'page/extra.css': `${text}\n.extra { color: blue; }\n`, 'page/child.tsx': `import './extra.css'\n${CHILD}` })
   const styles = templateText('styles.css')
   const refused = [
     { name: 'a page with a type error', gate: 'page-types', files: { 'page/child.tsx': `${CHILD}\nexport const wrong: number = 'text'\n` }, find: (line) => line.startsWith('page/child.tsx:') && line.includes('TS2322') },
     { name: 'a page that imports a package that is not on the list', gate: 'page-types', files: { 'page/child.tsx': `import { BarChart } from 'recharts'\n${CHILD}\nexport const chart = BarChart\n` }, find: (line) => line.includes("'recharts'") && line.includes('TS2307') },
-    { name: 'a page that imports a file outside the page folder', gate: 'page-build', files: { 'page/child.tsx': `import { outside } from '${outside}'\n${CHILD}\nexport const value = outside\n` }, find: (line) => line.includes('outside the page folder') },
     { name: 'a page with a changed fixed file', gate: 'page-files', files: { 'page/main.tsx': `${templateText('main.tsx')}// changed\n` }, find: (line) => line.startsWith('page/main.tsx:') },
     { name: 'a page with a changed dw-core block', gate: 'page-files', files: { 'page/styles.css': styles.replace('padding: 12px !important; box-sizing', 'padding: 0 !important; box-sizing') }, find: (line) => line.startsWith('page/styles.css:') && line.includes('dw-core') },
-    { name: 'a stylesheet @import of a secret file', gate: 'page-build', files: sheet('@import "../../../secret-page.css";'), find: pulls },
-    { name: 'a stylesheet @import of a secret file with no space', gate: 'page-build', files: sheet('@import"../../../secret-page.css";'), find: pulls },
-    { name: 'a stylesheet @import of a secret file with a comment', gate: 'page-build', files: sheet('@import/**/"../../../secret-page.css";'), find: pulls },
-    { name: 'a bare image-set() string of a secret file', gate: 'page-build', files: { 'page/styles.css': `${styles}.leak { background-image: image-set("../../../secret-page.txt" 1x); }\n` }, find: pulls },
-    { name: 'new URL of a secret file in a .tsx file', gate: 'page-build', files: { 'page/child.tsx': `${CHILD}\nexport const leak = new URL('../../../secret-page.txt', import.meta.url).href\n` }, find: pulls },
     { name: 'an @plugin in a page stylesheet', gate: 'page-build', files: { 'page/styles.css': `${styles}@plugin "@tailwindcss/typography";\n` }, find: (line) => line.startsWith('page/styles.css:') && line.includes('@plugin') },
     { name: 'a page with a postcss.config.mjs', gate: 'page-build', files: { 'page/postcss.config.mjs': 'export default { plugins: {} }\n' }, find: (line) => line.startsWith('page/postcss.config.mjs:') },
   ]
@@ -631,6 +636,57 @@ async function pagePart(call, slugs) {
     `link=${String(linkTarget(pageDir))} entries=${JSON.stringify(after)} staging=${JSON.stringify(existsSync(staging) ? readdirSync(staging) : [])} read=${JSON.stringify(read.body)}`)
   const offList = (await call('widget_install', { dir: join(work, 'agent', `${PAGE}-bad-1`) })).body?.error?.nextStep ?? ''
   check('the next step of a refused page names the allowed imports', offList.includes('@openuidev/react-lang') && offList.includes('zod') && offList.includes('@deepwidgets/shell/ui/*'), offList)
+
+  // agent_library.fence_warn: a page that reaches a file outside page/ installs. Its answer has a warning of the gate
+  // page-build that names the file, and the host log has one line for the install. The host log is the buffer of the
+  // Cordis logger: the CLI host has no console exporter, so a logger line is not on stdout. Each case uses the slug
+  // FENCE, and widget_remove clears it, so the slug PAGE and the later cases do not change.
+  const FENCE = 'create-fence'
+  const fenceLines = async () => await inHost(`return loader.ctx.logger.buffer.filter((m) => m.type === 'warn' && String(m.args[0]).includes(arg)).map((m) => ({ sn: m.sn, text: String(m.args[0]) }))`, `mcp: the page of ${FENCE} installed with`)
+  const warned = [
+    { name: 'a page that imports a file outside the page folder', files: { 'page/child.tsx': `import { outside } from '${outside}'\n${CHILD}\nexport const value = outside\n` }, file: 'outside.ts', page: 'page/child.tsx' },
+    { name: 'a stylesheet @import of a secret file', files: sheet('@import "../../../secret-page.css";'), file: 'secret-page.css' },
+    { name: 'a stylesheet @import of a secret file with no space', files: sheet('@import"../../../secret-page.css";'), file: 'secret-page.css' },
+    { name: 'a stylesheet @import of a secret file with a comment', files: sheet('@import/**/"../../../secret-page.css";'), file: 'secret-page.css' },
+    { name: 'a bare image-set() string of a secret file', files: { 'page/styles.css': `${styles}.leak { background-image: image-set("../../../secret-page.txt" 1x); }\n` }, file: 'secret-page.txt' },
+    { name: 'new URL of a secret file in a .tsx file', files: { 'page/child.tsx': `${CHILD}\nexport const leak = new URL('../../../secret-page.txt', import.meta.url).href\n` }, file: 'secret-page.txt', reload: true },
+    // react-dom has a staging link, so this import passes the type gate and resolves. It is not on the list.
+    { name: 'an off-list import that resolves, react-dom/server', files: { 'page/child.tsx': `import { renderToString } from 'react-dom/server'\n${CHILD}\nexport const render = renderToString\n` }, file: '"react-dom/server"', page: 'page/child.tsx', text: 'is not on the list of allowed imports' },
+  ]
+  const fenceSlugDir = join(profileDir, 'deepwidgets-widgets', FENCE)
+  const newLines = async (seen) => (await fenceLines()).filter((line) => line.sn > seen).map((line) => line.text)
+  const lastSn = async () => Math.max(0, ...(await fenceLines()).map((line) => line.sn))
+  for (const [index, item] of warned.entries()) {
+    const seen = await lastSn()
+    const answer = await call('widget_install', { dir: writePageWidget(join(work, 'agent', `${FENCE}-${String(index)}`), FENCE, item.files) })
+    const fence = answer.body?.gates?.find((gate) => gate.gate === 'page-build')?.warnings ?? []
+    const names = (line) => line.includes(item.text ?? 'outside the page folder') && line.includes(item.file) && (item.page === undefined || line.startsWith(`${item.page}:`))
+    // The tool logs before it answers.
+    const lines = await newLines(seen)
+    check(`the install applies ${item.name}, with a fence warning that names the file, and one host log line`,
+      !answer.isError && answer.body?.application === 'applied' && fence.some(names) && answer.body?.warnings?.some(names) === true && lines.length === 1 && lines[0].includes(item.file),
+      JSON.stringify({ error: answer.body?.error, fence, log: lines }))
+    // The slug had no build before this case, so its one build is the new one.
+    const entries = pageEntries(fenceSlugDir)
+    const target = linkTarget(join(fenceSlugDir, 'page'))
+    const stagingLeft = existsSync(staging) ? readdirSync(staging) : []
+    check(`after the install of ${item.name}, the page link points at the new build, and no .tmp build or staging copy stays`,
+      answer.body?.page === join(fenceSlugDir, 'page') && BUILD.test(target ?? '') && JSON.stringify(entries.builds) === JSON.stringify([target]) && entries.tmp.length === 0 && stagingLeft.length === 0,
+      `page=${JSON.stringify(answer.body?.page)} link=${String(target)} entries=${JSON.stringify(entries)} staging=${JSON.stringify(stagingLeft)}`)
+    if (item.reload === true) {
+      const before = await lastSn()
+      const reloaded = await call('widget_reload', { slug: FENCE })
+      const reloadFence = reloaded.body?.gates?.find((gate) => gate.gate === 'page-build')?.warnings ?? []
+      const reloadLines = await newLines(before)
+      check(`widget_reload of ${item.name} applies with the fence warning, and writes one host log line`,
+        !reloaded.isError && reloaded.body?.application === 'applied' && reloadFence.some(names) && reloadLines.length === 1 && reloadLines[0].includes(item.file),
+        JSON.stringify({ error: reloaded.body?.error, fence: reloadFence, log: reloadLines }))
+    }
+    const removed = await call('widget_remove', { slug: FENCE })
+    if (removed.isError) throw new Error(`the remove of ${FENCE} failed: ${JSON.stringify(removed.body)}`)
+  }
+  check('after the fence cases, the slug of the fence cases has no folder, and the page of the slug create-page stays', !existsSync(join(profileDir, 'deepwidgets-widgets', FENCE)) && linkTarget(pageDir) === last,
+    `fence=${String(existsSync(join(profileDir, 'deepwidgets-widgets', FENCE)))} link=${String(linkTarget(pageDir))}`)
 
   // A bundle with no page/: the host gates only. The page link goes, and the builds stay.
   const plain = join(work, 'agent', `${PAGE}-plain`)
@@ -674,8 +730,36 @@ async function desktopPart() {
   check('desktop: the render check refuses a page that loops (not-ready), a component that throws (render-error), and a lost dw-core style (lost-core-styles); it warns of no body height and wide content; then a good page passes, and its window opens at the widget origin of its slug and shows its component; its own program gives 200 and the program of sample 403; new page sources show the new page, no page/ shows the shared shell, two renderer ends in 60 s leave the shared shell with the notice, and a page change ends the notice in the same window; each widget response has the CSP header, and a second HTML file of a page can not frame the page of sample; widget_remove closes the window', code === 0, `smoke exit ${String(code)}: ${last}`)
 }
 
+/**
+ * agent_library.fence_warn, with no host: allowedFolders follows the development dependencies of the shell and the
+ * kit only. The theme `@deepseek-ai/dsh-client-ui-theme` is a development dependency of the shell, so the walk
+ * reaches it. The theme names `@deepseek-ai/dsh-client-ui-primitives` only as a development dependency, so the walk
+ * does not reach that package. The walk before this unit did.
+ */
+async function allowedPart() {
+  const { allowedFolders } = await import(pathToFileURL(join(ROOT, 'deepwidgets/mcp/lib/page-build-child.js')).href)
+  const modules = join(work, 'allowed', 'node_modules')
+  for (const [name, folder] of [['@deepwidgets/shell', 'deepwidgets/shell'], ['@deepwidgets/widget-kit', 'deepwidgets/widget-kit']]) {
+    mkdirSync(dirname(join(modules, name)), { recursive: true })
+    symlinkSync(join(ROOT, folder), join(modules, name), 'dir')
+  }
+  const real = (path) => realpathSync(join(ROOT, path))
+  const theme = real('packages/client/ui-theme')
+  const primitives = real('packages/client/ui-primitives')
+  const manifest = JSON.parse(readFileSync(join(theme, 'package.json'), 'utf8'))
+  const shellManifest = JSON.parse(readFileSync(join(ROOT, 'deepwidgets/shell/package.json'), 'utf8'))
+  const named = (field) => Object.keys(manifest[field] ?? {}).includes('@deepseek-ai/dsh-client-ui-primitives')
+  const folders = allowedFolders(modules)
+  const tailwind = folders.some((folder) => folder.split('/').includes('tailwindcss'))
+  check('the fixture: the theme names the primitives only as a development dependency, and the theme is a development dependency of the shell',
+    named('devDependencies') && !named('dependencies') && !named('peerDependencies') && !named('optionalDependencies') && Object.keys(shellManifest.devDependencies ?? {}).includes('@deepseek-ai/dsh-client-ui-theme'))
+  check('allowedFolders follows the development dependencies of the shell (the theme, Tailwind), and not those of the theme (the primitives)',
+    folders.includes(theme) && tailwind && !folders.includes(primitives), `size=${String(folders.length)} theme=${String(folders.includes(theme))} tailwind=${String(tailwind)} primitives=${String(folders.includes(primitives))}`)
+}
+
 let exitCode = 1
 try {
+  await allowedPart()
   await hostPart()
   if (process.env.WIDGETS_CREATE_DESKTOP !== '0') await desktopPart()
   const failed = results.filter((r) => !r.ok).length
