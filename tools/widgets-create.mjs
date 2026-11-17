@@ -366,7 +366,7 @@ async function hostPart() {
     const kept = await call('widget_call', { slug: SLUG, action: 'get' })
     check('a new install after the remove gets the stored state back', !back.isError && kept.body?.result?.count === 6, JSON.stringify([back.body?.error ?? back.body?.application, kept.body]))
     const servedV3 = await programText(port, SLUG)
-    check('a new install after the remove sets its new seed program', back.body?.programUpdated === true && servedV3.includes('A counter v3'), `install=${JSON.stringify(back.body?.error ?? back.body?.programUpdated)} program=${servedV3.slice(0, 120)}`)
+    check('a new install after the remove sets its new seed program', back.body?.programUpdated === true && servedV3.includes('A counter v3'), `install=${JSON.stringify(back.body?.error ?? { programUpdated: back.body?.programUpdated })} program=${servedV3.slice(0, 120)}`)
     const same = await call('widget_install', { dir: join(work, 'agent', `${SLUG}-v3`) })
     check('a reinstall of the same seed program leaves the stored program alone', !same.isError && same.body?.replaced === true && same.body?.programUpdated === false, JSON.stringify(same.body))
 
