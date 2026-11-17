@@ -14,6 +14,8 @@
 }
 /* This sheet is not in a layer, so its rules win over the Tailwind classes of the shadcn pieces. */
 .dwm-tabs-list { width: 100%; }
+/* The panels have forceMount: the panel of the tab that is not active stays mounted and hidden. */
+.dwm-tab-panel[data-state='inactive'] { display: none; }
 
 /* ---- one widget row ---- */
 .dwm-row { list-style: none; border: 1px solid var(--border); border-radius: var(--dsw-radius-md); background: var(--card); }

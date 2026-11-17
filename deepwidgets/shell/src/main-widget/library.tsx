@@ -154,7 +154,8 @@ const Panel = defineComponent({
             {tabs.map((tab) => <TabsTrigger key={tab.value} value={tab.value} data-dw="tab">{tab.title}</TabsTrigger>)}
           </TabsList>
         </div>
-        {tabs.map((tab) => <TabsContent key={tab.value} value={tab.value} data-dw="tab-panel">{renderNode(tab.children)}</TabsContent>)}
+        {/* Each tab stays mounted, so a switch of the tab keeps the open rows and a call that waits (main.css hides it). */}
+        {tabs.map((tab) => <TabsContent key={tab.value} value={tab.value} forceMount className="dwm-tab-panel" data-dw="tab-panel">{renderNode(tab.children)}</TabsContent>)}
       </Tabs>
     )
   },

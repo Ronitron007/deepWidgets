@@ -65,22 +65,42 @@ type Control = 'turnOff' | 'turnOn' | 'remove'
 
 const BUSY_TEXT: Record<Control, string> = { turnOff: 'Turning off…', turnOn: 'Turning on…', remove: 'Removing…' }
 
-/** Turn off or Turn on, and Remove for an agent widget. Remove asks first. A refusal shows under the buttons. */
-function Controls({ widget, onChanged }: { widget: Widget, onChanged: () => void }) {
+/**
+ * The wait and the refusal of the controls of one row. The row keeps them, not the details: a close of the row or a
+ * switch of the tab does not lose a call that still waits, and the buttons stay off until it ends.
+ */
+interface RowControl {
+  busy: Control | undefined
+  error: { message: string, nextStep?: string } | undefined
+  run: (control: Control) => Promise<boolean>
+  clearError: () => void
+}
+
+function useRowControl(slug: string, onChanged: () => void): RowControl {
   const call = useCall()
   const [busy, setBusy] = useState<Control | undefined>(undefined)
   const [error, setError] = useState<{ message: string, nextStep?: string } | undefined>(undefined)
+  async function run(control: Control): Promise<boolean> {
+    setBusy(control)
+    setError(undefined)
+    const answer = await call(control, { slug })
+    setBusy(undefined)
+    if (answer.ok) onChanged()
+    else setError({ message: answer.message, ...(answer.nextStep === undefined ? {} : { nextStep: answer.nextStep }) })
+    return answer.ok
+  }
+  return { busy, error, run, clearError: () => { setError(undefined) } }
+}
+
+/** Turn off or Turn on, and Remove for an agent widget. Remove asks first. A refusal shows under the buttons. */
+function Controls({ widget, control }: { widget: Widget, control: RowControl }) {
+  const { busy, error } = control
   const [confirming, setConfirming] = useState(false)
   const name = widget.title ?? widget.slug
 
-  async function run(control: Control): Promise<void> {
-    setBusy(control)
-    setError(undefined)
-    const answer = await call(control, { slug: widget.slug })
-    setBusy(undefined)
+  async function run(which: Control): Promise<void> {
+    await control.run(which)
     setConfirming(false)
-    if (answer.ok) onChanged()
-    else setError({ message: answer.message, ...(answer.nextStep === undefined ? {} : { nextStep: answer.nextStep }) })
   }
 
   // In safe mode the status stays safe-mode; `turnedOff` tells that the operator turned the widget off.
@@ -111,7 +131,7 @@ function Controls({ widget, onChanged }: { widget: Widget, onChanged: () => void
             </Button>
           )}
           {widget.agent ? (
-            <Button variant="ghost" size="xs" className="dwm-remove" onClick={() => { setError(undefined); setConfirming(true) }}
+            <Button variant="ghost" size="xs" className="dwm-remove" onClick={() => { control.clearError(); setConfirming(true) }}
               disabled={busy !== undefined} data-dw="remove">
               <Trash2 />Remove
             </Button>
@@ -128,7 +148,7 @@ function Controls({ widget, onChanged }: { widget: Widget, onChanged: () => void
   )
 }
 
-function Details({ id, widget, onChanged }: { id: string, widget: Widget, onChanged: () => void }) {
+function Details({ id, widget, control }: { id: string, widget: Widget, control: RowControl }) {
   const { status, catalog, state, program, actions, source, rows } = widget
   return (
     <div id={id} className="flex flex-col gap-3 px-3 pb-3" data-dw="widget-details">
@@ -171,7 +191,7 @@ function Details({ id, widget, onChanged }: { id: string, widget: Widget, onChan
         </Field>
         <Field label="Window">{widget.window === 'shown' ? 'Shown' : <Muted>No window</Muted>}</Field>
       </dl>
-      <Controls widget={widget} onChanged={onChanged} />
+      <Controls widget={widget} control={control} />
     </div>
   )
 }
@@ -181,6 +201,7 @@ export function WidgetRow({ widget, onChanged }: { widget: Widget, onChanged: ()
   const [open, setOpen] = useState(false)
   const detailsId = useId()
   const { slug, title, status, state, agent } = widget
+  const control = useRowControl(slug, onChanged)
   return (
     <li className="dwm-row" data-dw="widget-row" data-slug={slug} data-open={open ? 'true' : 'false'}>
       <button type="button" className="dwm-row-head" aria-expanded={open} aria-controls={detailsId} onClick={() => { setOpen(!open) }} data-dw="row-toggle">
@@ -189,6 +210,9 @@ export function WidgetRow({ widget, onChanged }: { widget: Widget, onChanged: ()
           <span className="truncate font-medium text-foreground">{title ?? slug}</span>
           <span className="truncate text-[11px] text-muted-foreground">
             {title === undefined ? null : <><code className="font-mono">{slug}</code> · </>}{agent ? 'agent widget' : 'built in'}
+            {/* A closed row still shows a call that waits, and a refusal that came. */}
+            {control.busy === undefined ? null : <span data-dw="row-busy"> · {BUSY_TEXT[control.busy]}</span>}
+            {control.busy !== undefined || control.error === undefined ? null : <span className="text-destructive" data-dw="row-refused"> · refused</span>}
           </span>
         </span>
         <StatusPill status={status} />
@@ -196,7 +220,7 @@ export function WidgetRow({ widget, onChanged }: { widget: Widget, onChanged: ()
           {state === undefined ? 'no state' : `rev ${String(state.rev)}`}
         </span>
       </button>
-      {open ? <Details id={detailsId} widget={widget} onChanged={onChanged} /> : null}
+      {open ? <Details id={detailsId} widget={widget} control={control} /> : null}
     </li>
   )
 }

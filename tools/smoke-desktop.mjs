@@ -2039,6 +2039,22 @@ async function checkMain(deadline) {
     note(`main opened=${JSON.stringify(sampleRow(opened.value))}`)
     if (!opened.ok) return `main: the state of sample did not open: ${JSON.stringify(sampleRow(opened.value) ?? opened.value)}`
     if (!sampleRow(opened.value).turnOff || sampleRow(opened.value).remove) return `main: the controls of sample are wrong: ${JSON.stringify(sampleRow(opened.value))}`
+    // control_state_lost_on_close: a switch to Settings and back keeps the row open (the tab panels stay mounted).
+    // Radix activates a tab on mousedown.
+    const pressTab = (index) => evaluate(target.webSocketDebuggerUrl, `(() => {
+      document.querySelectorAll('[data-dw=tab]')[${String(index)}]?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
+      return true
+    })()`, deadline)
+    const activeTab = () => evaluate(target.webSocketDebuggerUrl, "document.querySelector('[data-dw=tab][data-state=active]')?.textContent ?? null", deadline)
+    await pressTab(1)
+    await delay(300)
+    const switched = await activeTab()
+    await pressTab(0)
+    await delay(300)
+    if (switched !== 'Settings' || await activeTab() !== 'Widgets') return `main: the tabs did not switch: ${String(switched)}`
+    const kept = await pollMain(target, soon(), (value) => sampleRow(value)?.open === 'true')
+    note(`main tab switch tabs=${String(switched)} row=${JSON.stringify(sampleRow(kept.value))}`)
+    if (!kept.ok) return `main: a switch of the tab closed the row of sample: ${JSON.stringify(sampleRow(kept.value))}`
     await shootMain('main-page-state.png', deadline)
 
     // Turn off and Turn on from the page: the status of the row follows, and the row stays open.
