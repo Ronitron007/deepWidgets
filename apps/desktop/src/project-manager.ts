@@ -24,6 +24,8 @@ import type { DesktopRelease } from './release.ts'
 import { readDesktopRuntime } from './runtime-tree.ts'
 import { initProfile, removeLinkProjections, sanitizeProfile } from '@deepseek-ai/dsh-app-boot'
 import { PROFILE_TEMPLATES, type ProfileTemplate } from '@deepseek-ai/dsh-official-bundles'
+// deepwidgets-trim: main_widget.menu_bar. An existing profile gets each new template bundle, such as @deepwidgets/widget-main.
+import { addTemplateBundles } from './deepwidgets-profile-bundles.ts'
 
 const PROJECT_NAME = '@deepseek-ai/dsh-desktop-runtime'
 const DSH_PACKAGE = '@deepseek-ai/dsh'
@@ -85,6 +87,9 @@ export class DesktopProjectManager {
       readDesktopRuntime(this.runtime.dsh)
       migrateProfileSettings(this.paths.profile)
       createPluginProfile(this.paths.profile)
+      // deepwidgets-trim: main_widget.menu_bar. Added lines.
+      const added = addTemplateBundles(this.paths.profile, WEB_PROFILE.bundles)
+      if (added.length > 0) console.info(`deepwidgets-profile: added the template bundles ${added.join(', ')} to ${this.paths.profile}`)
       removeLinkProjections(this.paths.profile)
     })
   }
