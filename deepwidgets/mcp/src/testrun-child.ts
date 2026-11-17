@@ -18,6 +18,8 @@ export interface TestRunWidget {
   slug: string
   title: string
   program: string
+  /** The component set of the program (`main_widget.catalog`): the `catalog` of the definition, or the default. */
+  catalog: string
 }
 
 /** One action call of the test run. */
@@ -46,6 +48,8 @@ export interface TestRunReport {
 /** The rules of `buildRegistration` in `@deepwidgets/widgets`. */
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/
 const ACTION = /^[A-Za-z][A-Za-z0-9_]{0,62}$/
+/** The catalog of a definition with no `catalog`, `DEFAULT_CATALOG` of `@deepwidgets/widgets`. */
+const DEFAULT_CATALOG = 'shadcn-widgets@1'
 const ACTION_LIMIT_MS = 1_000
 const APPLY_LIMIT_MS = 1_000
 /** The largest query answer, as JSON text, that the report keeps for the render check. */
@@ -67,6 +71,7 @@ interface WidgetDefLike {
   slug: string
   title: string
   program: string
+  catalog?: string
   initialState: unknown
   timeoutMs?: number
   actions: ActionDef[]
@@ -90,6 +95,7 @@ function checkDefinition(def: WidgetDefLike): void {
   if (typeof def.slug !== 'string' || !SLUG.test(def.slug)) throw new TypeError(`widgets: bad slug ${JSON.stringify(def.slug)}`)
   if (typeof def.title !== 'string' || def.title === '') throw new TypeError(`widgets: ${def.slug}: title is required`)
   if (typeof def.program !== 'string') throw new TypeError(`widgets: ${def.slug}: program text is required`)
+  if (def.catalog !== undefined && (typeof def.catalog !== 'string' || def.catalog === '')) throw new TypeError(`widgets: ${def.slug}: catalog must be a non-empty string`)
   if (!Array.isArray(def.actions)) throw new TypeError(`widgets: ${def.slug}: actions must be an array`)
   if (def.timeoutMs !== undefined && !(Number.isFinite(def.timeoutMs) && def.timeoutMs > 0)) throw new TypeError(`widgets: ${def.slug}: timeoutMs must be positive`)
   const names = new Set<string>()
@@ -196,7 +202,7 @@ async function main(): Promise<void> {
     report.applyError = textOf(error)
   }
   for (const def of widgets.defs) {
-    report.widgets.push({ slug: def.slug, title: def.title, program: def.program })
+    report.widgets.push({ slug: def.slug, title: def.title, program: def.program, catalog: def.catalog ?? DEFAULT_CATALOG })
     for (const action of def.actions) {
       out(`STEP action ${def.slug}.${action.name}`)
       report.actions.push(await callAction(widgets, def, action))

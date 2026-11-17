@@ -18,9 +18,11 @@
  * its slug, removes it with widget_remove, and finds the window closed (widget.creation).
  * When the folder has page/, the install answer must have the render check gate (page-render) with no skipped warning,
  * and the built page in the profile (agent_library.build_gate). With DSH_SMOKE_CREATE_CASES set to a JSON file of
- * render cases [{ dir, refuse?: <code>, warnings?: [<text>] }], each case installs first, in order: a case with
- * `refuse` must fail in the gate page-render with a diagnostic that starts with that code, and a case with
- * `warnings` must install with each text in its warnings (the check then removes it).
+ * render cases [{ dir, refuse?: <code>, nextStep?: <text>, warnings?: [<text>], shows?: <text> }], each case installs
+ * first, in order: a case with `refuse` must fail in the gate page-render with a diagnostic that starts with that code,
+ * and with `nextStep` in its next step. A case with `warnings` must install with each text in its warnings. A case
+ * with `shows` must install, and its window must show the page with that text in its `[data-dw=note]` element
+ * (agent_library.guide). The check then removes an installed case.
  * With DSH_SMOKE_LOG=1, the check makes the folder $DSH_HOME/deepwidgets read-only and asks the MCP port for a token.
  * The answer must be 500, and the output of the app must have the ctx.logger line of @deepwidgets/mcp (safe_host.log).
  * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://w-sample.widget/widget/?slug=sample.
@@ -1535,10 +1537,17 @@ async function checkCreate(deadline) {
       if (!answer.isError || error?.code !== 'gate-failed' || error?.gate !== 'page-render' || !error?.diagnostics?.some((line) => line.startsWith(item.refuse))) {
         return `create: the render check did not refuse ${item.dir} with ${item.refuse}: ${JSON.stringify(answer.body)}`
       }
+      if (typeof item.nextStep === 'string' && error?.nextStep?.includes(item.nextStep) !== true) return `create: the next step of ${item.dir} has no ${JSON.stringify(item.nextStep)}: ${JSON.stringify(error?.nextStep)}`
     } else {
       if (answer.isError) return `create: the case ${item.dir} did not install: ${JSON.stringify(answer.body)}`
       const missing = (item.warnings ?? []).filter((text) => !answer.body?.warnings?.some((line) => line.includes(text)))
       if (missing.length > 0) return `create: the case ${item.dir} has no warning ${JSON.stringify(missing)}: ${JSON.stringify(answer.body?.warnings)}`
+      if (typeof item.shows === 'string') {
+        const slug = answer.body?.slug
+        const read = await pollOrigin(slug, Math.min(deadline, Date.now() + 20_000), (value) => value.url === widgetUrl(slug, 'page') && value.note === item.shows && value.notice === null)
+        note(`create case ${item.dir} shows=${JSON.stringify(read.value)}`)
+        if (!read.ok) return `create: the window of the case ${item.dir} does not show ${JSON.stringify(item.shows)}: ${JSON.stringify(read.value)}`
+      }
       await tool('widget_remove', { slug: answer.body?.slug })
     }
   }

@@ -13,9 +13,11 @@
 @import "@deepseek-ai/dsh-client-ui-theme/src/styles/base.css" layer(theme);
 @import "@deepseek-ai/dsh-client-ui-theme/src/styles/design-platform.css" layer(theme);
 
-/* The classes of the shadcn pieces that a page may import, and of the core state views. */
+/* The classes of the shadcn pieces and of the library that a page may import, and of the core state views. */
 @source "./src/ui";
 @source "./src/components";
+@source "./src/library.tsx";
+@source "./src/charts-impl.tsx";
 @source "../widget-kit/src";
 
 /* DSH dark mode: body[data-ds-dark-theme] (boot-theme.ts). shadcn `dark:` classes follow it. */

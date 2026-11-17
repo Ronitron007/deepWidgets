@@ -80,7 +80,7 @@ The server `instructions` text is one line: "Call deepwidgets_modes first." An M
 |---|---|---|
 | `deepwidgets_modes` | all | Gives each mode, with its goal, `on`, its setting, its tools, and its guide. It also gives the path of the settings file, and the parse error of that file. |
 | `widget_list` | shared | Gives the live widgets and a cursor for `widget_changes`. |
-| `widget_guide` | shared | Gives the guide of one mode. Send `mode` with the value `interact` or `create`. |
+| `widget_guide` | shared | Gives the guide of one mode. Send `mode` with the value `interact`, `create`, or `library`. |
 | `widget_describe` | `interact` | Gives the actions of one widget, the argument schemas, and the state. For a widget that `widget_install` installed, it also gives `source`, the absolute path of the install folder. |
 | `widget_call` | `interact` | Runs one action. For a change, send a new `requestId`. |
 | `widget_changes` | `interact` | Gives the changes after a cursor. |
@@ -88,6 +88,7 @@ The server `instructions` text is one line: "Call deepwidgets_modes first." An M
 | `widget_install` | `create` | Runs the gates on a widget folder and installs the widget. A second install of one slug replaces the bundle. The state stays. |
 | `widget_reload` | `create` | Runs the gates on the install folder of a widget again and replaces the bundle. |
 | `widget_remove` | `create` | Removes the bundle of a widget. The state stays. |
+| `library_template` | `library` | Gives the five files of the page folder of a widget: the three fixed files, an example `child.tsx`, and an example `library.tsx`. The example child has the catalog id `<slug>@1`. |
 
 Each tool error gives `code`, `message`, and `nextStep`. A creation error also gives `gate` and `diagnostics`.
 
@@ -103,14 +104,15 @@ A mode is one type of job that an agent does through this server. The spec is `d
 |---|---|---|
 | `interact` | Use widgets that exist. | None. This mode is always on. |
 | `create` | Write, change, or remove a widget. | `modes.create` |
+| `library` | Write the page of a widget with components of the agent. | `modes.library` |
 
 The settings file is `$DSH_HOME/deepwidgets/settings.json`. This is the content:
 
 ```json
-{ "modes": { "create": true } }
+{ "modes": { "create": true, "library": true } }
 ```
 
-- The value `false` turns the mode `create` off.
+- The value `false` turns that mode off.
 
 - The server reads the file at each call of a tool. Thus a change to the file has an effect at the next call. You do not restart the app.
 
@@ -119,6 +121,8 @@ The settings file is `$DSH_HOME/deepwidgets/settings.json`. This is the content:
 - If the file does not parse, each mode is on. `deepwidgets_modes` gives the error in `settingsError`.
 
 When a mode is off, its tools stay in the tool list. A call of `widget_install`, `widget_reload`, or `widget_remove` then does nothing. It gives the error code `mode-off`, with the fields `mode`, `setting`, and `settingsFile`. `widget_template` and `widget_guide` still answer, because they only read.
+
+When the mode `library` is off, `library_template` gives `mode-off` (spec `agent_library.guide.mode`). `widget_install` and `widget_reload` also give `mode-off`, with the mode `library`, for a widget folder that has `page/`. A widget folder with no `page/` installs as before. A page that is installed keeps its window.
 
 ## Gates `mcp_readme.gates`
 
@@ -137,6 +141,8 @@ A widget folder with `page/` also runs the page gates (`src/page-gate.ts`). The 
 - The import fence finds each import of a page file that is not on the allowed list.
 
 - The output fence finds each file that went into the page from outside `page/` and outside the allowed packages.
+
+The render check gets the catalog of the widget definition. When the `CATALOG_ID` of `page/child.tsx` is another id, the gate `page-render` refuses the page with the diagnostic code `wrong-catalog` (spec `agent_library.guide.catalog`).
 
 The fences do not refuse the page (spec `agent_library.fence_warn`). Each finding is a warning of the gate `page-build`, and the install answer lists it. The host writes one warning line to its logger for each install that has such a warning. A PostCSS or Tailwind config file, `@plugin`, and `@config` still refuse the page.
 

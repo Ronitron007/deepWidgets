@@ -27,7 +27,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
@@ -41,11 +41,12 @@ import type { NodeIncomingMessageLike } from '@modelcontextprotocol/node'
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import type { CallToolResult, StandardSchemaWithJSON } from '@modelcontextprotocol/server'
 import { z } from 'zod'
-import { CreationError, templateFiles, widgetTypesText, WidgetInstaller } from './creation.ts'
+import { CreationError, pageTemplateFiles, templateFiles, widgetTypesText, WidgetInstaller } from './creation.ts'
 import type { CreationErrorCode, GateName, InstallOutcome, PageState } from './creation.ts'
 
 export type { CreationErrorCode } from './creation.ts'
-import { fenceCount, fenceFindings } from './page-gate.ts'
+import { LIBRARY_GUIDE } from './library-guide.ts'
+import { fenceCount, fenceFindings, hasPage } from './page-gate.ts'
 import type { RenderCheck, RenderCheckRequest, RenderCheckResult } from './page-gate.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -139,12 +140,14 @@ interface ModeSpec {
 }
 
 /**
- * The modes, in the order of `modes.list`. `kit`, `library`, and `plugin` join this list when their stage ships.
- * `widget_list` and `widget_guide` are shared and belong to no mode.
+ * The modes, in the order of `modes.list`. `kit` and `plugin` join this list when their stage ships.
+ * `widget_list` and `widget_guide` are shared and belong to no mode. The mode `library` also gates `widget_install`
+ * and `widget_reload` of a bundle with `page/` (`agent_library.guide.mode`).
  */
 const MODES = [
   { name: 'interact', goal: 'Use widgets that exist', setting: null, tools: ['widget_describe', 'widget_call', 'widget_changes'] },
   { name: 'create', goal: 'Write, change, or remove a widget', setting: 'modes.create', tools: ['widget_template', 'widget_install', 'widget_reload', 'widget_remove'] },
+  { name: 'library', goal: 'Write the page of a widget with components of the agent', setting: 'modes.library', tools: ['library_template'] },
 ] as const satisfies readonly ModeSpec[]
 type Mode = (typeof MODES)[number]
 type ModeName = Mode['name']
@@ -156,7 +159,7 @@ const MODE_NAMES = MODES.map((mode) => mode.name) as [ModeName, ...ModeName[]]
 const SETTING_OF = Object.fromEntries(MODES.filter((mode): mode is GatedSpec => mode.setting !== null).map((mode) => [mode.name, mode.setting])) as Record<GatedMode, string>
 
 /** The settings file (`modes.settings`). Other keys are for later stages; this stage ignores them. */
-const settingsSchema = z.object({ modes: z.object({ create: z.boolean().optional() }).optional() })
+const settingsSchema = z.object({ modes: z.object({ create: z.boolean().optional(), library: z.boolean().optional() }).optional() })
 
 /** The settings at one tool call. `error` is set when the file exists and does not parse; then each mode is on. */
 interface Settings {
@@ -169,7 +172,7 @@ interface Settings {
  * also turns no mode off, so a broken file never locks the agent out; `deepwidgets_modes` reports its error.
  */
 async function readSettings(file: string): Promise<Settings> {
-  const allOn: Settings['on'] = { create: true }
+  const allOn: Settings['on'] = { create: true, library: true }
   let text: string
   try {
     text = await readFile(file, 'utf8')
@@ -184,8 +187,8 @@ async function readSettings(file: string): Promise<Settings> {
     return { on: allOn, error: `the settings file is not JSON: ${error instanceof Error ? error.message : String(error)}` }
   }
   const checked = settingsSchema.safeParse(parsed)
-  if (!checked.success) return { on: allOn, error: `the settings file does not match { "modes": { "create": true } }: ${z.prettifyError(checked.error)}` }
-  return { on: { create: checked.data.modes?.create ?? true } }
+  if (!checked.success) return { on: allOn, error: `the settings file does not match { "modes": { "create": true, "library": true } }: ${z.prettifyError(checked.error)}` }
+  return { on: { create: checked.data.modes?.create ?? true, library: checked.data.modes?.library ?? true } }
 }
 
 /** The guide of the mode `interact` (`modes.guide`): the rules that the server instructions held before the modes. */
@@ -595,31 +598,48 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     return row === undefined || row.epoch !== epoch ? undefined : { ...row, token }
   }
 
-  /** Run one tool body. A runtime error keeps its code; any other error is `internal-error`. */
+  /** The answer of a failed tool call. A runtime error keeps its code; any other error is `internal-error`. */
+  function failure(error: unknown): CallToolResult {
+    if (isWidgetError(error)) return toolError(error.code, error.message, { rev: error.rev })
+    if (error instanceof CreationError) return toolError(error.code, error.message, { gate: error.gate, diagnostics: error.diagnostics, nextStep: error.nextStep })
+    ctx.logger.warn('mcp: a tool failed', error)
+    return toolError('internal-error', error instanceof Error ? error.message : String(error))
+  }
+
+  /** Run one tool body. */
   async function guarded(run: () => Record<string, unknown> | Promise<Record<string, unknown>>): Promise<CallToolResult> {
     try {
       return toolOk(await run())
     } catch (error) {
-      if (isWidgetError(error)) return toolError(error.code, error.message, { rev: error.rev })
-      if (error instanceof CreationError) return toolError(error.code, error.message, { gate: error.gate, diagnostics: error.diagnostics, nextStep: error.nextStep })
-      ctx.logger.warn('mcp: a tool failed', error)
-      return toolError('internal-error', error instanceof Error ? error.message : String(error))
+      return failure(error)
     }
+  }
+
+  /** The answer of a call that a mode that is off refuses (`modes.refusal`). */
+  function modeOff(mode: GatedMode): CallToolResult {
+    const setting = SETTING_OF[mode]
+    return toolError('mode-off', `the mode ${mode} is off: the setting ${setting} is false in ${settingsFile}`, { mode, setting, settingsFile })
   }
 
   /**
    * Parse the tool input with `schema`, then run the tool body through {@link guarded}. With `mode`, the call first
-   * reads the settings file and does nothing when that mode is off (`modes.refusal`).
+   * reads the settings file and does nothing when that mode is off (`modes.refusal`). With `page`, the call also
+   * does nothing when the folder that `page` gives has `page/` and the mode `library` is off (`agent_library.guide.mode`).
    */
-  function tool<S extends z.ZodType>(schema: S, run: (input: z.infer<S>) => Record<string, unknown> | Promise<Record<string, unknown>>, options: { mode?: GatedMode, invalidNextStep?: string } = {}): (input: unknown) => Promise<CallToolResult> {
+  function tool<S extends z.ZodType>(schema: S, run: (input: z.infer<S>) => Record<string, unknown> | Promise<Record<string, unknown>>, options: { mode?: GatedMode, page?: (input: z.infer<S>) => string | undefined | Promise<string | undefined>, invalidNextStep?: string } = {}): (input: unknown) => Promise<CallToolResult> {
     return async (input) => {
-      const { mode } = options
-      if (mode !== undefined && !(await readSettings(settingsFile)).on[mode]) {
-        const setting = SETTING_OF[mode]
-        return toolError('mode-off', `the mode ${mode} is off: the setting ${setting} is false in ${settingsFile}`, { mode, setting, settingsFile })
-      }
+      const { mode, page } = options
+      if (mode !== undefined && !(await readSettings(settingsFile)).on[mode]) return modeOff(mode)
       const parsed = schema.safeParse(input ?? {})
       if (!parsed.success) return toolError('invalid-args', z.prettifyError(parsed.error), { nextStep: options.invalidNextStep })
+      if (page !== undefined) {
+        try {
+          const dir = await page(parsed.data)
+          if (dir !== undefined && isAbsolute(dir) && await hasPage(dir) && !(await readSettings(settingsFile)).on.library) return modeOff('library')
+        } catch (error) {
+          return failure(error)
+        }
+      }
       return guarded(() => run(parsed.data))
     }
   }
@@ -651,6 +671,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     })
     const changesInput = z.object({ since: z.string().optional() })
     const templateInput = z.object({ slug: z.string().regex(SLUG).optional(), title: z.string().min(1).max(80).optional() })
+    const libraryTemplateInput = z.object({ slug: z.string().regex(SLUG).optional() })
     const installInput = z.object({ dir: z.string().min(1) })
     const slugInput = z.object({ slug: z.string().regex(SLUG) })
     const mcp = new McpServer(
@@ -718,27 +739,39 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     }))
 
     mcp.registerTool('widget_guide', {
-      description: 'Give the guide of one mode. interact: how to list, describe, call, and follow widgets. create: the widget API types, the rules that the install gates check, and the OpenUI Lang guide of the component set for the program.',
+      description: 'Give the guide of one mode. interact: how to list, describe, call, and follow widgets. create: the widget API types, the rules that the install gates check, and the OpenUI Lang guide of the component set for the program. library: how to write the page of a widget with your own components, and the page gates.',
       inputSchema: lenient(guideInput),
       annotations: { readOnlyHint: true },
-    }, tool(guideInput, async ({ mode }) => ({ mode, guide: mode === 'interact' ? INTERACT_GUIDE : await guideText() }), {
-      invalidNextStep: 'Pass mode: interact or create. deepwidgets_modes lists the modes.',
+    }, tool(guideInput, async ({ mode }) => ({ mode, guide: mode === 'interact' ? INTERACT_GUIDE : mode === 'library' ? LIBRARY_GUIDE : await guideText() }), {
+      invalidNextStep: 'Pass mode: interact, create, or library. deepwidgets_modes lists the modes.',
     }))
 
     mcp.registerTool('widget_install', {
       description: 'Install the widget in a folder (absolute path, with src/index.ts). The gates compile, lint, type-check, and test-run the code first; code that fails a gate is not installed. A folder with page/ also runs the page gates: the fixed files, the type check, the build, and the render check. A page that imports or uses a file outside page/ installs with a warning. A second install of the same slug replaces the bundle; the state stays.',
       inputSchema: lenient(installInput),
-    }, tool(installInput, async ({ dir }) => withNextStep(logFence(await creator().install(dir)), 'Call widget_describe with the slug, then widget_call each action to check it.'), { mode: 'create' }))
+    }, tool(installInput, async ({ dir }) => withNextStep(logFence(await creator().install(dir)), 'Call widget_describe with the slug, then widget_call each action to check it.'), { mode: 'create', page: ({ dir }) => dir }))
 
     mcp.registerTool('widget_reload', {
       description: 'Run the gates again on the folder that the widget was installed from, and replace the bundle. Use it after you edit the files. The state stays.',
       inputSchema: lenient(slugInput),
-    }, tool(slugInput, async ({ slug }) => withNextStep(logFence(await creator().reload(slug)), 'Call widget_describe with the slug, then widget_call the changed actions.'), { mode: 'create' }))
+    }, tool(slugInput, async ({ slug }) => withNextStep(logFence(await creator().reload(slug)), 'Call widget_describe with the slug, then widget_call the changed actions.'), { mode: 'create', page: ({ slug }) => installer?.source(slug) }))
 
     mcp.registerTool('widget_remove', {
       description: 'Remove the bundle of a widget that widget_install installed. Its window closes. The state stays, so a later install of the slug gets it back.',
       inputSchema: lenient(slugInput),
     }, tool(slugInput, async ({ slug }) => ({ ...await creator().remove(slug) }), { mode: 'create' }))
+
+    mcp.registerTool('library_template', {
+      description: 'Give the files of the page folder of a widget, with the slug filled in: the fixed index.html, main.tsx, and styles.css, an example child.tsx, and an example library.tsx that adds one component to the component set of the shell. Write them under page/ in the folder of the widget. Call widget_guide with mode "library" first.',
+      inputSchema: lenient(libraryTemplateInput),
+      annotations: { readOnlyHint: true },
+    }, tool(libraryTemplateInput, async ({ slug }) => {
+      const name = slug ?? 'my-widget'
+      return {
+        files: await pageTemplateFiles(name),
+        nextStep: `Write each file under the folder of the widget, next to src/. In src/index.ts, set catalog: '${name}@1' in the widget definition: it is the CATALOG_ID of page/child.tsx. Do not change page/index.html, page/main.tsx, or the dw-core block of page/styles.css. Then call widget_install with the absolute folder path. Call widget_guide with mode "library" for the page rules.`,
+      }
+    }, { mode: 'library' }))
     return mcp
   }
 
