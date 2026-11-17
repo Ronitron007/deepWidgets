@@ -42,6 +42,8 @@ export const WidgetSchema = z.object({
   actions: z.array(ActionSchema).optional(),
   source: z.string().optional(),
   rows: z.array(z.object({ id: z.string(), entryId: z.string(), name: z.string(), enabled: z.boolean() })),
+  /** Each plugin row is off. In safe mode the status stays `safe-mode`, and this field shows the Turn off. */
+  turnedOff: z.literal(true).optional(),
   window: z.literal('shown').optional(),
 })
 export type Widget = z.infer<typeof WidgetSchema>

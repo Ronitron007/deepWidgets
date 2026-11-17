@@ -69,7 +69,7 @@ const BUSY_TEXT: Record<Control, string> = { turnOff: 'Turning off…', turnOn: 
 function Controls({ widget, onChanged }: { widget: Widget, onChanged: () => void }) {
   const call = useCall()
   const [busy, setBusy] = useState<Control | undefined>(undefined)
-  const [error, setError] = useState<string | undefined>(undefined)
+  const [error, setError] = useState<{ message: string, nextStep?: string } | undefined>(undefined)
   const [confirming, setConfirming] = useState(false)
   const name = widget.title ?? widget.slug
 
@@ -80,10 +80,11 @@ function Controls({ widget, onChanged }: { widget: Widget, onChanged: () => void
     setBusy(undefined)
     setConfirming(false)
     if (answer.ok) onChanged()
-    else setError(answer.message)
+    else setError({ message: answer.message, ...(answer.nextStep === undefined ? {} : { nextStep: answer.nextStep }) })
   }
 
-  const off = widget.status.kind === 'turned-off'
+  // In safe mode the status stays safe-mode; `turnedOff` tells that the operator turned the widget off.
+  const off = widget.turnedOff === true || widget.status.kind === 'turned-off'
   return (
     <div className="flex flex-col gap-2 border-t border-border pt-2.5" data-dw="controls">
       {confirming ? (
@@ -117,7 +118,12 @@ function Controls({ widget, onChanged }: { widget: Widget, onChanged: () => void
           ) : null}
         </span>
       )}
-      {error === undefined ? null : <span className="text-destructive" role="alert" data-dw="control-error">{error}</span>}
+      {error === undefined ? null : (
+        <span className="flex flex-col gap-0.5" role="alert" data-dw="control-error">
+          <span className="text-destructive">{error.message}</span>
+          {error.nextStep === undefined ? null : <span className="text-muted-foreground">{error.nextStep}</span>}
+        </span>
+      )}
     </div>
   )
 }
@@ -127,7 +133,11 @@ function Details({ id, widget, onChanged }: { id: string, widget: Widget, onChan
   return (
     <div id={id} className="flex flex-col gap-3 px-3 pb-3" data-dw="widget-details">
       {status.kind === 'failed' ? <div className="dwm-callout" data-tone="error"><strong>Failed.</strong> {status.reason}</div> : null}
-      {status.kind === 'safe-mode' ? <div className="dwm-callout" data-tone="warn"><strong>Off in safe mode.</strong> {status.message}</div> : null}
+      {status.kind === 'safe-mode' ? (
+        <div className="dwm-callout" data-tone="warn">
+          <strong>Off in safe mode.</strong> {status.message}{widget.turnedOff === true ? ' The operator also turned it off.' : ''}
+        </div>
+      ) : null}
       <dl className="dwm-fields">
         <Field label="Catalog">{catalog === undefined ? <Muted>Only a live widget has one</Muted> : <code className="font-mono text-[12px]">{catalog}</code>}</Field>
         <Field label="State">

@@ -5,11 +5,17 @@
  * @module @deepwidgets/shell/main-widget/call
  */
 import { createContext, useContext, useMemo, type ReactNode } from 'react'
+import { z } from 'zod'
 import type { McpClientLike } from '@openuidev/react-lang'
 import type { RootProps } from '@deepwidgets/widget-kit'
 
-/** The answer of one call. `message` is the refusal text of the host, for example `built-in: sample is a built-in widget`. */
-export type CallResult = { ok: true, result: unknown } | { ok: false, message: string }
+/**
+ * The answer of one call. A refusal of main (`MainRefusal` of `@deepwidgets/widget-main`) comes as a result with
+ * `ok: false` and a `code`. A failed call (no host, a defect of the action) has no `code`.
+ */
+export type CallResult =
+  | { ok: true, result: unknown }
+  | { ok: false, message: string, code?: string, nextStep?: string }
 
 /** Call the action `name` of main with `args`. The answer never throws. */
 export type CallAction = (name: string, args: Record<string, unknown>) => Promise<CallResult>
@@ -20,19 +26,30 @@ function isMcpClient(tools: NonNullable<RootProps['toolProvider']>): tools is Mc
   return typeof (tools as Partial<McpClientLike>).callTool === 'function'
 }
 
+/** The refusal of main in a call result, read at this boundary. */
+const RefusalSchema = z.object({ ok: z.literal(false), code: z.string(), message: z.string(), nextStep: z.string().optional() })
+
+/** A result of main becomes a refusal when it has `ok: false` and a code; else it is the result. */
+function settle(result: unknown): CallResult {
+  const refusal = RefusalSchema.safeParse(result)
+  if (!refusal.success) return { ok: true, result }
+  const { code, message, nextStep } = refusal.data
+  return { ok: false, code, message, ...(nextStep === undefined ? {} : { nextStep }) }
+}
+
 function makeCall(tools: RootProps['toolProvider']): CallAction {
   return async (name, args) => {
     if (tools === null) return { ok: false, message: 'The page has no connection to the host.' }
     try {
       if (isMcpClient(tools)) {
         const answer = await tools.callTool({ name, arguments: args })
-        if (answer.isError !== true) return { ok: true, result: answer.structuredContent }
+        if (answer.isError !== true) return settle(answer.structuredContent)
         const text = answer.content.map((item) => item.text ?? '').join(' ').trim()
-        return { ok: false, message: text === '' ? `The host refused ${name}.` : text }
+        return { ok: false, message: text === '' ? `The host could not run ${name}.` : text }
       }
       const handler = tools[name]
       if (handler === undefined) return { ok: false, message: `The page has no action ${name}.` }
-      return { ok: true, result: await handler(args) }
+      return settle(await handler(args))
     } catch (error) {
       return { ok: false, message: error instanceof Error ? error.message : String(error) }
     }
