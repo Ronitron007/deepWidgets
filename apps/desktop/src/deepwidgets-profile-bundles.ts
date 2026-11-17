@@ -32,7 +32,9 @@ export const TEMPLATE_BEFORE_RECORD: readonly string[] = [
  * @param names - the template bundles to add; the default is each template bundle.
  * @returns the new list; the same entries in the same order when no bundle of `names` is missing.
  */
-export function withTemplateBundles(bundles: readonly string[], template: readonly string[], names: readonly string[] = template): string[] {
+export function withTemplateBundles(
+  bundles: readonly string[], template: readonly string[], names: readonly string[] = template,
+): string[] {
   const result = [...bundles]
   template.forEach((name, index) => {
     if (!names.includes(name) || result.includes(name)) return
@@ -53,7 +55,7 @@ function readRecord(profileDir: string): string[] | undefined {
   if (!existsSync(path)) return undefined
   try {
     const value = JSON.parse(readFileSync(path, 'utf8')) as { bundles?: unknown }
-    if (Array.isArray(value.bundles) && value.bundles.every(name => typeof name === 'string')) return value.bundles as string[]
+    if (Array.isArray(value.bundles) && value.bundles.every(name => typeof name === 'string')) return value.bundles
   } catch { /* the warning below */ }
   console.warn(`deepwidgets-profile: ${path} is not a list of bundles; the boot uses the baseline of a profile with no record`)
   return undefined
