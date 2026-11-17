@@ -239,6 +239,8 @@ export function apply(ctx: Context): void {
     // The rows are read in the queue, after each install or replace before this change.
     const change = async (): Promise<{ id: string, application: ChangeResult['application'] }[]> => {
       const targets = rowsOfSlug(slug, await widgetRows()).filter((info) => info.enabled !== enabled)
+      // A refusal inside the change: the installer stores nothing for it.
+      if (targets.length === 0) refuse('no-row', `no plugin row of ${slug} is ${enabled ? 'off' : 'on'}`)
       const changed: { id: string, application: ChangeResult['application'] }[] = []
       for (const info of targets) {
         const result = await manager.setPluginEnabled(info.entryId, enabled)
@@ -253,9 +255,7 @@ export function apply(ctx: Context): void {
       return changed
     }
     const installer = ctx.get('widgetInstaller')
-    // With no row to change, the stored choice still follows the operator, so a later install keeps it.
     const changed = installer === undefined ? await change() : await installer.turn(slug, !enabled, change)
-    if (changed.length === 0) refuse('no-row', `no plugin row of ${slug} is ${enabled ? 'off' : 'on'}`)
     return { slug, rows: changed }
   }
 

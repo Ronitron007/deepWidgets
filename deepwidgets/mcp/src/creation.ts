@@ -786,19 +786,14 @@ export class WidgetInstaller {
   /**
    * main_widget.widgets: Turn off (`off`) or Turn on `slug` for the operator. `change` turns the plugin rows of the slug
    * off or on. It runs in the queue, so it never runs during an install, a replace, or a remove. The choice is stored
-   * first, and it lasts across host starts: while it is off, an install or a reload of the slug installs the new row off.
-   * When `change` throws, the stored choice goes back to what it was.
+   * only after `change` returns, and it lasts across host starts: while it is off, an install or a reload of the slug
+   * installs the new row off. When `change` throws, for example a refusal with no row to change, nothing is stored.
    */
   turn<T>(slug: string, off: boolean, change: () => Promise<T>): Promise<T> {
     return this.serial(async () => {
-      const was = (await this.turnedOffSlugs()).has(slug)
+      const result = await change()
       await this.writeTurnedOff(slug, off)
-      try {
-        return await change()
-      } catch (error) {
-        await this.writeTurnedOff(slug, was)
-        throw error
-      }
+      return result
     })
   }
 

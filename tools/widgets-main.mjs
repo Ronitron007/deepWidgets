@@ -13,7 +13,8 @@
  *   widget, and its state stays in storage. A refusal of an action of main is its result, with a code.
  * - main_widget.widgets and widget_reload: a reload of a widget that the operator turned off keeps it off, with the
  *   warning turned-off, and keeps its state; Turn on brings it back, and a reload after it gives a live widget. A later
- *   reload of the widget while it is off starts no code (the change feed of the runtime has no `added`).
+ *   reload of the widget while it is off starts no code (the change feed of the runtime has no `added`). A Turn off
+ *   that refuses stores nothing.
  * - main_widget.widgets in safe mode: a second host start with DEEPWIDGETS_SAFE_MODE=1. An agent widget keeps the status
  *   safe-mode, and the field turnedOff follows Turn off and Turn on.
  * The calls of main go through POST /api/widgets/main/call with the host cookie, as the page of main calls them.
@@ -301,6 +302,20 @@ async function turnedOffReloadRunsNoCode(call) {
     JSON.stringify({ feed, turnedOff: reloaded.body?.turnedOff, error: reloaded.body?.error, warnings: reloaded.body?.warnings, row: { status: row?.status, rows: row?.rows } }))
 }
 
+/** refused_turn_off_stored: a Turn off that refuses (no row of the slug) stores nothing in the Turn off record. */
+async function refusedTurnOffStoresNothing() {
+  const refused = await route('main', 'turnOff', { slug: 'ghost-w' })
+  const profileDir = await inHost("return loader.ctx.get('pluginManager').profile.dir")
+  let stored = []
+  try {
+    stored = JSON.parse(readFileSync(join(profileDir, 'deepwidgets-widgets', '.turned-off.json'), 'utf8'))
+  } catch (error) {
+    if (error?.code !== 'ENOENT') stored = [`unreadable: ${String(error)}`]
+  }
+  check('a Turn off that refuses with no-row stores no Turn off', refused.body?.result?.ok === false && refused.body.result.code === 'no-row' && Array.isArray(stored) && !stored.includes('ghost-w'),
+    JSON.stringify({ refused: refused.body?.result, stored }))
+}
+
 async function hostPart() {
   const port = await freePort()
   inspectPort = await freePort()
@@ -383,6 +398,7 @@ async function hostPart() {
   await offAndOn(SLUG, `deepwidgets-agent-${SLUG}`)
   await reloadKeepsTurnOff(call)
   await turnedOffReloadRunsNoCode(call)
+  await refusedTurnOffStoresNothing()
   const offMain = await route('main', 'turnOff', { slug: 'main' })
   // main_widget.widgets: a refusal is the result of the action, with a code, not a handler-error with a code in its message.
   check('Turn off refuses main with the code unknown-widget', offMain.body?.ok === true && offMain.body.result?.ok === false && offMain.body.result.code === 'unknown-widget', JSON.stringify(offMain.body))
