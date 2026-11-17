@@ -23,17 +23,28 @@
  * `warnings` must install with each text in its warnings (the check then removes it).
  * With DSH_SMOKE_LOG=1, the check makes the folder $DSH_HOME/deepwidgets read-only and asks the MCP port for a token.
  * The answer must be 500, and the output of the app must have the ctx.logger line of @deepwidgets/mcp (safe_host.log).
- * With DSH_SMOKE_MAIN=1, Electron main opens a hidden test window of 420 by 600 on the panel page of the main widget,
- * dsh-app://w-main.widget/widget/main.html?slug=main (main_widget.widget). The page must show a row for sample with its
- * state rev, and no row for main. A state write of sample over the host Loader must change the rev in that row: the
- * stream of main carries each change of another widget (main_widget.widgets). The row of sample opens with its state
- * viewer, Turn off, and no Remove. Turn off and Turn on in the page change its status. With the page open, 100 writes of
- * sample in a row take at most 3 times the time with no page of main, a burst of 100 parallel writes gives no failure,
- * and the page refreshes at most once for each 250 ms of writes (fanout_query_blocks_writes). Last, the page loads again
- * with a wrapper of EventSource: the check cuts the stream of main, writes sample while it is down, and opens it again.
- * The row must show the new rev from the `data` frame after the `hello` of main. The check saves two screenshots
- * with webContents.capturePage(): $TMPDIR/deepwidgets-main-page/main-page.png, and main-page-state.png with the state of
- * sample open.
+ * With DSH_SMOKE_MAIN=1, the check reads the menu bar of Electron main (main_widget.menu_bar, main_widget.panel). The
+ * Dock has no icon: lsappinfo lists Electron main as a UIElement app, and app.dock.isVisible() is false, at the start and
+ * after the panel opened. The menu bar icon exists, and its menu has "Open deepWidgets" and "Quit deepWidgets". A
+ * programmatic click on the icon opens the panel of 420 by 600 under the icon, on all Spaces, with focus, on the page
+ * dsh-app://w-main.widget/widget/main.html?slug=main (main_widget.widget). In that page, the page checks of main.page
+ * run: a row for sample with its state rev, and no row for main. A state write of sample over the host Loader must
+ * change the rev in that row: the stream of main carries each change of another widget (main_widget.widgets). The row
+ * of sample opens with its state viewer, Turn off, and no Remove. Turn off and Turn on in the page change its status.
+ * Then a second click closes the panel, another app comes in front (lsappinfo front), and the window of sample still
+ * shows. "Open deepWidgets" opens it, a new window that takes the focus closes it, and a
+ * second launch of the dev app (its launcher HarnessDev) exits by itself and opens it. The check saves screenshots with
+ * webContents.capturePage(): $TMPDIR/deepwidgets-main-page/main-page.png, main-page-state.png with the state of sample
+ * open, and $TMPDIR/deepwidgets-app-menu-bar/panel.png.
+ * With the page open, 100 writes of sample in a row take at most 3 times the time with no page of main (the panel shows
+ * about:blank for that baseline), a burst of 100 parallel writes gives no failure, and the page refreshes at most once
+ * for each 250 ms of writes (fanout_query_blocks_writes). A switch to Settings and back keeps the row of sample open.
+ * Then the page loads again with a wrapper of EventSource: the check cuts the stream of main, writes sample while it is
+ * down, and opens it again. The row must show the new rev from the `data` frame after the `hello` of main.
+ * During these page checks the panel does not hide on a loss of focus, so another app on the Mac can not close it.
+ * With DSH_SMOKE_OLD_PROFILE=1, the run starts with the desktop profile of the web template before main.runtime, which
+ * has no @deepwidgets/widget-main. The boot must add it in its template place and log the change. Run it with
+ * DSH_SMOKE_MAIN=1, so the panel must also show the main widget.
  * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://w-sample.widget/widget/?slug=sample.
  * It turns the sample row off through the host plugin manager and finds that window closed.
  * With DSH_SMOKE_HOST_RESTART=1, the check kills the host once. The sample widget page must be live again
@@ -194,9 +205,21 @@ const NAME_WIDGET = 'built-in-name-test'
 const MAIN_PAGE_URL = 'dsh-app://w-main.widget/widget/main.html?slug=main'
 /** The folder of the screenshots of DSH_SMOKE_MAIN. */
 const MAIN_SHOTS = join(tmpdir(), 'deepwidgets-main-page')
+/** The folder of the screenshot of the open panel of DSH_SMOKE_MAIN (main_widget.panel). */
+const PANEL_SHOTS = join(tmpdir(), 'deepwidgets-app-menu-bar')
 await mkdir(home)
 await mkdir(userData)
 openSync(logPath, 'a')
+/** The web template before main.runtime: a desktop profile of that time has no @deepwidgets/widget-main. */
+const OLD_PROFILE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@deepwidgets/probe', '@deepwidgets/trace', '@deepwidgets/widgets', '@deepwidgets/widget-sample', '@deepwidgets/mcp', '@deepwidgets/trim']
+/** The web template of today, in its order (packages/util/official-bundles/src/bundles.ts). */
+const PROFILE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@deepwidgets/probe', '@deepwidgets/trace', '@deepwidgets/widgets', '@deepwidgets/widget-sample', '@deepwidgets/widget-main', '@deepwidgets/mcp', '@deepwidgets/trim']
+const desktopProfile = join(home, 'profiles', 'desktop')
+if (process.env.DSH_SMOKE_OLD_PROFILE === '1') {
+  // The manifest that createPluginProfile wrote for a profile made before main.runtime.
+  await mkdir(desktopProfile, { recursive: true })
+  writeFileSync(join(desktopProfile, 'package.json'), `${JSON.stringify({ name: 'dsh-profile-desktop', private: true, dependencies: {}, dsh: { profile: { bundles: OLD_PROFILE_BUNDLES } } }, undefined, 2)}\n`)
+}
 
 const mainInspectPort = await freePort()
 const rendererPort = await freePort()
@@ -404,24 +427,26 @@ try {
 if (groupWatcher === undefined) finish(false, 'group watcher did not start')
 
 const logFd = openSync(logPath, 'a')
+/** The environment of the app, also of the second launch of DSH_SMOKE_MAIN. */
+const appEnv = {
+  ...process.env,
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: '0',
+  DSH_HOME: home,
+  DSH_DESKTOP_USER_DATA_DIR: userData,
+  DSH_DESKTOP_MAIN_INSPECT_PORT: String(mainInspectPort),
+  DSH_DESKTOP_RENDERER_DEBUG_PORT: String(rendererPort),
+  DSH_DESKTOP_HOST_INSPECT_PORT: String(hostInspectPort),
+  DSH_DESKTOP_OPEN_DEVTOOLS: '0',
+  // The fixed MCP port of a live app must not collide with the smoke run: let the OS pick one.
+  DEEPWIDGETS_MCP_PORT: process.env.DEEPWIDGETS_MCP_PORT ?? '0',
+  // Crash reports and crash dumps of the app go into the temp folder, not ~/Library/Logs.
+  DEEPWIDGETS_LOGS_DIR: appLogs,
+}
 const child = spawn('corepack', ['pnpm', 'run', 'start:desktop'], {
   cwd: root,
   detached: true,
   stdio: ['ignore', logFd, logFd],
-  env: {
-    ...process.env,
-    COREPACK_ENABLE_DOWNLOAD_PROMPT: '0',
-    DSH_HOME: home,
-    DSH_DESKTOP_USER_DATA_DIR: userData,
-    DSH_DESKTOP_MAIN_INSPECT_PORT: String(mainInspectPort),
-    DSH_DESKTOP_RENDERER_DEBUG_PORT: String(rendererPort),
-    DSH_DESKTOP_HOST_INSPECT_PORT: String(hostInspectPort),
-    DSH_DESKTOP_OPEN_DEVTOOLS: '0',
-    // The fixed MCP port of a live app must not collide with the smoke run: let the OS pick one.
-    DEEPWIDGETS_MCP_PORT: process.env.DEEPWIDGETS_MCP_PORT ?? '0',
-    // Crash reports and crash dumps of the app go into the temp folder, not ~/Library/Logs.
-    DEEPWIDGETS_LOGS_DIR: appLogs,
-  },
+  env: appEnv,
 })
 
 const groupId = child.pid
@@ -452,7 +477,8 @@ try {
       } else {
         const host = await waitForHost(deadline)
         if (!host) failed = 'host timeout'
-        else if (process.env.DSH_SMOKE_PROBE === '1') failed = await checkProbe(page, deadline)
+        if (failed === undefined && process.env.DSH_SMOKE_OLD_PROFILE === '1') failed = checkOldProfile()
+        if (failed === undefined && process.env.DSH_SMOKE_PROBE === '1') failed = await checkProbe(page, deadline)
         if (failed === undefined && process.env.DSH_SMOKE_TRACE === '1') failed = await checkTrace(page, deadline)
         if (failed === undefined && process.env.DSH_SMOKE_HELLO === '1') failed = await checkHello(page, deadline)
         if (failed === undefined && (process.env.DSH_SMOKE_ROWS ?? '') !== '') failed = await checkRows(page, deadline)
@@ -756,23 +782,40 @@ async function setHostPlugin(moduleName, enabled, deadline) {
  * The check uses the public hostGone and hostReady to cut and reopen the events stream, and counts `hello` frames.
  */
 async function withWidgetWindows(deadline, declaration) {
+  return withMainInstance('DesktopWidgetWindows', 'hostReady', deadline, declaration)
+}
+
+/**
+ * Run `declaration` with `this` set to the one DesktopMenuBar instance of Electron main (main_widget.menu_bar):
+ * its `tray`, `contextMenu`, `panel`, and `open()`.
+ */
+async function withMenuBar(deadline, declaration) {
+  return withMainInstance('DesktopMenuBar', 'open', deadline, declaration)
+}
+
+/**
+ * Run `declaration` with `this` set to the one instance of the class `className` of Electron main, over the main
+ * inspector. The class must have the prototype method `method`.
+ */
+async function withMainInstance(className, method, deadline, declaration) {
   const targets = await (await fetch(`http://127.0.0.1:${String(mainInspectPort)}/json/list`, { signal: AbortSignal.timeout(3000) })).json()
   if (!Array.isArray(targets) || typeof targets[0]?.webSocketDebuggerUrl !== 'string') throw new Error('main /json/list: no target')
   const session = await cdpSession(targets[0].webSocketDebuggerUrl, deadline)
+  const name = JSON.stringify(className)
   try {
     const proto = await cdpCall(session, 'Runtime.evaluate', { expression: 'Function.prototype' })
     const functions = await cdpCall(session, 'Runtime.queryObjects', { prototypeObjectId: proto?.result?.objectId })
     const classProto = await cdpCall(session, 'Runtime.callFunctionOn', {
       objectId: functions?.objects?.objectId,
-      functionDeclaration: 'function () { const found = this.filter((fn) => fn.name === "DesktopWidgetWindows" && typeof fn.prototype?.hostReady === "function"); if (found.length !== 1) throw new Error("DesktopWidgetWindows classes " + found.length); return found[0].prototype }',
+      functionDeclaration: `function () { const found = this.filter((fn) => fn.name === ${name} && typeof fn.prototype?.[${JSON.stringify(method)}] === "function"); if (found.length !== 1) throw new Error(${name} + " classes " + found.length); return found[0].prototype }`,
     })
-    if (typeof classProto?.result?.objectId !== 'string') throw new Error('main: no DesktopWidgetWindows prototype')
+    if (typeof classProto?.result?.objectId !== 'string') throw new Error(`main: no ${className} prototype`)
     const instances = await cdpCall(session, 'Runtime.queryObjects', { prototypeObjectId: classProto.result.objectId })
     const call = await cdpCall(session, 'Runtime.callFunctionOn', {
       objectId: instances?.objects?.objectId,
       awaitPromise: true,
       returnByValue: true,
-      functionDeclaration: pinnedFunction(`function () { if (this.length !== 1) throw new Error("DesktopWidgetWindows instances " + this.length); return (${declaration}).call(this[0]) }`),
+      functionDeclaration: pinnedFunction(`function () { if (this.length !== 1) throw new Error(${name} + " instances " + this.length); return (${declaration}).call(this[0]) }`),
     })
     if (call?.exceptionDetails) throw new Error(String(call.exceptionDetails.exception?.description ?? call.exceptionDetails.text ?? 'main call failed'))
     return call?.result?.value
@@ -1931,23 +1974,15 @@ async function clickMain(target, selector, deadline) {
   return evaluate(target.webSocketDebuggerUrl, `(() => { const node = document.querySelector(${JSON.stringify(selector)}); if (node === null) return false; node.click(); return true })()`, deadline)
 }
 
-/** Save a PNG of the test window of main with webContents.capturePage(). Gives the path. */
-async function shootMain(name, deadline) {
-  const data = await withWidgetWindows(deadline, `async function () {
-    const window = globalThis.__deepwidgetsSmokeMain
-    let image = await window.webContents.capturePage(undefined, { stayHidden: true })
-    // A hidden window can give an empty image: show it without focus for the capture.
-    if (image.isEmpty()) {
-      window.showInactive()
-      await new Promise((done) => { setTimeout(done, 500) })
-      image = await window.webContents.capturePage()
-      window.hide()
-    }
+/** Save a PNG of the open panel with webContents.capturePage(). Gives the path. */
+async function shootMain(name, deadline, folder = MAIN_SHOTS) {
+  const data = await withMenuBar(deadline, `async function () {
+    const image = await this.panel.webContents.capturePage()
     return image.isEmpty() ? null : image.toPNG().toString('base64')
   }`)
   if (typeof data !== 'string') throw new Error(`main: the capture of ${name} is empty`)
-  await mkdir(MAIN_SHOTS, { recursive: true })
-  const path = join(MAIN_SHOTS, name)
+  await mkdir(folder, { recursive: true })
+  const path = join(folder, name)
   writeFileSync(path, Buffer.from(data, 'base64'))
   note(`main screenshot=${path} bytes=${String(Math.round(data.length * 3 / 4))}`)
   return path
@@ -2055,86 +2090,271 @@ async function checkMainCatchUp(target, deadline) {
   return undefined
 }
 
+/** Read the menu bar of Electron main: its pid, the Dock state, the icon, the menu, and the panel. */
+function menuBarReadDeclaration() {
+  return `function () {
+    const panel = this.panel
+    return {
+      pid: process.pid,
+      execPath: process.execPath,
+      dock: this.menubar.app.dock?.isVisible() ?? null,
+      tray: { destroyed: this.tray.isDestroyed(), bounds: this.tray.getBounds() },
+      items: this.contextMenu.items.filter((item) => item.type !== 'separator').map((item) => item.label),
+      panel: panel === undefined || panel.isDestroyed() ? null : {
+        visible: panel.isVisible(), focused: panel.isFocused(), bounds: panel.getBounds(), url: panel.webContents.getURL(),
+        allSpaces: panel.isVisibleOnAllWorkspaces(), resizable: panel.isResizable(),
+      },
+    }
+  }`
+}
+
+/** Poll the menu bar until `accept` takes the read value. */
+async function pollMenuBar(until, accept) {
+  let last
+  while (Date.now() < until) {
+    try {
+      last = await withMenuBar(until, menuBarReadDeclaration())
+      if (accept(last)) return { value: last, ok: true }
+    } catch (error) {
+      last = { error: error instanceof Error ? error.message : 'menu bar read failed' }
+    }
+    await delay(150)
+  }
+  return { value: last, ok: false }
+}
+
+/**
+ * The Dock has no icon: macOS lists Electron main as a UIElement app (`lsappinfo`), and app.dock.isVisible() is false.
+ * Gives the failure text, or undefined.
+ */
+async function checkNoDock(state, when) {
+  const info = await capture('lsappinfo', ['info', String(state.pid)])
+  const type = /type="(\w+)"/u.exec(info.stdout)?.[1]
+  note(`main dock ${when}: lsappinfo type=${String(type)} app.dock.isVisible=${String(state.dock)}`)
+  if (type !== 'UIElement' || state.dock !== false) return `main: the Dock has an icon ${when}: lsappinfo type ${String(type)}, app.dock.isVisible ${String(state.dock)}`
+  return undefined
+}
+
+/** The pid of the app in front, from `lsappinfo front`, or undefined. */
+async function frontPid() {
+  const asn = (await capture('lsappinfo', ['front'])).stdout.trim()
+  if (asn === '') return undefined
+  return /pid = (\d+)/u.exec((await capture('lsappinfo', ['info', '-only', 'pid', asn])).stdout)?.[1]
+}
+
+/** A programmatic click on the menu bar icon: the click event of the Tray, with the bounds of the icon. */
+function clickIconDeclaration() {
+  return "function () { this.tray.emit('click', { altKey: false, shiftKey: false, ctrlKey: false, metaKey: false, triggeredByAccessibility: false }, this.tray.getBounds()); return true }"
+}
+
+/**
+ * Launch the app a second time with the launcher of the dev app, next to the executable of Electron main. The second
+ * process finds the single-instance lock taken and quits; the first one gets `second-instance`.
+ */
+async function launchAgain(execPath, until) {
+  const launcher = join(execPath, '..', 'HarnessDev')
+  if (!existsSync(launcher)) return { error: `no launcher at ${launcher}` }
+  const second = spawn(launcher, [], { cwd: root, detached: true, stdio: ['ignore', logFd, logFd], env: appEnv })
+  if (second.pid !== undefined) {
+    addGroup(String(second.pid))
+    groupWatcher?.stdin.write(`${String(second.pid)}\n`)
+  }
+  const exit = await new Promise((resolve) => {
+    const timer = setTimeout(() => { resolve({ timeout: true }) }, Math.max(1, until - Date.now()))
+    second.once('exit', (code, signal) => { clearTimeout(timer); resolve({ code, signal }) })
+    second.once('error', (error) => { clearTimeout(timer); resolve({ error: error.message }) })
+  })
+  note(`main second launch pid=${String(second.pid)} exit=${JSON.stringify(exit)}`)
+  return exit
+}
+
+/**
+ * The menu bar app and its panel (main_widget.menu_bar, main_widget.panel): no Dock icon, one icon, a click opens the
+ * panel with the page of main, a click closes it, the menu opens it, a loss of focus closes it, and a second launch
+ * opens it. The page checks of main.page run in the open panel.
+ */
 async function checkMain(deadline) {
   const soon = () => Math.min(deadline, Date.now() + 15_000)
-  // The test window takes the BrowserWindow class from the window of sample: Electron main opens none for main.
   if (await findWidgetPage('sample', deadline) === undefined) return 'main: no window of sample'
-  // The baseline of the writes, with no page of main open.
+  const start = await pollMenuBar(soon(), (value) => value.panel?.url === MAIN_PAGE_URL)
+  note(`main menu bar start=${JSON.stringify(start.value)}`)
+  if (!start.ok) return `main: no panel at ${MAIN_PAGE_URL}: ${JSON.stringify(start.value)}`
+  const atStart = start.value
+  const dockStart = await checkNoDock(atStart, 'at start')
+  if (dockStart !== undefined) return dockStart
+  if (atStart.tray.destroyed || !(atStart.tray.bounds.width > 0 && atStart.tray.bounds.height > 0)) return `main: no menu bar icon: ${JSON.stringify(atStart.tray)}`
+  if (JSON.stringify(atStart.items) !== '["Open deepWidgets","Quit deepWidgets"]') return `main: the menu of the icon is ${JSON.stringify(atStart.items)}`
+  if (atStart.panel.visible) return 'main: the panel shows before a click'
+
+  // The baseline of the writes, with no page of main: the hidden panel shows about:blank for the time of the measure.
+  await withMenuBar(deadline, "async function () { await this.panel.webContents.loadURL('about:blank'); return true }")
   const closed = await sampleWrites(deadline)
-  await withWidgetWindows(deadline, `function () {
-    const BrowserWindow = this.windows.get('sample').window.constructor
-    const window = new BrowserWindow({ show: false, width: 420, height: 600, useContentSize: true,
-      webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false } })
-    globalThis.__deepwidgetsSmokeMain = window
-    void window.loadURL(${JSON.stringify(MAIN_PAGE_URL)})
-    return window.id
-  }`)
-  try {
-    let target
-    while (target === undefined && Date.now() < soon()) {
-      const targets = await (await fetch(`http://127.0.0.1:${String(rendererPort)}/json/list`, { signal: AbortSignal.timeout(2000) })).json().catch(() => [])
-      target = targets.find((item) => item?.type === 'page' && item.url === MAIN_PAGE_URL && typeof item.webSocketDebuggerUrl === 'string')
-      if (target === undefined) await delay(250)
-    }
-    if (target === undefined) return `main: no page at ${MAIN_PAGE_URL}`
-    const sampleRow = (value) => value.rows?.find((row) => row.slug === 'sample')
-    const first = await pollMain(target, soon(), (value) => value.dw?.stream === 'open' && /^\d+$/u.test(sampleRow(value)?.rev ?? ''))
-    note(`main first=${JSON.stringify(first.value)}`)
-    if (!first.ok) return `main: no row of sample with a state rev: ${JSON.stringify(first.value)}`
-    const read = first.value
-    if (read.dw.catalog !== 'deepwidgets-main@1') return `main: the page has the catalog ${String(read.dw.catalog)}`
-    if (read.rows.some((row) => row.slug === 'main')) return 'main: the page has a row for main'
-    if (read.problems.length > 0) return `main: the page shows a problem: ${JSON.stringify(read.problems)}`
-    if (JSON.stringify(read.tabs) !== '["Widgets","Settings"]') return `main: the tabs are ${JSON.stringify(read.tabs)}`
-    await shootMain('main-page.png', deadline)
+  await withMenuBar(deadline, `async function () { await this.panel.webContents.loadURL(${JSON.stringify(MAIN_PAGE_URL)}); return true }`)
 
-    // A state write of sample that does not come from the page: only the stream of main can tell the page.
-    const before = Number(sampleRow(read).rev)
-    const written = await hostWidgets(deadline, `async (widgets) => {
-      await widgets.update('sample', (state) => ({ count: state.count + 1 }), { by: 'smoke-main' })
-      return widgets.get('sample').rev
-    }`, [])
-    note(`main sample write rev=${String(written)} before=${String(before)}`)
-    if (typeof written !== 'number' || written <= before) return `main: the state write of sample gave rev ${String(written)}`
-    const shown = await pollMain(target, Math.min(deadline, Date.now() + 10_000), (value) => sampleRow(value)?.rev === String(written))
-    note(`main after-write=${JSON.stringify(shown.value)}`)
-    if (!shown.ok) return `main: the row of sample did not show rev ${String(written)}: ${JSON.stringify(sampleRow(shown.value) ?? shown.value)}`
-
-    // The state viewer of sample, and its controls: a built-in widget has Turn off and no Remove.
-    if (await clickMain(target, '[data-dw=widget-row][data-slug=sample] [data-dw=row-toggle]', deadline) !== true) return 'main: no toggle in the row of sample'
-    const opened = await pollMain(target, soon(), (value) => sampleRow(value)?.open === 'true' && sampleRow(value)?.viewer === true)
-    note(`main opened=${JSON.stringify(sampleRow(opened.value))}`)
-    if (!opened.ok) return `main: the state of sample did not open: ${JSON.stringify(sampleRow(opened.value) ?? opened.value)}`
-    if (!sampleRow(opened.value).turnOff || sampleRow(opened.value).remove) return `main: the controls of sample are wrong: ${JSON.stringify(sampleRow(opened.value))}`
-    // control_state_lost_on_close: a switch to Settings and back keeps the row open (the tab panels stay mounted).
-    // Radix activates a tab on mousedown.
-    const pressTab = (index) => evaluate(target.webSocketDebuggerUrl, `(() => {
-      document.querySelectorAll('[data-dw=tab]')[${String(index)}]?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
-      return true
-    })()`, deadline)
-    const activeTab = () => evaluate(target.webSocketDebuggerUrl, "document.querySelector('[data-dw=tab][data-state=active]')?.textContent ?? null", deadline)
-    await pressTab(1)
-    await delay(300)
-    const switched = await activeTab()
-    await pressTab(0)
-    await delay(300)
-    if (switched !== 'Settings' || await activeTab() !== 'Widgets') return `main: the tabs did not switch: ${String(switched)}`
-    const kept = await pollMain(target, soon(), (value) => sampleRow(value)?.open === 'true')
-    note(`main tab switch tabs=${String(switched)} row=${JSON.stringify(sampleRow(kept.value))}`)
-    if (!kept.ok) return `main: a switch of the tab closed the row of sample: ${JSON.stringify(sampleRow(kept.value))}`
-    await shootMain('main-page-state.png', deadline)
-
-    // Turn off and Turn on from the page: the status of the row follows, and the row stays open.
-    for (const [button, status] of [['turn-off', 'turned-off'], ['turn-on', 'live']]) {
-      if (await clickMain(target, `[data-dw=widget-row][data-slug=sample] [data-dw=${button}]`, deadline) !== true) return `main: no ${button} in the row of sample`
-      const changed = await pollMain(target, soon(), (value) => sampleRow(value)?.status === status)
-      note(`main ${button}=${JSON.stringify({ row: sampleRow(changed.value), problems: changed.value?.problems })}`)
-      if (!changed.ok) return `main: after ${button}, the status of sample is not ${status}: ${JSON.stringify(changed.value)}`
-    }
-    return await checkMainWrites(target, closed, deadline) ?? await checkMainCatchUp(target, deadline)
-  } finally {
-    await withWidgetWindows(deadline, 'function () { globalThis.__deepwidgetsSmokeMain?.destroy(); delete globalThis.__deepwidgetsSmokeMain; return true }').catch(() => undefined)
+  // A click on the icon opens the panel under the icon, with key focus.
+  await withMenuBar(deadline, clickIconDeclaration())
+  const opened = await pollMenuBar(soon(), (value) => value.panel?.visible === true)
+  note(`main panel after click=${JSON.stringify(opened.value?.panel)}`)
+  if (!opened.ok) return `main: a click on the icon did not open the panel: ${JSON.stringify(opened.value)}`
+  const { panel, tray } = opened.value
+  if (panel.bounds.width !== 420 || panel.bounds.height !== 600 || panel.resizable) return `main: the panel is not 420 by 600 and fixed: ${JSON.stringify(panel)}`
+  // The panel top is the top of the work area, at the bottom of the menu bar; the icon button can be a few pixels taller.
+  const iconCenter = tray.bounds.x + tray.bounds.width / 2
+  if (Math.abs(panel.bounds.y - (tray.bounds.y + tray.bounds.height)) > 8 || iconCenter < panel.bounds.x || iconCenter > panel.bounds.x + panel.bounds.width) {
+    return `main: the panel is not under the icon: panel ${JSON.stringify(panel.bounds)}, icon ${JSON.stringify(tray.bounds)}`
   }
+  if (!panel.allSpaces) return 'main: the panel is not on all Spaces'
+  const focused = await pollMenuBar(soon(), (value) => value.panel?.focused === true)
+  if (!focused.ok) return `main: the open panel has no focus: ${JSON.stringify(focused.value?.panel)}`
+
+  let target
+  while (target === undefined && Date.now() < soon()) {
+    const targets = await (await fetch(`http://127.0.0.1:${String(rendererPort)}/json/list`, { signal: AbortSignal.timeout(2000) })).json().catch(() => [])
+    target = targets.find((item) => item?.type === 'page' && item.url === MAIN_PAGE_URL && typeof item.webSocketDebuggerUrl === 'string')
+    if (target === undefined) await delay(250)
+  }
+  if (target === undefined) return `main: no page at ${MAIN_PAGE_URL}`
+  // smoke_main_needs_focus: another app on this shared Mac can take the focus during the page checks, so the panel
+  // keeps showing until they end. The check then sets the option back to the value of the app, so the mutant with no
+  // hide on a loss of focus still fails at the focus step.
+  const hideOnBlur = await withMenuBar(deadline, "function () { const value = this.menubar.getOption('hideOnBlur'); this.menubar.setOption('hideOnBlur', false); return value ?? null }")
+  let page
+  try {
+    page = await checkMainPage(target, closed, deadline)
+  } finally {
+    await withMenuBar(deadline, `function () { this.menubar.setOption('hideOnBlur', ${JSON.stringify(hideOnBlur)} ?? undefined); return true }`)
+  }
+  if (page !== undefined) return page
+
+  // A click when the panel is open closes it.
+  await withMenuBar(deadline, clickIconDeclaration())
+  const toggled = await pollMenuBar(soon(), (value) => value.panel?.visible === false)
+  note(`main panel after second click=${JSON.stringify(toggled.value?.panel)}`)
+  if (!toggled.ok) return `main: a click on the icon did not close the open panel: ${JSON.stringify(toggled.value)}`
+  // panel_close_keeps_focus: the keys go back to another app, and the floating window of sample still shows.
+  let front
+  for (const until = Math.min(deadline, Date.now() + 5000); Date.now() < until; await delay(200)) {
+    front = await frontPid()
+    if (front !== undefined && front !== String(atStart.pid)) break
+  }
+  const sampleShown = await withWidgetWindows(deadline, "function () { return this.windows.get('sample')?.window?.isVisible() ?? null }")
+  note(`main after the close: front pid=${String(front)} app pid=${String(atStart.pid)} sample window shown=${String(sampleShown)}`)
+  if (front === undefined || front === String(atStart.pid)) return `main: after a click closed the panel, the app is still in front (pid ${String(front)})`
+  if (sampleShown !== true) return `main: after a click closed the panel, the window of sample does not show (${String(sampleShown)})`
+
+  // "Open deepWidgets" in the menu of the icon opens the panel.
+  await withMenuBar(deadline, "function () { this.contextMenu.items.find((item) => item.label === 'Open deepWidgets').click(); return true }")
+  const menuOpened = await pollMenuBar(soon(), (value) => value.panel?.visible === true && value.panel.focused === true)
+  note(`main panel after Open deepWidgets=${JSON.stringify(menuOpened.value?.panel)}`)
+  if (!menuOpened.ok) return `main: Open deepWidgets did not open the panel with focus: ${JSON.stringify(menuOpened.value)}`
+
+  // A loss of focus closes it: another window takes the focus.
+  try {
+    const other = await withMenuBar(deadline, `async function () {
+      const other = new (this.panel.constructor)({ width: 240, height: 120, show: false, title: 'deepWidgets smoke focus' })
+      globalThis.__deepwidgetsSmokeFocus = other
+      other.show()
+      other.focus()
+      await new Promise((done) => { setTimeout(done, 300) })
+      return { otherFocused: other.isFocused() }
+    }`)
+    const blurred = await pollMenuBar(Math.min(deadline, Date.now() + 5000), (value) => value.panel?.visible === false)
+    note(`main panel after loss of focus=${JSON.stringify({ other, panel: blurred.value?.panel })}`)
+    if (!blurred.ok) return `main: the panel did not close when it lost focus: ${JSON.stringify({ other, panel: blurred.value?.panel })}`
+  } finally {
+    await withMenuBar(deadline, 'function () { globalThis.__deepwidgetsSmokeFocus?.destroy(); delete globalThis.__deepwidgetsSmokeFocus; return true }').catch(() => undefined)
+  }
+
+  // A second launch opens the panel (widget.relaunch).
+  const second = await launchAgain(atStart.execPath, Math.min(deadline, Date.now() + 60_000))
+  if (second.code !== 0) return `main: the second launch did not exit by itself with 0: ${JSON.stringify(second)}`
+  const relaunched = await pollMenuBar(soon(), (value) => value.panel?.visible === true)
+  note(`main panel after second launch=${JSON.stringify(relaunched.value?.panel)}`)
+  if (!relaunched.ok) return `main: a second launch did not open the panel: ${JSON.stringify(relaunched.value)}`
+
+  const dockEnd = await checkNoDock(relaunched.value, 'after the panel opened')
+  if (dockEnd !== undefined) return dockEnd
+  await withMenuBar(deadline, clickIconDeclaration())
+  const closedAtEnd = await pollMenuBar(soon(), (value) => value.panel?.visible === false)
+  if (!closedAtEnd.ok) return `main: the panel did not close at the end: ${JSON.stringify(closedAtEnd.value)}`
+  return undefined
+}
+
+/**
+ * The boot added @deepwidgets/widget-main to the profile of DSH_SMOKE_OLD_PROFILE, in its template place, and Electron
+ * main logged the change. With DSH_SMOKE_MAIN=1, the panel then shows the main widget.
+ */
+function checkOldProfile() {
+  const bundles = JSON.parse(readFileSync(join(desktopProfile, 'package.json'), 'utf8')).dsh?.profile?.bundles
+  const logged = readFileSync(logPath, 'utf8').includes('deepwidgets-profile: added the template bundles @deepwidgets/widget-main to ')
+  note(`old profile bundles=${JSON.stringify(bundles)} logged=${String(logged)}`)
+  if (JSON.stringify(bundles) !== JSON.stringify(PROFILE_BUNDLES)) return `old profile: the bundles are ${JSON.stringify(bundles)}`
+  return logged ? undefined : 'old profile: Electron main did not log the added bundle'
+}
+
+/** The page checks of main.page, in the open panel. `closed` is the baseline of the writes with no page of main. */
+async function checkMainPage(target, closed, deadline) {
+  const soon = () => Math.min(deadline, Date.now() + 15_000)
+  const sampleRow = (value) => value.rows?.find((row) => row.slug === 'sample')
+  const first = await pollMain(target, soon(), (value) => value.dw?.stream === 'open' && /^\d+$/u.test(sampleRow(value)?.rev ?? ''))
+  note(`main first=${JSON.stringify(first.value)}`)
+  if (!first.ok) return `main: no row of sample with a state rev: ${JSON.stringify(first.value)}`
+  const read = first.value
+  if (read.dw.catalog !== 'deepwidgets-main@1') return `main: the page has the catalog ${String(read.dw.catalog)}`
+  if (read.rows.some((row) => row.slug === 'main')) return 'main: the page has a row for main'
+  if (read.problems.length > 0) return `main: the page shows a problem: ${JSON.stringify(read.problems)}`
+  if (JSON.stringify(read.tabs) !== '["Widgets","Settings"]') return `main: the tabs are ${JSON.stringify(read.tabs)}`
+  await shootMain('main-page.png', deadline)
+  await shootMain('panel.png', deadline, PANEL_SHOTS)
+
+  // A state write of sample that does not come from the page: only the stream of main can tell the page.
+  const before = Number(sampleRow(read).rev)
+  const written = await hostWidgets(deadline, `async (widgets) => {
+    await widgets.update('sample', (state) => ({ count: state.count + 1 }), { by: 'smoke-main' })
+    return widgets.get('sample').rev
+  }`, [])
+  note(`main sample write rev=${String(written)} before=${String(before)}`)
+  if (typeof written !== 'number' || written <= before) return `main: the state write of sample gave rev ${String(written)}`
+  const shown = await pollMain(target, Math.min(deadline, Date.now() + 10_000), (value) => sampleRow(value)?.rev === String(written))
+  note(`main after-write=${JSON.stringify(shown.value)}`)
+  if (!shown.ok) return `main: the row of sample did not show rev ${String(written)}: ${JSON.stringify(sampleRow(shown.value) ?? shown.value)}`
+
+  // The state viewer of sample, and its controls: a built-in widget has Turn off and no Remove.
+  if (await clickMain(target, '[data-dw=widget-row][data-slug=sample] [data-dw=row-toggle]', deadline) !== true) return 'main: no toggle in the row of sample'
+  const opened = await pollMain(target, soon(), (value) => sampleRow(value)?.open === 'true' && sampleRow(value)?.viewer === true)
+  note(`main opened=${JSON.stringify(sampleRow(opened.value))}`)
+  if (!opened.ok) return `main: the state of sample did not open: ${JSON.stringify(sampleRow(opened.value) ?? opened.value)}`
+  if (!sampleRow(opened.value).turnOff || sampleRow(opened.value).remove) return `main: the controls of sample are wrong: ${JSON.stringify(sampleRow(opened.value))}`
+  // control_state_lost_on_close: a switch to Settings and back keeps the row open (the tab panels stay mounted).
+  // Radix activates a tab on mousedown.
+  const pressTab = (index) => evaluate(target.webSocketDebuggerUrl, `(() => {
+    document.querySelectorAll('[data-dw=tab]')[${String(index)}]?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
+    return true
+  })()`, deadline)
+  const activeTab = () => evaluate(target.webSocketDebuggerUrl, "document.querySelector('[data-dw=tab][data-state=active]')?.textContent ?? null", deadline)
+  await pressTab(1)
+  await delay(300)
+  const switched = await activeTab()
+  await pressTab(0)
+  await delay(300)
+  if (switched !== 'Settings' || await activeTab() !== 'Widgets') return `main: the tabs did not switch: ${String(switched)}`
+  const kept = await pollMain(target, soon(), (value) => sampleRow(value)?.open === 'true')
+  note(`main tab switch tabs=${String(switched)} row=${JSON.stringify(sampleRow(kept.value))}`)
+  if (!kept.ok) return `main: a switch of the tab closed the row of sample: ${JSON.stringify(sampleRow(kept.value))}`
+  await shootMain('main-page-state.png', deadline)
+
+  // Turn off and Turn on from the page: the status of the row follows, and the row stays open.
+  for (const [button, status] of [['turn-off', 'turned-off'], ['turn-on', 'live']]) {
+    if (await clickMain(target, `[data-dw=widget-row][data-slug=sample] [data-dw=${button}]`, deadline) !== true) {
+      const now = await pollMain(target, Date.now() + 1000, () => true)
+      const bar = await withMenuBar(deadline, menuBarReadDeclaration()).catch((error) => ({ error: String(error) }))
+      return `main: no ${button} in the row of sample: ${JSON.stringify({ page: now.value, panel: bar.panel ?? bar })}`
+    }
+    const changed = await pollMain(target, soon(), (value) => sampleRow(value)?.status === status)
+    note(`main ${button}=${JSON.stringify({ row: sampleRow(changed.value), problems: changed.value?.problems })}`)
+    if (!changed.ok) return `main: after ${button}, the status of sample is not ${status}: ${JSON.stringify(changed.value)}`
+  }
+  return await checkMainWrites(target, closed, deadline) ?? await checkMainCatchUp(target, deadline)
 }
 
 async function checkHello(page, deadline) {

@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useRef, useState, type ComponentType, type MutableRefObject, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ACTION_STEPS, Renderer, useRendererQuery, useTriggerAction, type OpenUIError, type RendererProps } from '@openuidev/react-lang'
-import { openChannel, type StreamState, type WidgetChannel } from './channel.ts'
+import { NoAnswerError, openChannel, type StreamState, type WidgetChannel } from './channel.ts'
 
 /** The props of `<Renderer.Root>` that the core makes. The child adds `library` and puts `children` inside. */
 export type RootProps = Required<Pick<RendererProps, 'response' | 'toolProvider' | 'queryLoader' | 'onParseResult' | 'onError' | 'onAction'>>
@@ -118,6 +118,10 @@ function Core({ env }: { env: Env }) {
 
   // The highest program rev applied. An answer with a lower rev arrived late; the page drops it.
   const programRevRef = useRef(-1)
+  // main_widget.panel: true after the first `hello` of the stream, which tells that the Host is ready.
+  const helloRef = useRef(false)
+  // main_widget.panel: true while the page waits for the Host: the program got no answer before the first `hello`.
+  const waitingRef = useRef(false)
 
   const loadProgram = useCallback(async () => {
     if (channel === undefined) {
@@ -126,6 +130,7 @@ function Core({ env }: { env: Env }) {
       return
     }
     setLoad((current) => (current.status === 'loading' || current.status === 'error' ? { status: 'loading' } : current))
+    const hostSeen = helloRef.current
     try {
       const answer = await channel.program()
       dw.programLoads++
@@ -144,6 +149,15 @@ function Core({ env }: { env: Env }) {
       }
       setLoad((current) => (current.status === 'removed' ? current : { status: 'ready', text: answer.text }))
     } catch (error) {
+      // main_widget.panel: the panel loads its page from disk, also before the Host is ready. A load that started before
+      // the first `hello` and got no answer (NoAnswerError) keeps the loading state. When the `hello` came during the
+      // load, the Host is ready now, so the page loads again at once. Else the first `hello` loads the program again.
+      if (error instanceof NoAnswerError && !hostSeen) {
+        record('program-wait')
+        if (helloRef.current) void loadProgram()
+        else waitingRef.current = true
+        return
+      }
       dw.state = 'error'
       dw.errors.push(`program: ${error instanceof Error ? error.message : String(error)}`)
       setLoad((current) => (current.status === 'removed' ? current
@@ -168,7 +182,12 @@ function Core({ env }: { env: Env }) {
         record('hello')
         const previous = seen
         seen = { rev, programRev }
-        if (previous === undefined) return
+        if (previous === undefined) {
+          helloRef.current = true
+          // A page that loaded before the Host was ready has no program yet (main_widget.panel).
+          if (waitingRef.current) { waitingRef.current = false; void loadProgram() }
+          return
+        }
         if (previous.programRev !== programRev) void loadProgram()
         else if (previous.rev !== rev) refreshRef.current()
       },

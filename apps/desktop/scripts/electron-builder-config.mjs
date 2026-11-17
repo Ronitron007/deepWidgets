@@ -158,8 +158,12 @@ export function createElectronBuilderConfig(
     extraResources: [
       { from: buildPaths.runtime, to: 'runtime' },
       { from: fileURLToPath(new URL('../resources/icon-windows.png', import.meta.url)), to: 'icon.png' },
-      // Windows tray bitmaps; macOS keeps the Dock and ships no menu bar icon.
+      // deepwidgets-trim: main_widget.menu_bar. macOS has no Dock icon and ships the template images of its menu bar icon.
+      // // Windows tray bitmaps; macOS keeps the Dock and ships no menu bar icon.
+      // Windows tray bitmaps.
       ...(packagesWindows ? [{ from: fileURLToPath(new URL('../resources/tray-windows.ico', import.meta.url)), to: 'tray.ico' }] : []),
+      // macOS menu bar icon: Electron finds the @2x file next to the 1x file.
+      ...(resolvedPlatform === 'darwin' ? ['trayTemplate.png', 'trayTemplate@2x.png'].map(name => ({ from: fileURLToPath(new URL(`../resources/${name}`, import.meta.url)), to: name })) : []),
     ],
     mac: {
       icon: fileURLToPath(new URL('../resources/icon-macos.png', import.meta.url)),
@@ -168,6 +172,9 @@ export function createElectronBuilderConfig(
       extendInfo: {
         CFBundleLocalizations: ['en', 'zh_CN', 'ja', 'es', 'fr', 'de', 'ru', 'pt'],
         NSMicrophoneUsageDescription: 'DeepSeek Harness uses your microphone to transcribe speech into message drafts.',
+        // deepwidgets-trim: main_widget.menu_bar. An accessory app: no Dock icon from launch on, also not for a short time.
+        // app.dock.hide() at run time shows the Dock icon for a moment first. Added line.
+        LSUIElement: true,
       },
       // Ad-hoc signing keeps the modified Electron executable runnable without a Developer ID.
       identity: unsigned ? '-' : macOSSigning?.signingIdentity,

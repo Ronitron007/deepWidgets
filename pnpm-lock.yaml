@@ -745,6 +745,9 @@ importers:
       '@deepseek-ai/dsh-api-gateway':
         specifier: workspace:*
         version: link:../../packages/api/gateway
+      electron-menubar:
+        specifier: 11.1.1
+        version: 11.1.1(electron@44.7.0(supports-color@9.4.0))
       electron-updater:
         specifier: ^6.8.9
         version: 6.8.9(supports-color@9.4.0)
@@ -23580,6 +23583,11 @@ packages:
     engines: {node: '>=14.0.0'}
     hasBin: true
 
+  electron-menubar@11.1.1:
+    resolution: {integrity: sha512-8MCLRZEu1zPZHJG34O1Pc4UYoqO/sNJM0FIjmZ2c4e0M2FTGKEbgImp7MnrguQkMgJVr3b7MTh+hi7fdaAX7qg==}
+    peerDependencies:
+      electron: '>=35.0.0'
+
   electron-publish@26.16.0:
     resolution: {integrity: sha512-Vt3KzQIiw9BImvNOYtndg9Mjki+tl4+1sQiC/+G5j8khWaENOJFWodiB+sUl6yyHwtd37avehskdtPw7f8y/+Q==}
 
@@ -31604,6 +31612,10 @@ snapshots:
     transitivePeerDependencies:
       - electron-builder-squirrel-windows
       - supports-color
+
+  electron-menubar@11.1.1(electron@44.7.0(supports-color@9.4.0)):
+    dependencies:
+      electron: 44.7.0(supports-color@9.4.0)
 
   electron-publish@26.16.0(supports-color@9.4.0):
     dependencies:

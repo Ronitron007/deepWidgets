@@ -78,6 +78,8 @@ import { MCP_FORWARDED_ENV, startMcpPortOwner, type McpHostLink, type McpPortOwn
 import { DesktopRenderCheck, RENDER_CHECK_HOST } from './deepwidgets-render-check.ts'
 // deepwidgets-trim: agent_library.serving. Each widget page has the origin of its slug, dsh-app://w-<slug>.widget.
 import { slugOfHost, withWidgetCsp } from './deepwidgets-origin.ts'
+// deepwidgets-trim: main_widget.menu_bar. On macOS the app lives in the menu bar, and its panel shows the main widget.
+import { DesktopMenuBar } from './deepwidgets-menu-bar.ts'
 
 /** deepWidgets trace: the start-up steps for `POST /api/trace` (`floating_widget.sources`). */
 const traceSteps = new DesktopTraceSteps()
@@ -464,6 +466,8 @@ async function main(): Promise<void> {
   let mandatoryUI: DesktopMandatoryUpdateWindow | undefined
   let policyAuth: DesktopPolicyTestAuth | undefined
   let tray: DesktopTray | undefined
+  // deepwidgets-trim: main_widget.menu_bar. The menu bar icon and the panel on macOS; added line.
+  let menuBar: DesktopMenuBar | undefined
   /**
    * The operating system is ending the session: the quit skips its confirmation. Windows sets it
    * on the definitive session-end message. macOS sets it on the power-off notification, which
@@ -1219,6 +1223,18 @@ async function main(): Promise<void> {
         open: () => { focusPrimaryWindow() }, quit: () => { app.quit() } })
     } catch (error) { console.warn('desktop tray: unavailable', error) }
   }
+  // deepwidgets-trim: main_widget.menu_bar. The menu bar icon is the only way into the app on macOS, so a failure here
+  // is fatal: a throw now, or a menu bar that does not start later, shows the fatal dialog, the way to quit.
+  // "Quit deepWidgets" takes the quit path of today. Added lines.
+  if (darwin) {
+    menuBar = new DesktopMenuBar(app, {
+      iconPath: development ? join(app.getAppPath(), 'resources', 'trayTemplate.png') : join(process.resourcesPath, 'trayTemplate.png'),
+      quit: () => { app.quit() },
+      failed: (error) => { reportFatal(error, 'main') },
+      // The DSH window never shows on macOS, so the panel is the user attention that ends a cancelled shutdown.
+      attention: () => { sessionEnding = false },
+    })
+  }
   const backgroundNotice = process.platform === 'win32'
     ? new DesktopBackgroundNotice({ markerPath: join(app.getPath('userData'), 'background-close-confirmed'),
       locale: () => locale, show: ordinaryMessageBox, focus: () => { updateDialog.focus() } })
@@ -1343,8 +1359,13 @@ async function main(): Promise<void> {
     const window = mainWindow ?? createMainWindow()
     await navigateMain(applicationUrl)
     if (isQuitting() || recovery.active || window.isDestroyed()) return
-    if (activate) window.show()
-    else window.showInactive()
+    // deepwidgets-trim: main_widget.provisional. macOS keeps the DSH window loaded and hidden; the panel is the app window.
+    // if (activate) window.show()
+    // else window.showInactive()
+    if (!darwin) {
+      if (activate) window.show()
+      else window.showInactive()
+    }
     enteredWorkspace = true
     if (welcomeWindow !== undefined) {
       welcomeWindow.close()
@@ -1356,7 +1377,9 @@ async function main(): Promise<void> {
       window.moveTop()
       window.focus()
     }
-    if (activate && development && process.env.DSH_DESKTOP_OPEN_DEVTOOLS !== '0') {
+    // deepwidgets-trim: main_widget.provisional. No DevTools window for the hidden DSH window on macOS.
+    // if (activate && development && process.env.DSH_DESKTOP_OPEN_DEVTOOLS !== '0') {
+    if (activate && development && !darwin && process.env.DSH_DESKTOP_OPEN_DEVTOOLS !== '0') {
       window.webContents.openDevTools({ mode: 'detach' })
     }
   }
@@ -1444,6 +1467,8 @@ async function main(): Promise<void> {
   focusPrimaryWindow = () => {
     if (quitting) return
     if (isMandatory()) { mandatoryUI?.focus(); return }
+    // deepwidgets-trim: main_widget.menu_bar. On macOS a second launch and dsh://open open the panel (widget.relaunch).
+    if (menuBar !== undefined) { menuBar.open(); return }
     const window = welcomeWindow ?? mainWindow
     if (window === undefined || window.isDestroyed()) {
       try { createMainWindow() } catch (error) { reportFatal(error, 'main'); return }
@@ -1463,8 +1488,12 @@ async function main(): Promise<void> {
     if (url === 'dsh://open' || url === 'dsh://open/') focusPrimaryWindow()
   })
 
+  // deepwidgets-trim: main_widget.menu_bar. A relaunch of the running app opens the panel, also while a widget window shows.
+  // app.on('activate', (_event, hasVisibleWindows) => {
+  //   if (!hasVisibleWindows) focusPrimaryWindow()
+  // })
   app.on('activate', (_event, hasVisibleWindows) => {
-    if (!hasVisibleWindows) focusPrimaryWindow()
+    if (!hasVisibleWindows || menuBar !== undefined) focusPrimaryWindow()
   })
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
@@ -1483,6 +1512,8 @@ async function main(): Promise<void> {
     quitConfirmation.dispose()
     backgroundNotice?.dispose()
     tray?.dispose()
+    // deepwidgets-trim: main_widget.menu_bar; added line.
+    menuBar?.dispose()
     stopAccount?.()
     if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed()) welcomeWindow.hide()
     if (mainWindow !== undefined && !mainWindow.isDestroyed()) mainWindow.hide()
@@ -1518,6 +1549,8 @@ async function main(): Promise<void> {
       backgroundNotice?.dispose()
       updateJournal?.action('quit-requested')
       tray?.dispose()
+      // deepwidgets-trim: main_widget.menu_bar; added line.
+      menuBar?.dispose()
       updateDialog.dispose()
       mandatoryUI?.dispose()
       // Installation preparation already awaited Platform storage cleanup.
@@ -1582,7 +1615,9 @@ async function main(): Promise<void> {
   // Window lifecycle callbacks run while backend startup is pending.
   if (isQuitting()) return
   const window = currentMainWindow()
-  if (window !== undefined && development && process.env.DSH_DESKTOP_OPEN_DEVTOOLS !== '0') {
+  // deepwidgets-trim: main_widget.provisional. No DevTools window for the hidden DSH window on macOS.
+  // if (window !== undefined && development && process.env.DSH_DESKTOP_OPEN_DEVTOOLS !== '0') {
+  if (window !== undefined && development && !darwin && process.env.DSH_DESKTOP_OPEN_DEVTOOLS !== '0') {
     window.webContents.openDevTools({ mode: 'detach' })
   }
   publishUpdate(updateState)

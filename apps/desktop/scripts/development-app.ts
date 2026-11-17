@@ -30,18 +30,27 @@ export function prepareDevelopmentApp(options: DevelopmentAppOptions): string {
   const executable = join(bundle, 'Contents', 'MacOS', 'HarnessDev')
   const stamp = join(bundle, 'Contents', 'Resources', 'dsh-development.json')
   const launcher = developmentLauncher(options, bundle)
-  const identity = JSON.stringify({ ...options, launcher, plist: readFileSync(join(source, 'Contents', 'Info.plist'), 'utf8') })
+  // deepwidgets-trim: main_widget.menu_bar. The plist values are part of the identity, so a changed value rebuilds the bundle.
+  // const identity = JSON.stringify({ ...options, launcher, plist: readFileSync(join(source, 'Contents', 'Info.plist'), 'utf8') })
+  // if (!existsSync(stamp) || readFileSync(stamp, 'utf8') !== identity) {
+  //   rmSync(bundle, { recursive: true, force: true })
+  //   execFileSync('/usr/bin/ditto', [source, bundle])
+  //   const plist = join(bundle, 'Contents', 'Info.plist')
+  //   const values = {
+  const values = {
+    CFBundleIdentifier: `com.deepseek.harness.dev.${createHash('sha256').update(options.appRoot).digest('hex').slice(0, 12)}`,
+    CFBundleName: 'Harness Dev',
+    CFBundleDisplayName: 'Harness Dev',
+    CFBundleExecutable: 'HarnessDev',
+    CFBundleURLTypes: [{ CFBundleURLName: 'DeepSeek Harness', CFBundleURLSchemes: ['dsh'], CFBundleTypeRole: 'Viewer' }],
+    // deepwidgets-trim: main_widget.menu_bar. The dev app is an accessory app with no Dock icon, as the packaged app.
+    LSUIElement: true,
+  }
+  const identity = JSON.stringify({ ...options, launcher, values, plist: readFileSync(join(source, 'Contents', 'Info.plist'), 'utf8') })
   if (!existsSync(stamp) || readFileSync(stamp, 'utf8') !== identity) {
     rmSync(bundle, { recursive: true, force: true })
     execFileSync('/usr/bin/ditto', [source, bundle])
     const plist = join(bundle, 'Contents', 'Info.plist')
-    const values = {
-      CFBundleIdentifier: `com.deepseek.harness.dev.${createHash('sha256').update(options.appRoot).digest('hex').slice(0, 12)}`,
-      CFBundleName: 'Harness Dev',
-      CFBundleDisplayName: 'Harness Dev',
-      CFBundleExecutable: 'HarnessDev',
-      CFBundleURLTypes: [{ CFBundleURLName: 'DeepSeek Harness', CFBundleURLSchemes: ['dsh'], CFBundleTypeRole: 'Viewer' }],
-    }
     for (const [key, value] of Object.entries(values)) {
       execFileSync('/usr/bin/plutil', ['-replace', key, '-json', JSON.stringify(value), plist])
     }
