@@ -114,10 +114,50 @@ function pngDimensions(png: Buffer): { width: number; height: number } {
   return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) }
 }
 
+// deepwidgets-trim: main_widget.menu_bar. macOS shows a menu bar icon. These lines are added.
+/**
+ * The macOS menu bar icon: a template image, black with alpha, which macOS colors for a light and a dark menu bar.
+ * Electron picks `trayTemplate@2x.png` on a Retina display, and the `Template` suffix marks both files as a template.
+ */
+export const TRAY_TEMPLATE_OUTPUTS = [
+  { size: 16, output: fileURLToPath(new URL('../resources/trayTemplate.png', import.meta.url)) },
+  { size: 32, output: fileURLToPath(new URL('../resources/trayTemplate@2x.png', import.meta.url)) },
+] as const
+
+/**
+ * Rasterize the whale glyph alone as a macOS template image.
+ * The glyph loses its tile, its shadows, and its color. Its bounds are fitted to a square of `size` pixels.
+ * @param svg - SVG document with a `tray-glyph` group.
+ * @param size - Edge of the square bitmap.
+ * @returns a PNG whose pixels are black and whose alpha is the glyph coverage.
+ */
+export async function renderTrayTemplate(svg: Buffer, size: number): Promise<Buffer> {
+  const glyph = /<g id="tray-glyph"[^>]*>([\s\S]*?)<\/g>/u.exec(svg.toString('utf8'))?.[1]
+  if (glyph === undefined) throw new Error('tray icon: SVG requires a tray-glyph group')
+  const black = glyph.replace(/fill="[^"]*"/gu, 'fill="#000"').replace(/fill-opacity="[^"]*"/gu, '')
+  const shape = Buffer.from(`<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">${black}</svg>`)
+  // Trim to the glyph, then fit it with an equal margin; each size scales down from the same large render.
+  const trimmed = await sharp(shape, { density: SOURCE_DENSITY * 2 }).trim().png().toBuffer()
+  const fitted = await sharp(trimmed).resize(size, size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+  const pixels = fitted.data
+  for (let index = 0; index < pixels.length; index += 4) {
+    pixels[index] = 0
+    pixels[index + 1] = 0
+    pixels[index + 2] = 0
+  }
+  return sharp(pixels, { raw: { width: size, height: size, channels: 4 } }).png().toBuffer()
+}
+
 async function main(): Promise<void> {
   const entries = await renderTrayIconEntries(await readFile(TRAY_ICON_PATHS.source))
   await writeFile(TRAY_ICON_PATHS.output, packIco(entries))
   console.info(`tray icon: wrote ${TRAY_ICON_PATHS.output} with ${entries.map(entry => String(entry.size)).join(', ')} px bitmaps`)
+  // deepwidgets-trim: main_widget.menu_bar. The macOS template images; added lines.
+  for (const { size, output } of TRAY_TEMPLATE_OUTPUTS) {
+    await writeFile(output, await renderTrayTemplate(await readFile(TRAY_ICON_PATHS.source), size))
+    console.info(`tray icon: wrote ${output} with a ${String(size)} px template bitmap`)
+  }
 }
 
 if (process.argv[1] !== undefined && import.meta.filename === resolve(process.argv[1])) await main()

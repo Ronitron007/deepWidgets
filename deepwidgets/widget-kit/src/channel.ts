@@ -35,6 +35,9 @@ class FetchError extends Error {
   constructor(message: string, readonly status?: number) { super(message) }
 }
 
+/** The Host gave no answer to the program route: a network error or a timeout. Electron main gives a network error while no Host is ready. */
+export class NoAnswerError extends Error {}
+
 function errorMessage(body: unknown, status: number): string {
   const error = (body as { error?: { message?: unknown } } | null)?.error
   return typeof error?.message === 'string' ? error.message : `HTTP ${String(status)}`
@@ -44,7 +47,10 @@ const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 /** The channel of one widget slug. */
 export interface WidgetChannel {
-  /** GET the program with a bounded retry. A 4xx answer is final; a network error or a 5xx answer is retried. */
+  /**
+   * GET the program with a bounded retry. A 4xx answer is final; a network error or a 5xx answer is retried.
+   * With no answer at the last try, it throws {@link NoAnswerError}.
+   */
   program(): Promise<ProgramAnswer>
   /** The toolProvider in the MCP client shape: each Query and Mutation is one call. */
   readonly tools: McpClientLike
@@ -65,7 +71,7 @@ export function openChannel(slug: string): WidgetChannel {
         if (!response.ok) throw new FetchError(errorMessage(body, response.status), response.status)
         return body as ProgramAnswer
       } catch (error) {
-        last = error
+        last = error instanceof FetchError ? error : new NoAnswerError(error instanceof Error ? error.message : String(error))
         if (error instanceof FetchError && error.status !== undefined && error.status < 500) break
         await delay(BACKOFF_MS * 2 ** attempt)
       }
