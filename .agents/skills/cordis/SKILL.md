@@ -53,10 +53,12 @@ Class-side symbol keys: `Service.init`, `Service.check`, `Service.config`, `Serv
 
 ## Dispose order
 
-1. Trigger: `fiber.dispose()`, a parent unload, or loss of a required service.
-2. Lifecycle state transitions (`internal/status`); collected disposers run in **reverse registration order**, awaiting async ones.
-3. Provided services are unregistered, which wakes dependents (they unload or re-run).
-4. `fiber.uid` becomes `null`; later `ctx.effect` calls throw `INACTIVE_EFFECT`.
+1. Trigger: `fiber.dispose()`, or a parent unload (the parent runs the child's dispose as one of its effects). Loss of a required service is not a dispose: the fiber only unloads, keeps its `uid`, and reloads when the service returns.
+2. `fiber.uid` becomes `null` **first**, before any cleanup; from here `ctx.effect` throws `INACTIVE_EFFECT`. So `uid === null` means "disposed or being disposed" (the "`null` once disposed" of `references/fiber.md` includes the teardown below).
+3. `internal/plugin` fires again with the fiber, now with `uid === null`; observer errors are logged, not thrown. The fiber leaves `runtime.fibers`, and a runtime with no fibers left leaves the registry.
+4. State goes to `UNLOADING` (`internal/status`). Leaving `ACTIVE` re-checks the dependents of the fiber's provided services: they now see those services as unavailable and start to unload. A `PENDING` or `FAILED` fiber gets the same `UNLOADING` step from dispose directly; a `LOADING` fiber first lets its running load settle.
+5. Unload waits until no dependent still holds a provided service, then runs the collected disposers. They start in **reverse registration order** but are not chained (an async disposer does not hold back the next); unload awaits all of them and logs their errors. A `ctx.provide` disposer unregisters its service here.
+6. The fiber releases the services it required, state goes to `DISPOSED` (`internal/status`), and `fiber.dispose()` settles.
 
 Related: `fiber.restart()` disposes and reloads with current config; `fiber.update(config, noSave?)` validates new config, runs the `internal/update` waterfall (update hooks / HMR can veto), then restarts.
 
