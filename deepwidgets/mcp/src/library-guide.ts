@@ -39,7 +39,7 @@ Set the same id as catalog in the widget definition:
 
     ctx.widgets.register({ slug: SLUG, title: 'My widget', catalog: 'my-widget@1', program: PROGRAM, initialState, actions })
 
-The page refuses a program with another catalog. A definition with no catalog has shadcn-widgets@1, so its install fails with wrong-catalog. When you remove a component, or change its props so that an old program breaks, give a new id, for example my-widget@2, in both places.
+The page refuses a program with another catalog. A definition with no catalog has shadcn-widgets@1. In the app, the render check then fails the install with wrong-catalog. A CLI host has no render check: the install passes with only the warning that the check was skipped, and the page refuses the program later, in the window of the app. When you remove a component, or change its props so that an old program breaks, give a new id, for example my-widget@2, in both places.
 
 ## Allowed imports
 
