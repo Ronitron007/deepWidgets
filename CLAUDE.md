@@ -96,6 +96,8 @@ These scripts run with no app, unless the item says otherwise:
 
 - `tools/widgets-main.mjs` checks the main widget with a host: its query of all widgets, Turn off, Turn on, Remove, and the MCP rule that hides `main`.
 
+- `tools/widgets-seed-refresh.mjs` checks the program of a built-in widget with a host that starts four times (`main_widget.seed`). When the stored program has an older seed hash or no seed hash, a start stores the new seed program of `sample`. A start with the same seed changes nothing. An agent widget keeps its stored program.
+
 - `tools/host-log.mjs` checks the host log with a host: a `ctx.logger` line of `@deepwidgets/mcp` must reach the stdout of the host. Then it runs the `DSH_SMOKE_LOG` smoke, unless `HOST_LOG_DESKTOP=0`.
 
 - `tools/widgets-action-replay.mjs` replays the `action_contract` model paths of widget actions on a host.
@@ -200,6 +202,7 @@ node tools/widgets-blame.mjs
 node tools/widgets-watchdog.mjs
 node tools/widgets-create.mjs
 node tools/widgets-main.mjs
+node tools/widgets-seed-refresh.mjs
 node tools/host-log.mjs
 node tools/widgets-action-replay.mjs
 node tools/widgets-install-replay.mjs
