@@ -34,7 +34,6 @@ export const state = (v) => {
   const bits = [phase(v.job), slot(v, 'a')]
   if (installed(v, 'sample')) bits.push('agent bundle has the slug of the built-in sample')
   bits.push(v.sampleOn ? 'built-in sample on' : 'built-in sample off')
-  bits.push(`sample program ${v.prog.sample}${v.pseed.sample === 'none' ? ' with no seed hash' : ` with the seed hash of ${v.pseed.sample}`}, seed of the code ${v.bcode}`)
   if (v.safe) bits.push('safe mode')
   return bits.join(' | ')
 }
@@ -75,15 +74,12 @@ export const step = (action, from, to) => {
     case 'RemoveFolder': return 'the folders are deleted'
     case 'Return': return 'the tool answers'
     case 'UserCall': return 'you press a button that changes the state'
-    case 'UserEdit': return to.prog.sample !== from.prog.sample ? 'a plugin edits the stored program of the built-in sample' : 'a plugin edits the stored program'
-    case 'ToggleSample': return !to.sampleOn ? 'you turn the built-in sample off'
-      : to.prog.sample !== from.prog.sample || to.pseed.sample !== from.pseed.sample ? 'you turn the built-in sample on; it stores its seed program' : 'you turn the built-in sample on'
+    case 'UserEdit': return 'a plugin edits the stored program'
+    case 'ToggleSample': return to.sampleOn ? 'you turn the built-in sample on' : 'you turn the built-in sample off'
     case 'Crash': {
       const blamed = (q) => Object.values(q).some((item) => Object.values(item).some(Boolean))
-      const update = to.bcode !== from.bcode ? '; an app update brings a new seed program of sample' : ''
-      const seeded = to.prog.sample !== from.prog.sample || to.pseed.sample !== from.pseed.sample ? '; sample stores its seed program' : ''
-      return (to.safe ? 'the host crashes, no widget blamed, restarts in safe mode'
-        : Object.keys(to.quar).some((k) => Object.keys(to.quar[k]).some((n) => to.quar[k][n] && !from.quar[k][n])) || (blamed(to.quar) && !blamed(from.quar)) ? 'widget code crashes the host; it restarts' : 'the host crashes and restarts') + update + seeded
+      return to.safe ? 'the host crashes, no widget blamed, restarts in safe mode'
+        : Object.keys(to.quar).some((k) => Object.keys(to.quar[k]).some((n) => to.quar[k][n] && !from.quar[k][n])) || (blamed(to.quar) && !blamed(from.quar)) ? 'widget code crashes the host; it restarts' : 'the host crashes and restarts'
     }
     default: return action
   }
