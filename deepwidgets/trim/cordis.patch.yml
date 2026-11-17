@@ -1,5 +1,6 @@
 # deepWidgets trim layer. It applies after dsh-base, dsh-web-app, @deepwidgets/probe, and @deepwidgets/trace.
 # Each entry turns off one DSH row. The row and its package stay in the tree.
+# The last entry inserts the row logger-console (safe_host.log).
 # Spec: fork_trim.method in docs/specs/fork-trim.md.
 
 # area: cordis-boot
@@ -674,3 +675,10 @@
 #   disabled: true
 # - id: timer
 #   disabled: true
+
+# area: host log
+
+# deepwidgets-trim: added row; safe_host.log. It writes each ctx.logger line of the host to the stdout of the host.
+- insert:
+    - id: logger-console
+      name: '@deepseek-ai/cordis-plugin-logger-console'
