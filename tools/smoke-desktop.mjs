@@ -41,6 +41,7 @@
  * for each 250 ms of writes (fanout_query_blocks_writes). A switch to Settings and back keeps the row of sample open.
  * Then the page loads again with a wrapper of EventSource: the check cuts the stream of main, writes sample while it is
  * down, and opens it again. The row must show the new rev from the `data` frame after the `hello` of main.
+ * During these page checks the panel does not hide on a loss of focus, so another app on the Mac can not close it.
  * With DSH_SMOKE_OLD_PROFILE=1, the run starts with the desktop profile of the web template before main.runtime, which
  * has no @deepwidgets/widget-main. The boot must add it in its template place and log the change. Run it with
  * DSH_SMOKE_MAIN=1, so the panel must also show the main widget.
@@ -2213,7 +2214,16 @@ async function checkMain(deadline) {
     if (target === undefined) await delay(250)
   }
   if (target === undefined) return `main: no page at ${MAIN_PAGE_URL}`
-  const page = await checkMainPage(target, closed, deadline)
+  // smoke_main_needs_focus: another app on this shared Mac can take the focus during the page checks, so the panel
+  // keeps showing until they end. The check then sets the option back to the value of the app, so the mutant with no
+  // hide on a loss of focus still fails at the focus step.
+  const hideOnBlur = await withMenuBar(deadline, "function () { const value = this.menubar.getOption('hideOnBlur'); this.menubar.setOption('hideOnBlur', false); return value ?? null }")
+  let page
+  try {
+    page = await checkMainPage(target, closed, deadline)
+  } finally {
+    await withMenuBar(deadline, `function () { this.menubar.setOption('hideOnBlur', ${JSON.stringify(hideOnBlur)} ?? undefined); return true }`)
+  }
   if (page !== undefined) return page
 
   // A click when the panel is open closes it.
