@@ -24,7 +24,8 @@ import type { DesktopRelease } from './release.ts'
 import { readDesktopRuntime } from './runtime-tree.ts'
 import { initProfile, removeLinkProjections, sanitizeProfile } from '@deepseek-ai/dsh-app-boot'
 import { PROFILE_TEMPLATES, type ProfileTemplate } from '@deepseek-ai/dsh-official-bundles'
-// deepwidgets-trim: main_widget.menu_bar. An existing profile gets each new template bundle, such as @deepwidgets/widget-main.
+// deepwidgets-trim: main_widget.menu_bar. An existing profile gets each template bundle that it never had, such as
+// @deepwidgets/widget-main. A bundle that the operator removed stays removed.
 import { addTemplateBundles } from './deepwidgets-profile-bundles.ts'
 
 const PROJECT_NAME = '@deepseek-ai/dsh-desktop-runtime'
