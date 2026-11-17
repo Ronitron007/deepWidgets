@@ -27,7 +27,11 @@ export interface GateEntry {
   /** The entry id, with the ids of its groups in front. */
   readonly id: string
   readonly options: { readonly id?: unknown, readonly name?: unknown }
-  readonly fiber?: unknown
+  /**
+   * The fiber of the last load. A turn-off disposes it and keeps it on the entry. Cordis sets uid to null at the start
+   * of the dispose, before the disposers run. Thus uid null means that the fiber is disposed or is being disposed.
+   */
+  readonly fiber?: { readonly uid: number | null }
   readonly disabled?: boolean
   readonly parent?: { readonly tree?: GateTree }
   init: (this: GateEntry) => Promise<void>
@@ -87,11 +91,16 @@ const agentId = (id: unknown): boolean => typeof id === 'string' && AGENT_ROW.te
 
 const nameOf = (entry: GateEntry): string | undefined => typeof entry.options.name === 'string' ? entry.options.name : undefined
 
-/** Whether `entry` is still a live entry of its tree that is on and has no fiber. */
+/**
+ * Whether `entry` is still a live entry of its tree that is on and has no running fiber. A fiber with uid null does
+ * not count. Such a fiber is disposed or is being disposed. The Loader keeps it after a turn-off and loads the entry
+ * again at a turn-on (`Entry.update`). No caller loads the entry while the dispose runs: the callers wait for the
+ * dispose, the plugin manager runs one change at a time, and HMR does not go through the gate.
+ */
 function loadable(entry: GateEntry): boolean {
   const id = entry.options.id
   const store = entry.parent?.tree?.store
-  return entry.fiber === undefined && entry.disabled !== true && (store === undefined || typeof id !== 'string' || store[id] === entry)
+  return !entry.fiber?.uid && entry.disabled !== true && (store === undefined || typeof id !== 'string' || store[id] === entry)
 }
 
 /** Load a stub in place of the module of `entry`: the Loader gives the row a fiber, and no code of the row runs. */

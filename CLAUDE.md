@@ -102,6 +102,8 @@ These scripts run with no app, unless the item says otherwise:
 
 - `tools/widgets-hmr-guards.mjs` checks the HMR guards of `safe_host` with a host.
 
+- `tools/widgets-row-toggle.mjs` turns the row of an agent widget off and on with `setPluginEnabled` on a host. The widget must come back with its state, and a call must work.
+
 - `tools/widgets-crash-replay.mjs` checks the crash records of `widget_fv.crash` and `safe_host`, and the cleanup at a crash. First it runs the replays and the specs with vitest and no host. Then it runs the crash cases with a host.
 
 - `tools/widget-kit-imports.mjs` checks the import boundary of the widget page. The core imports no component library, and the shell reaches the core only through `@deepwidgets/widget-kit`.
@@ -199,6 +201,7 @@ node tools/host-log.mjs
 node tools/widgets-action-replay.mjs
 node tools/widgets-install-replay.mjs
 node tools/widgets-hmr-guards.mjs
+node tools/widgets-row-toggle.mjs
 node tools/widgets-crash-replay.mjs
 node tools/widget-kit-imports.mjs
 node tools/in-host-pin.mjs
