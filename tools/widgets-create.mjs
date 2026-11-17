@@ -640,7 +640,7 @@ async function pagePart(call, slugs) {
     `link=${String(linkTarget(pageDir))} entries=${JSON.stringify(after)} staging=${JSON.stringify(existsSync(staging) ? readdirSync(staging) : [])} read=${JSON.stringify(read.body)}`)
   const offAnswer = await call('widget_install', { dir: join(work, 'agent', `${PAGE}-bad-1`) })
   const offList = offAnswer.body?.error?.nextStep ?? ''
-  check('the next step of a refused page names the allowed imports', offList.includes('@openuidev/react-lang') && offList.includes('zod') && offList.includes('@deepwidgets/shell/ui/*'), offList || JSON.stringify(offAnswer.body))
+  check('the next step of a refused page names the allowed imports', offList.includes('@openuidev/react-lang') && offList.includes('zod') && offList.includes('@deepwidgets/shell/ui/*'), JSON.stringify(offAnswer.body))
 
   // agent_library.fence_warn: a page that reaches a file outside page/ installs. Its answer has a warning of the gate
   // page-build that names the file, and the host log has one line for the install. The host log is the buffer of the
