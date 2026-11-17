@@ -81,7 +81,7 @@ let inspectPort = 0
 
 function check(name, ok, detail = '') {
   results.push({ name, ok: Boolean(ok) })
-  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail === '' ? '' : `: ${String(detail).slice(0, 600)}`}`)
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail === '' ? '' : `: ${String(detail).slice(0, 1200)}`}`)
 }
 
 function freePort() {
@@ -260,15 +260,15 @@ async function hostPart() {
 
     const guide = await call('widget_guide', { mode: 'create' })
     const text = guide.body?.guide ?? ''
-    check('widget_guide gives the widget API types and the OpenUI guide of the component set', !guide.isError && text.includes('interface WidgetContext') && text.includes('Card(') && text.includes('shadcn-widgets@1'), `${String(text.length)} characters`)
+    check('widget_guide gives the widget API types and the OpenUI guide of the component set', !guide.isError && text.includes('interface WidgetContext') && text.includes('Card(') && text.includes('shadcn-widgets@1'), JSON.stringify(guide.body?.error ?? { characters: text.length }))
     const chat = ['@ToAssistant', '@OpenUrl', 'ENTIRE response'].filter((part) => text.includes(part))
     check('widget_guide has no chat preamble and no steps that the shell ignores', chat.length === 0, JSON.stringify(chat))
 
     const template = await call('widget_template', { slug: SLUG, title: 'Create Check' })
     const files = template.body?.files ?? []
-    check('widget_template gives src/index.ts with the slug filled in', !template.isError && files.length === 1 && files[0].path === 'src/index.ts' && files[0].text.includes(`'${SLUG}'`), JSON.stringify(files.map((file) => file.path)))
+    check('widget_template gives src/index.ts with the slug filled in', !template.isError && files.length === 1 && files[0].path === 'src/index.ts' && files[0].text.includes(`'${SLUG}'`), JSON.stringify(template.body?.error ?? files.map((file) => file.path)))
 
-    check('widget_template and its src/index.ts name the create mode for widget_guide', /widget_guide with mode "create"/.test(template.body?.nextStep ?? '') && /widget_guide with mode "create"/.test(files[0]?.text ?? ''), JSON.stringify(template.body?.nextStep))
+    check('widget_template and its src/index.ts name the create mode for widget_guide', /widget_guide with mode "create"/.test(template.body?.nextStep ?? '') && /widget_guide with mode "create"/.test(files[0]?.text ?? ''), JSON.stringify(template.body?.error ?? template.body?.nextStep))
 
     const dir = writeWidget(SLUG, files)
     const started = Date.now()
@@ -288,20 +288,21 @@ async function hostPart() {
       `rows=${JSON.stringify(sampleRows)} get=${JSON.stringify(sample.body)}`)
     const described = await call('widget_describe', { slug: SLUG })
     const addArgs = described.body?.actions?.find((action) => action.name === 'add')?.args
-    check('widget_describe gives the zod args of the bundle as JSON Schema', addArgs?.type === 'object' && addArgs?.properties?.by?.type === 'integer', JSON.stringify(described.body?.actions))
+    check('widget_describe gives the zod args of the bundle as JSON Schema', addArgs?.type === 'object' && addArgs?.properties?.by?.type === 'integer', JSON.stringify(described.body?.error ?? described.body?.actions))
     const added = await call('widget_call', { slug: SLUG, action: 'add', args: { by: 2 }, requestId: 'create-1' })
     const read = await call('widget_call', { slug: SLUG, action: 'get' })
     check('widget_call add and get work on the installed widget', !added.isError && read.body?.result?.count === 2, JSON.stringify([added.body, read.body]))
-    check('widget_describe gives source, the absolute install folder, for an installed widget', described.body?.source === dir, JSON.stringify(described.body?.source))
+    check('widget_describe gives source, the absolute install folder, for an installed widget', described.body?.source === dir, JSON.stringify(described.body?.error ?? described.body?.source))
     await modesPart(call, slugs, files, dir)
 
     // A second install of the slug: a new action and a new seed program. The state stays.
     const replaced = await call('widget_install', { dir: writeWidget(`${SLUG}-v2`, files, (text) => addAction("{ name: 'double', kind: 'mutation', handler: (_args, w) => w.update((state) => ({ count: state.count * 2 })) }")(text).replace('"A counter"', '"A counter v2"')) })
-    const replacedActions = (await call('widget_describe', { slug: SLUG })).body?.actions?.map((action) => action.name) ?? []
+    const replacedDescribe = await call('widget_describe', { slug: SLUG })
+    const replacedActions = replacedDescribe.body?.actions?.map((action) => action.name) ?? []
     const afterReplace = await call('widget_call', { slug: SLUG, action: 'get' })
     check('a second install of the slug replaces the bundle; the state stays', !replaced.isError && replaced.body?.replaced === true && replacedActions.includes('double') && afterReplace.body?.result?.count === 2,
-      `${JSON.stringify(replaced.body)} actions=${JSON.stringify(replacedActions)} count=${String(afterReplace.body?.result?.count)}`)
-    check('the replace sets the new seed program', replaced.body?.programUpdated === true, JSON.stringify(replaced.body?.programUpdated))
+      `${JSON.stringify(replaced.body)} actions=${JSON.stringify(replacedDescribe.body?.error ?? replacedActions)} count=${JSON.stringify(afterReplace.body)}`)
+    check('the replace sets the new seed program', replaced.body?.programUpdated === true, JSON.stringify(replaced.body?.error ?? replaced.body?.programUpdated))
 
     // widget_reload reads the folder of the last install again.
     writeWidget(`${SLUG}-v2`, files, (text) => addAction("{ name: 'triple', kind: 'mutation', handler: (_args, w) => w.update((state) => ({ count: state.count * 3 })) }")(text))
@@ -312,10 +313,11 @@ async function hostPart() {
     // A reinstall that passes the gates (the stand-in widgets service of the test run has no
     // setProgram) and throws in the host. The old bundle comes back with its actions and state.
     const broken = await call('widget_install', { dir: writeWidget(`${SLUG}-broken`, files, (text) => addAction("{ name: 'broken', kind: 'query', handler: () => 0 }")(addToApply("if ('setProgram' in ctx.widgets) throw new Error('host only failure')")(text))) })
-    const rolledActions = (await call('widget_describe', { slug: SLUG })).body?.actions?.map((action) => action.name) ?? []
+    const rolledDescribe = await call('widget_describe', { slug: SLUG })
+    const rolledActions = rolledDescribe.body?.actions?.map((action) => action.name) ?? []
     const rolledState = await call('widget_call', { slug: SLUG, action: 'get' })
     check('a reinstall that fails in the host is rolled back: the old actions and the state stay', broken.isError && broken.body?.error?.code === 'install-failed' && rolledActions.includes('triple') && !rolledActions.includes('broken') && rolledState.body?.result?.count === 6,
-      `${JSON.stringify(broken.body?.error?.code)} actions=${JSON.stringify(rolledActions)} state=${JSON.stringify(rolledState.body)}`)
+      `actions=${JSON.stringify(rolledDescribe.body?.error ?? rolledActions)} state=${JSON.stringify(rolledState.body)} install=${JSON.stringify(broken.body)}`)
 
     const timer = await call('widget_install', { dir: writeWidget('create-timer', files, (text) => addToApply("setTimeout(() => { ctx.logger.info('tick') }, 10)")(text).replaceAll(`'${SLUG}'`, "'create-timer'")) })
     const timerError = timer.body?.error
@@ -324,7 +326,7 @@ async function hostPart() {
     // A type error: tsgolint prints it with the real path of the staging folder.
     const typed = await call('widget_install', { dir: writeWidget('create-type', files, (text) => addToApply("const wrong: number = 'text'\n  ctx.logger.info(wrong)")(text).replaceAll(`'${SLUG}'`, "'create-type'")) })
     const typeLines = (typed.body?.error?.diagnostics ?? []).filter((line) => /^\S+:\d+:\d+: /.test(line))
-    check('the gate diagnostics name the files relative to the source folder', typed.body?.error?.gate === 'lint' && typeLines.some((line) => line.includes('TS2322')) && typeLines.every((line) => line.startsWith('src/')), JSON.stringify(typed.body?.error?.diagnostics))
+    check('the gate diagnostics name the files relative to the source folder', typed.body?.error?.gate === 'lint' && typeLines.some((line) => line.includes('TS2322')) && typeLines.every((line) => line.startsWith('src/')), JSON.stringify(typed.body))
 
     const globalTimer = await call('widget_install', { dir: writeWidget('create-global-timer', files, (text) => addToApply("globalThis.setTimeout(() => { ctx.logger.info('tick') }, 10)\n  window.setInterval(() => { ctx.logger.info('tick') }, 10)\n  self.setTimeout(() => { ctx.logger.info('tick') }, 10)")(text).replaceAll(`'${SLUG}'`, "'create-global-timer'")) })
     const globalError = globalTimer.body?.error
@@ -362,11 +364,11 @@ async function hostPart() {
     // The new install has a new seed program. The remove kept the stored program of the replace (v2).
     const back = await call('widget_install', { dir: writeWidget(`${SLUG}-v3`, files, (text) => text.replace('"A counter"', '"A counter v3"')) })
     const kept = await call('widget_call', { slug: SLUG, action: 'get' })
-    check('a new install after the remove gets the stored state back', !back.isError && kept.body?.result?.count === 6, JSON.stringify([back.body?.application, kept.body]))
+    check('a new install after the remove gets the stored state back', !back.isError && kept.body?.result?.count === 6, JSON.stringify([back.body?.error ?? back.body?.application, kept.body]))
     const servedV3 = await programText(port, SLUG)
-    check('a new install after the remove sets its new seed program', back.body?.programUpdated === true && servedV3.includes('A counter v3'), `programUpdated=${JSON.stringify(back.body?.programUpdated)} program=${servedV3.slice(0, 120)}`)
+    check('a new install after the remove sets its new seed program', back.body?.programUpdated === true && servedV3.includes('A counter v3'), `install=${JSON.stringify(back.body?.error ?? { programUpdated: back.body?.programUpdated })} program=${servedV3.slice(0, 120)}`)
     const same = await call('widget_install', { dir: join(work, 'agent', `${SLUG}-v3`) })
-    check('a reinstall of the same seed program leaves the stored program alone', !same.isError && same.body?.replaced === true && same.body?.programUpdated === false, JSON.stringify(same.body?.programUpdated))
+    check('a reinstall of the same seed program leaves the stored program alone', !same.isError && same.body?.replaced === true && same.body?.programUpdated === false, JSON.stringify(same.body))
 
     await legacyPart(call, slugs)
     await foreignPart(call)
@@ -380,7 +382,9 @@ async function hostPart() {
   await startHost(port)
   client = await connect(base)
   try {
-    check('after a host restart the agent widget loads at start with its state', (await slugs()).includes(SLUG) && (await call('widget_call', { slug: SLUG, action: 'get' })).body?.result?.count === 6, JSON.stringify(await slugs()))
+    const restarted = await slugs()
+    const restartedGet = await call('widget_call', { slug: SLUG, action: 'get' })
+    check('after a host restart the agent widget loads at start with its state', restarted.includes(SLUG) && restartedGet.body?.result?.count === 6, JSON.stringify([restarted, restartedGet.body]))
 
     // An unhandled rejection in an agent widget ends the host. The test run gate skips the action: its args refuse {}.
     const crashSlug = 'create-crash'
@@ -449,7 +453,7 @@ async function modesPart(call, slugs, files, dir) {
   check('with create off, no widget changes', JSON.stringify(after) === JSON.stringify(before) && !after.slugs.includes(GATED), `before=${JSON.stringify(before)} after=${JSON.stringify(after)}`)
   const template = await call('widget_template', { slug: GATED })
   const guide = await call('widget_guide', { mode: 'create' })
-  check('with create off, widget_template and widget_guide still answer', !template.isError && template.body?.files?.length === 1 && !guide.isError && typeof guide.body?.guide === 'string', JSON.stringify([template.isError, guide.isError]))
+  check('with create off, widget_template and widget_guide still answer', !template.isError && template.body?.files?.length === 1 && !guide.isError && typeof guide.body?.guide === 'string', JSON.stringify([template.body?.error ?? template.isError, guide.body?.error ?? guide.isError]))
 
   writeFileSync(settingsFile, `${JSON.stringify({ modes: { create: true } })}\n`)
   const back = await call('widget_install', { dir: gatedDir })
@@ -575,15 +579,15 @@ async function pagePart(call, slugs) {
   const index = existsSync(join(pageDir, 'index.html')) ? readFileSync(join(pageDir, 'index.html'), 'utf8') : ''
   check('a bundle with a good page, whose components have zod schemas, passes the page gates in the CLI host', !good.isError && good.body?.application === 'applied' && good.body?.gates?.map((gate) => gate.gate).join() === PAGE_GATES && (await slugs()).includes(PAGE) && LIBRARY.includes('z.object('),
     JSON.stringify(good.body?.error ?? good.body?.gates?.map((gate) => [gate.gate, gate.ok, gate.diagnostics])))
-  check('in a CLI host, the install answer has the warning that the render check was skipped', good.body?.warnings?.some((line) => line.includes('render check') && line.includes('skipped')) === true, JSON.stringify(good.body?.warnings))
+  check('in a CLI host, the install answer has the warning that the render check was skipped', good.body?.warnings?.some((line) => line.includes('render check') && line.includes('skipped')) === true, JSON.stringify(good.body?.error ?? good.body?.warnings))
   // agent_library.fence_warn: the good page imports page.css of the shell, Tailwind, and the DSH token sheets. The
   // narrower walk of allowedFolders must keep each of them.
   const goodFence = good.body?.gates?.find((gate) => gate.gate === 'page-build')?.warnings
   check('a good page installs with no fence warning', Array.isArray(goodFence) && goodFence.length === 0 && good.body?.warnings?.some((line) => line.includes('outside the page folder')) === false,
-    JSON.stringify({ fence: goodFence, warnings: good.body?.warnings }))
+    JSON.stringify({ error: good.body?.error, fence: goodFence, warnings: good.body?.warnings }))
   const first = linkTarget(pageDir)
   check('<profile>/deepwidgets-widgets/<slug>/page is a link to the build page-<hash>, with the base /widget/<slug>/', good.body?.page === pageDir && BUILD.test(first ?? '') && index.includes(`/widget/${PAGE}/assets/`),
-    `page=${JSON.stringify(good.body?.page)} link=${String(first)} index=${index.slice(0, 300)}`)
+    `page=${JSON.stringify(good.body?.error ?? good.body?.page)} link=${String(first)} index=${index.slice(0, 300)}`)
 
   // A replace puts the new version under the second name, in <slug>.b. The same sources keep their build.
   const again = await call('widget_install', { dir: join(work, 'agent', PAGE) })
@@ -634,8 +638,9 @@ async function pagePart(call, slugs) {
   check('after the refused installs, the old bundle and its page link stay, and no .tmp build or staging copy stays',
     keptIndex === before && linkTarget(pageDir) === last && read.body?.result?.note === 'ready from the test run' && after.tmp.length === 0 && (existsSync(staging) ? readdirSync(staging).length : 0) === 0,
     `link=${String(linkTarget(pageDir))} entries=${JSON.stringify(after)} staging=${JSON.stringify(existsSync(staging) ? readdirSync(staging) : [])} read=${JSON.stringify(read.body)}`)
-  const offList = (await call('widget_install', { dir: join(work, 'agent', `${PAGE}-bad-1`) })).body?.error?.nextStep ?? ''
-  check('the next step of a refused page names the allowed imports', offList.includes('@openuidev/react-lang') && offList.includes('zod') && offList.includes('@deepwidgets/shell/ui/*'), offList)
+  const offAnswer = await call('widget_install', { dir: join(work, 'agent', `${PAGE}-bad-1`) })
+  const offList = offAnswer.body?.error?.nextStep ?? ''
+  check('the next step of a refused page names the allowed imports', offList.includes('@openuidev/react-lang') && offList.includes('zod') && offList.includes('@deepwidgets/shell/ui/*'), JSON.stringify(offAnswer.body))
 
   // agent_library.fence_warn: a page that reaches a file outside page/ installs. Its answer has a warning of the gate
   // page-build that names the file, and the host log has one line for the install. The host log is the buffer of the
@@ -672,7 +677,7 @@ async function pagePart(call, slugs) {
     const stagingLeft = existsSync(staging) ? readdirSync(staging) : []
     check(`after the install of ${item.name}, the page link points at the new build, and no .tmp build or staging copy stays`,
       answer.body?.page === join(fenceSlugDir, 'page') && BUILD.test(target ?? '') && JSON.stringify(entries.builds) === JSON.stringify([target]) && entries.tmp.length === 0 && stagingLeft.length === 0,
-      `page=${JSON.stringify(answer.body?.page)} link=${String(target)} entries=${JSON.stringify(entries)} staging=${JSON.stringify(stagingLeft)}`)
+      `page=${JSON.stringify(answer.body?.error ?? answer.body?.page)} link=${String(target)} entries=${JSON.stringify(entries)} staging=${JSON.stringify(stagingLeft)}`)
     if (item.reload === true) {
       const before = await lastSn()
       const reloaded = await call('widget_reload', { slug: FENCE })
