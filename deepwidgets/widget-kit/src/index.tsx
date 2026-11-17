@@ -1,7 +1,9 @@
 /**
  * The core of the widget page (`agent_library.main_split`): the part that no agent changes.
- * URL: dsh-app://app/widget/?slug=<slug>. Electron main serves the page from disk and
- * forwards each /api/widgets request to the host with the host cookie.
+ * URL: dsh-app://w-<slug>.widget/widget/?slug=<slug> for the shared shell, and /widget/<slug>/?slug=<slug> for the
+ * page of a slug (`agent_library.serving`). Electron main serves the page from disk and forwards each
+ * /api/widgets/<slug>/ request to the host with the host cookie. With `&page=failed`, the shared shell shows the notice
+ * that the page of the widget failed.
  * Flow: GET program, check the catalog, give the child the props of `<Renderer.Root>` with the
  * toolProvider (POST /call), read the stream, run the queries again on `data`, load the program
  * again on `program`. All requests and the stream go through `channel.ts`.
@@ -57,6 +59,8 @@ interface Env {
   channel: WidgetChannel | undefined
   catalog: string
   Child: ComponentType<ChildProps>
+  /** True when Electron main loaded the shared shell after failures of the page of the widget. */
+  pageFailed: boolean
 }
 
 /** Lives inside Renderer.Root to reach the OpenUI context. `refreshRef` runs each query again. */
@@ -106,7 +110,7 @@ type Load =
   | { status: 'ready', text: string }
 
 function Core({ env }: { env: Env }) {
-  const { dw, record, channel, catalog: shellCatalog, Child } = env
+  const { dw, record, channel, catalog: shellCatalog, Child, pageFailed } = env
   const [load, setLoad] = useState<Load>({ status: 'loading' })
   const [programErrors, setProgramErrors] = useState<OpenUIError[]>([])
   const queryIdsRef = useRef<string[]>([])
@@ -210,7 +214,12 @@ function Core({ env }: { env: Env }) {
       </Child>
     )
   }
-  return <div className="dw-surface">{body}</div>
+  return (
+    <div className="dw-surface">
+      {pageFailed ? <p className="dw-notice" role="status" data-dw="page-failed">The page of this widget failed. This is the default page. Install the widget again to retry.</p> : null}
+      {body}
+    </div>
+  )
 }
 
 /** Mount the widget page in `#root`: read the slug, open the channel, and render the core around `page.child`. */
@@ -221,9 +230,10 @@ export function mountWidget(page: WidgetPage): void {
   }
   window.__dw = dw
   const record = (event: string): void => { dw.events.push(event); if (dw.events.length > 200) dw.events.shift() }
-  const slug = new URLSearchParams(location.search).get('slug')
+  const query = new URLSearchParams(location.search)
+  const slug = query.get('slug')
   const channel = slug === null ? undefined : openChannel(slug)
   const root = document.getElementById('root')
   if (root === null) throw new Error('widget shell: the page has no #root')
-  createRoot(root).render(<Core env={{ dw, record, channel, catalog: page.catalog, Child: page.child }} />)
+  createRoot(root).render(<Core env={{ dw, record, channel, catalog: page.catalog, Child: page.child, pageFailed: query.get('page') === 'failed' }} />)
 }

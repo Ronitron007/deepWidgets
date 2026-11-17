@@ -40,3 +40,4 @@ ui-renderer   # start keep set
 ui-theme   # start keep set
 locale   # start keep set
 shortcuts   # start keep set
+logger-console   # host log (host.log)

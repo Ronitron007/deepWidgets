@@ -1424,7 +1424,11 @@ importers:
         specifier: workspace:*
         version: link:../../packages/host/webserver
 
-  deepwidgets/trim: {}
+  deepwidgets/trim:
+    dependencies:
+      '@deepseek-ai/cordis-plugin-logger-console':
+        specifier: workspace:~
+        version: link:../../vendor/logger-console
 
   deepwidgets/widget-kit:
     dependencies:

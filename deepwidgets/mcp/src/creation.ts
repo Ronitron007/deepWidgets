@@ -22,7 +22,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, rmdir, stat, symlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { BundleInfo, ChangeResult } from '@deepseek-ai/dsh-plugin-manager/types'
 import type { ProgramRecord } from '@deepwidgets/widgets'
@@ -63,6 +63,17 @@ const PAGE_BUILDS_KEPT = 3
 const PAGE_STAGING = '.page-staging'
 /** A link under a temporary name, before the rename over `page`. */
 const PAGE_LINK_TMP = /^\.page-link-/
+/** A slug folder under the widget root (the slug pattern of the widgets runtime). */
+const SLUG_DIR = /^[a-z0-9][a-z0-9-]{0,62}$/
+
+/**
+ * The page state for Electron main (`agent_library.serving.changes`): the widget root, and for each slug with a page
+ * link a stamp, the link target and the modify time of the link. Each write of a link gives a new stamp.
+ */
+export interface PageState {
+  root: string
+  pages: Record<string, string>
+}
 
 /** One gate of `widget_phase2.creation.gates`, in order, then the page gates of `agent_library.build_gate.gates`. */
 export type GateName = 'compile' | 'lint' | 'test' | PageGateName
@@ -143,6 +154,11 @@ export interface CreationServices {
   readonly records: Context['widgetRecords']
   /** The render check of a page in Electron main (`agent_library.build_gate.render`). Undefined in a CLI host. */
   readonly renderCheck?: RenderCheck | undefined
+  /**
+   * Gets the page state when the installer is ready and after each job that changed a page link
+   * (`agent_library.serving.changes`). Undefined in a CLI host. It must not throw.
+   */
+  readonly onPages?: ((state: PageState) => void) | undefined
 }
 
 /** Where the tools of the gates are. They resolve from this package, not from a working folder. */
@@ -513,6 +529,8 @@ function resultDiagnostics(result: ChangeResult): string[] {
 export class WidgetInstaller {
   private queue: Promise<unknown> = Promise.resolve()
   private readonly root: string
+  /** The page state that `onPages` got last, as JSON. */
+  private sentPages: string | undefined
 
   constructor(private readonly services: CreationServices) {
     this.root = join(services.profileDir, 'deepwidgets-widgets')
@@ -534,7 +552,37 @@ export class WidgetInstaller {
     }
   }
 
-  private serial<T>(job: () => Promise<T>): Promise<T> {
+  /**
+   * agent_library.serving.changes: read the page link of each slug, and give the state to `onPages` when it changed
+   * since the last call. A read error leaves out that slug. It never throws.
+   */
+  private async notifyPages(): Promise<void> {
+    if (this.services.onPages === undefined) return
+    const pages: Record<string, string> = {}
+    for (const slug of (await readdir(this.root).catch((): string[] => [])).sort()) {
+      if (!SLUG_DIR.test(slug)) continue
+      const link = join(this.root, slug, PAGE_DIR)
+      const info = await lstat(link).catch(() => undefined)
+      if (info === undefined) continue
+      const target = info.isSymbolicLink() ? await readlink(link).catch(() => undefined) : PAGE_DIR
+      if (target !== undefined) pages[slug] = `${basename(target)}@${String(info.mtimeMs)}`
+    }
+    const state: PageState = { root: this.root, pages }
+    const text = JSON.stringify(state)
+    if (text === this.sentPages) return
+    this.sentPages = text
+    this.services.onPages(state)
+  }
+
+  /** Run one job after the jobs before it. After each job, Electron main gets the page state when it changed. */
+  private serial<T>(work: () => Promise<T>): Promise<T> {
+    const job = async (): Promise<T> => {
+      try {
+        return await work()
+      } finally {
+        await this.notifyPages()
+      }
+    }
     const next = this.queue.then(job, job)
     this.queue = next.catch(() => undefined)
     return next
