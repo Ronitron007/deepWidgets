@@ -692,8 +692,8 @@ function failure(error: unknown): Response {
   return json(500, { ok: false, error: { code: 'handler-error', message: errorText(error) } })
 }
 
-/** Open one server-sent event stream. `first` is the first frame. */
-function eventStream(request: Request, streams: Set<OpenStream>, first: () => unknown): Response {
+/** Open one server-sent event stream. `first` is the first frame, and the frames of `after` follow it. */
+function eventStream(request: Request, streams: Set<OpenStream>, first: () => unknown, after: readonly unknown[] = []): Response {
   let closed = false
   let controller: ReadableStreamDefaultController<Uint8Array> | undefined
   let timer: ReturnType<typeof setInterval> | undefined
@@ -714,6 +714,7 @@ function eventStream(request: Request, streams: Set<OpenStream>, first: () => un
       controller = started
       started.enqueue(encoder.encode('retry: 1000\n\n'))
       started.enqueue(sseFrame(first()))
+      for (const message of after) started.enqueue(sseFrame(message))
       streams.add(open)
       if (request.signal.aborted) {
         open.close()
@@ -828,6 +829,9 @@ export function apply(ctx: Context, config: Config): void {
     seq += 1
     log.push({ seq, at: Date.now(), ...change })
     if (log.length > CHANGE_LOG_SIZE) log.shift()
+    // main_widget.widgets: the Widgets tab of main shows each change of each other widget. A `data` frame with no rev
+    // makes the page of main run its queries again. The state of main does not change, so nothing is written.
+    if (change.slug !== MAIN_SLUG) push(MAIN_SLUG, { type: 'data' })
   }
   const cursor = (): string => `${epoch}:${String(seq)}`
   function changes(since: string | undefined): { cursor: string, changes: WidgetChange[], reset?: true } {
@@ -1243,7 +1247,9 @@ export function apply(ctx: Context, config: Config): void {
             rev: stateOf(slug)?.rev ?? 0,
             // A failed widget says -1, so the page loads the program again when the widget comes back.
             programRev: entry.failure === undefined ? domain?.table('program').get(slug)?.rev ?? 0 : -1,
-          }))
+          // main_widget.widgets: the hello of main has no rev of the other widgets. A page of main that missed their
+          // changes while its stream was down catches up on this `data` frame.
+          }), slug === MAIN_SLUG ? [{ type: 'data' }] : [])
         }),
       }),
     ]
