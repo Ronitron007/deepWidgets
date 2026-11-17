@@ -76,6 +76,8 @@ The research for this spec is in `main_widget.research`.
 
 - The page of the main widget is a second entry of the shell build, `main.html`. It mounts the core of `@deepwidgets/widget-kit` with its own child (`agent_library.main_split`).
 
+- The panel loads the page from the widget origin of `main`, at `dsh-app://w-main.widget/widget/main.html?slug=main`. The route `/widget/` of a widget origin serves the shared shell (`agent_library.serving.routes`).
+
 - The child of `main` has its own component set, `deepwidgets-main@1`. The set holds the parts of the two tabs, such as the widget table and the state viewer.
 
 - The page has two tabs: Widgets (`main_widget.widgets`) and Settings (`main_widget.settings`).
@@ -165,7 +167,7 @@ The operator did not decide these items. A later decision can change each one.
 
 - Electron says that a login item can fail when the app has no signature and no notarization. A build with an ad-hoc signature can give `not-found` after each rebuild.
 
-- Each widget page has the origin `dsh-app://app/` and the same host cookie. Today a page calls only the routes of its own slug, because a program can not name a slug. When `library.serving` lets an agent child run in a widget page, that child can call the routes of `main`. Before `library.serving` ships, the routes of `main` must refuse a call that does not come from the panel.
+- The page of another widget must not call the routes of `main`. `agent_library.serving.routes` covers this: each widget page has its own origin, and Electron main gives 403 for the path of another slug.
 
 ## Research `main_widget.research`
 
