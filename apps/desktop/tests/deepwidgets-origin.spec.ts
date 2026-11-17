@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseWidgetPages, slugOfHost, widgetHost, widgetRoute, widgetUrl } from '../src/deepwidgets-origin.ts'
+import { parseWidgetPages, slugOfHost, WIDGET_CSP, widgetHost, widgetRoute, widgetUrl, withWidgetCsp } from '../src/deepwidgets-origin.ts'
 
 const LONG = 'a'.repeat(63)
 
@@ -88,5 +88,20 @@ describe('parseWidgetPages (agent_library.serving.changes)', () => {
       { root: '/p', pages: { demo: 1 } }, { root: '/p', pages: { demo: 'x'.repeat(257) } }]) {
       expect(parseWidgetPages(value)).toBeUndefined()
     }
+  })
+})
+
+describe('withWidgetCsp (agent_library.serving)', () => {
+  it('sets the CSP header with frame-ancestors none and keeps the status, the body, and the other headers', async () => {
+    const answer = await withWidgetCsp(new Response('x', { status: 404, headers: { 'content-type': 'text/html' } }))
+    expect(answer.status).toBe(404)
+    expect(await answer.text()).toBe('x')
+    expect(answer.headers.get('content-type')).toBe('text/html')
+    expect(answer.headers.get('content-security-policy')).toBe(WIDGET_CSP)
+    expect(WIDGET_CSP).toContain("frame-ancestors 'none'")
+  })
+
+  it('keeps a network error', async () => {
+    expect((await withWidgetCsp(Response.error())).type).toBe('error')
   })
 })

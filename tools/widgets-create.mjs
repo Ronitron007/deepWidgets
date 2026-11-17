@@ -57,7 +57,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { pinnedFunction } from './in-host.mjs'
-import { CHILD, LIBRARY, LOOPING_CHILD, NEXT_LIBRARY, LOST_STYLES, THROWING_LIBRARY, WARNING_STYLES, templateText, writePageWidget } from './fixtures/page-widget.mjs'
+import { CHILD, FRAME_CHILD, FRAME_HTML, LIBRARY, LOOPING_CHILD, NEXT_LIBRARY, LOST_STYLES, THROWING_LIBRARY, WARNING_STYLES, templateText, writePageWidget } from './fixtures/page-widget.mjs'
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const BIN = join(ROOT, 'apps/cli/lib/bin.js')
@@ -647,7 +647,8 @@ async function pagePart(call, slugs) {
  * its window.
  */
 async function desktopPart() {
-  const dir = writePageWidget(join(work, 'agent', 'create-window'), 'create-window')
+  // agent_library.serving: the good page also emits frame.html, which tries to frame the page of sample.
+  const dir = writePageWidget(join(work, 'agent', 'create-window'), 'create-window', { 'page/child.tsx': FRAME_CHILD, 'page/frame.html': FRAME_HTML })
   const styles = templateText('styles.css')
   const cases = [
     { dir: writePageWidget(join(work, 'agent', 'create-window-loop'), 'create-window-loop', { 'page/child.tsx': LOOPING_CHILD }), refuse: 'not-ready' },
@@ -670,7 +671,7 @@ async function desktopPart() {
   smoke.stderr.on('data', (chunk) => { text += chunk })
   const code = await new Promise((resolve) => smoke.once('close', resolve))
   const last = text.trim().split('\n').slice(-3).join(' | ')
-  check('desktop: the render check refuses a page that loops (not-ready), a component that throws (render-error), and a lost dw-core style (lost-core-styles); it warns of no body height and wide content; then a good page passes, and its window opens at the widget origin of its slug and shows its component; its own program gives 200 and the program of sample 403; new page sources show the new page, no page/ shows the shared shell, and two renderer ends in 60 s leave the shared shell with the notice; widget_remove closes the window', code === 0, `smoke exit ${String(code)}: ${last}`)
+  check('desktop: the render check refuses a page that loops (not-ready), a component that throws (render-error), and a lost dw-core style (lost-core-styles); it warns of no body height and wide content; then a good page passes, and its window opens at the widget origin of its slug and shows its component; its own program gives 200 and the program of sample 403; new page sources show the new page, no page/ shows the shared shell, two renderer ends in 60 s leave the shared shell with the notice, and a page change ends the notice in the same window; each widget response has the CSP header, and a second HTML file of a page can not frame the page of sample; widget_remove closes the window', code === 0, `smoke exit ${String(code)}: ${last}`)
 }
 
 let exitCode = 1

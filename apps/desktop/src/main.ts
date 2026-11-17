@@ -77,7 +77,7 @@ import { MCP_FORWARDED_ENV, startMcpPortOwner, type McpHostLink, type McpPortOwn
 // deepwidgets-trim: agent_library.build_gate.render. A hidden window checks the built page of a widget bundle.
 import { DesktopRenderCheck, RENDER_CHECK_HOST } from './deepwidgets-render-check.ts'
 // deepwidgets-trim: agent_library.serving. Each widget page has the origin of its slug, dsh-app://w-<slug>.widget.
-import { slugOfHost } from './deepwidgets-origin.ts'
+import { slugOfHost, withWidgetCsp } from './deepwidgets-origin.ts'
 
 /** deepWidgets trace: the start-up steps for `POST /api/trace` (`floating_widget.sources`). */
 const traceSteps = new DesktopTraceSteps()
@@ -855,7 +855,8 @@ async function main(): Promise<void> {
     if (widgetSlug !== undefined) {
       // Node parses the scheme as not special, so `url.origin` is "null". The origin of the page is this one.
       const origin = `${SCHEME}://${url.hostname}`
-      return widgetWindows.handle(request, widgetSlug, {
+      // Each response of the origin has the CSP header, also a second HTML file of a page.
+      return withWidgetCsp(widgetWindows.handle(request, widgetSlug, {
         shell: (shellRequest, index) => {
           const shellRoot = join(resources.dsh, 'node_modules', '@deepwidgets', 'shell', 'dist')
           return serveWebDocument(index ? new Request(`${origin}/widget/index.html`, { method: shellRequest.method }) : shellRequest, shellRoot)
@@ -863,7 +864,7 @@ async function main(): Promise<void> {
         // A network error while the Host is down: a 503 closes an EventSource for good.
         forward: forwarded => backend.host === undefined || hostUrl === undefined || hostCookie === undefined
           ? Promise.resolve(Response.error()) : forwardWebRequest(forwarded, hostUrl, hostCookie, origin),
-      })
+      }))
     }
     if (url.hostname === 'app') {
       if (url.pathname === '/' || url.pathname === '/index.html' || url.pathname.startsWith('/assets/')
@@ -874,10 +875,15 @@ async function main(): Promise<void> {
       // Vite builds the page with base /widget/ into dist/widget/, so the path /widget/<file> maps to dist/widget/<file>.
       if (url.pathname === '/widget' || url.pathname.startsWith('/widget/')) {
         const shellRoot = join(resources.dsh, 'node_modules', '@deepwidgets', 'shell', 'dist')
+        // deepwidgets-trim: agent_library.serving. The /widget/ route of the origin app has the CSP header of a widget origin.
+        // if (url.pathname === '/widget' || url.pathname === '/widget/') {
+        //   return serveWebDocument(new Request(`${SCHEME}://app/widget/index.html`, { method: request.method }), shellRoot)
+        // }
+        // return serveWebDocument(request, shellRoot)
         if (url.pathname === '/widget' || url.pathname === '/widget/') {
-          return serveWebDocument(new Request(`${SCHEME}://app/widget/index.html`, { method: request.method }), shellRoot)
+          return withWidgetCsp(serveWebDocument(new Request(`${SCHEME}://app/widget/index.html`, { method: request.method }), shellRoot))
         }
-        return serveWebDocument(request, shellRoot)
+        return withWidgetCsp(serveWebDocument(request, shellRoot))
       }
       if (backend.host === undefined || hostUrl === undefined || hostCookie === undefined) {
         // deepwidgets-trim: widget_mvp.shell answers a network error while the host is down. A 503 closes an EventSource for good.

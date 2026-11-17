@@ -128,3 +128,22 @@ export function parseWidgetPages(value: unknown): WidgetPages | undefined {
   }
   return { root, pages: parsed }
 }
+
+/**
+ * The Content-Security-Policy of each response of a widget origin and of the `/widget/` route of the origin `app`.
+ * The directives are those of the `<meta>` of the fixed `index.html`, plus `frame-ancestors 'none'`. Thus a second
+ * HTML file of a page runs with the same policy, and no page can frame the page of another widget.
+ */
+export const WIDGET_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
+
+/**
+ * Give a response with the header {@link WIDGET_CSP}. A network error stays a network error.
+ * @param response - the answer of a widget route.
+ */
+export async function withWidgetCsp(response: Response | Promise<Response>): Promise<Response> {
+  const answer = await response
+  if (answer.type === 'error') return answer
+  const headers = new Headers(answer.headers)
+  headers.set('content-security-policy', WIDGET_CSP)
+  return new Response(answer.body, { status: answer.status, statusText: answer.statusText, headers })
+}

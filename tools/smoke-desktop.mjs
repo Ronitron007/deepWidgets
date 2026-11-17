@@ -1608,6 +1608,58 @@ async function pollOrigin(slug, until, accept) {
  * - A renderer that ends two times in 60 s leaves the shared shell with the notice. A new page link ends it.
  * The window ends on the page of `dir`.
  */
+/**
+ * agent_library.serving: each response of a widget origin, and of the /widget/ route of the origin app, has the CSP
+ * header with `frame-ancestors 'none'`: the page document, a page file, the shell document, a shell file, and the
+ * emitted `frame.html` of the page fixture (DSH_SMOKE_CREATE has `page/frame.html`). Then a hidden window loads that
+ * `frame.html`, which has no `<meta>` CSP and frames the page of sample: the frame must be refused.
+ */
+async function checkCsp(slug, ws, deadline) {
+  const read = (expression, url = ws) => evaluate(url, expression, deadline, true).then((text) => JSON.parse(String(text)))
+  const heads = await read(`(async () => {
+    const head = async (path) => path === null ? null : (await fetch(path)).headers.get('content-security-policy')
+    const frame = document.documentElement.dataset.frame ?? null
+    const shellText = await (await fetch('/widget/')).text()
+    const shellFile = new DOMParser().parseFromString(shellText, 'text/html').querySelector('script[src]')?.getAttribute('src') ?? null
+    const pageFile = document.querySelector('script[src]')?.getAttribute('src') ?? null
+    return JSON.stringify({ frame, shellFile, pageFile, page: await head(location.pathname), pageAsset: await head(pageFile),
+      shell: await head('/widget/'), shellAsset: await head(shellFile), html: await head(frame) })
+  })()`)
+  const main = await waitForRenderer(deadline)
+  const app = main === undefined ? null : await read(`fetch('/widget/').then((answer) => JSON.stringify(answer.headers.get('content-security-policy')))`, main.webSocketDebuggerUrl)
+  note(`serving csp=${JSON.stringify({ ...heads, app })}`)
+  const strict = (value) => typeof value === 'string' && value.includes("frame-ancestors 'none'") && value.includes("default-src 'self'")
+  if (typeof heads.frame !== 'string' || !heads.frame.startsWith(`dsh-app://w-${slug}.widget/widget/${slug}/`) || !heads.frame.endsWith('.html')) return `csp: the page emitted no frame.html: ${JSON.stringify(heads.frame)}`
+  for (const name of ['page', 'pageAsset', 'shell', 'shellAsset', 'html']) {
+    if (!strict(heads[name])) return `csp: the ${name} response has no CSP header with frame-ancestors 'none': ${JSON.stringify(heads)}`
+  }
+  if (!strict(app)) return `csp: the /widget/ route of the origin app has no CSP header: ${JSON.stringify(app)}`
+  const framed = JSON.parse(String(await withWidgetWindows(deadline, `async function () {
+    const BrowserWindow = this.windows.get(${JSON.stringify(slug)}).window.constructor
+    const window = new BrowserWindow({ show: false, width: 320, height: 300, webPreferences: { sandbox: true, contextIsolation: true } })
+    const logs = []
+    window.webContents.on('console-message', (event) => { logs.push(String(event.message).slice(0, 160)) })
+    try {
+      await window.loadURL(${JSON.stringify(heads.frame)})
+      await new Promise((done) => { setTimeout(done, 2000) })
+      // A refused frame keeps the URL it asked for, so each frame reports what its document is.
+      const frames = []
+      for (const frame of window.webContents.mainFrame.framesInSubtree) {
+        const inside = await frame.executeJavaScript('JSON.stringify({ href: location.href, widget: window.__dw !== undefined })').catch((error) => JSON.stringify({ error: String(error) }))
+        frames.push({ url: frame.url, ...JSON.parse(inside) })
+      }
+      return JSON.stringify({ frames, logs: logs.slice(0, 3) })
+    } finally {
+      window.destroy()
+    }
+  }`)))
+  note(`serving frame=${JSON.stringify(framed)}`)
+  if (framed.frames[0]?.href !== heads.frame) return `csp: frame.html did not load: ${JSON.stringify(framed)}`
+  if (framed.frames.length < 2) return `csp: frame.html made no frame: ${JSON.stringify(framed)}`
+  if (framed.frames.some((frame) => frame.widget === true || String(frame.href).startsWith('dsh-app://w-sample.widget/'))) return `csp: frame.html framed the page of sample: ${JSON.stringify(framed)}`
+  return undefined
+}
+
 async function checkServing(slug, dir, tool, deadline) {
   const next = process.env.DSH_SMOKE_CREATE_NEXT ?? ''
   const plain = process.env.DSH_SMOKE_CREATE_PLAIN ?? ''
@@ -1641,6 +1693,9 @@ async function checkServing(slug, dir, tool, deadline) {
   ]).then((answers) => JSON.stringify(answers.map((answer) => answer.status)))`, deadline, true)))
   note(`serving scope own,other=${JSON.stringify(statuses)}`)
   if (statuses?.[0] !== 200 || statuses?.[1] !== 403) return `scope: the program of ${slug} and of sample gave ${JSON.stringify(statuses)}, want [200,403]`
+
+  failed = await checkCsp(slug, ws, deadline)
+  if (failed !== undefined) return failed
 
   failed = await install('next', next) ?? await step('next page', onPage('next: '))
   if (failed !== undefined) return failed
@@ -1715,10 +1770,12 @@ async function checkWidget(page, deadline) {
 
 /**
  * Register a second widget, find the window that Electron main opens for it (with a bar chart of two bars),
- * end the registration, and check the removed state. Electron main closes the widget window on `removed`,
- * so the removed state is read from the same page in an iframe of the main window, which main does not own.
+ * end the registration, and check the removed state. Electron main closes the widget window on `removed`, so the
+ * check cuts the events stream of main first: the window stays, and its page gets `removed` from its own stream.
+ * (The page can not be read in an iframe of the main window: the widget routes answer with `frame-ancestors 'none'`.)
+ * Then the stream of main opens again, and its `hello` closes the window.
  */
-async function checkWidgetRemoved(main, deadline) {
+async function checkWidgetRemoved(_main, deadline) {
   const slug = `smoke-removed-${Date.now().toString(36)}`
   const title = `removable ${slug}`
   await hostWidgets(deadline, `(widgets, slug, title) => {
@@ -1726,31 +1783,30 @@ async function checkWidgetRemoved(main, deadline) {
       program: 'root = Card([CardHeader("' + title + '"), BarChart(["a", "b"], [Series("n", [1, 2])])])', actions: [] })
     return true
   }`, [slug, title])
-  // The iframe loads the shell on the origin app, which keeps its routes, so the main window can read the frame.
-  const url = `dsh-app://app/widget/?slug=${encodeURIComponent(slug)}`
   const page = await findWidgetPage(slug, deadline)
   if (page === undefined) return `widget removed: no window for ${slug}`
   const ready = await pollWidget(page, Math.min(deadline, Date.now() + 15_000), (value) => value.text.includes(title) && value.dw?.stream === 'open' && value.chart === 2)
   note(`widget second=${JSON.stringify({ ...ready.value, text: ready.value?.text?.slice(0, 120) })}`)
   if (!ready.ok) return `widget removed: the page of ${slug} did not load with its bar chart: ${JSON.stringify({ ...ready.value, text: undefined })}`
-  const frameId = 'deepwidgets-smoke-removed'
-  await evaluate(main.webSocketDebuggerUrl, `(() => { const frame = document.createElement('iframe'); frame.id = ${JSON.stringify(frameId)};
-  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:320px;height:300px;border:0'; frame.src = ${JSON.stringify(url)};
-  document.body.append(frame); return true })()`, deadline)
-  const framed = await pollWidget(main, Math.min(deadline, Date.now() + 15_000), (value) => value.text.includes(title) && value.dw?.stream === 'open', frameId)
-  if (!framed.ok) return `widget removed: the iframe page of ${slug} did not load: ${JSON.stringify({ ...framed.value, text: undefined })}`
-  await hostWidgets(deadline, 'async () => { await globalThis.__deepwidgetsSmokeRemove(); delete globalThis.__deepwidgetsSmokeRemove; return true }', [])
-  const removed = await pollWidget(main, Math.min(deadline, Date.now() + 10_000), (value) => value.state === 'state-removed', frameId)
-  if (!removed.ok) return `widget removed: no removed state: ${JSON.stringify(removed.value?.dw ?? removed.value)}`
-  // A page that opens the stream again would log connect and closed after removed within this wait (backoff 250 ms).
-  await delay(3000)
-  const after = await pollWidget(main, Math.min(deadline, Date.now() + 5000), () => true, frameId)
-  const events = after.value?.dw?.events ?? []
-  const tail = events.slice(events.lastIndexOf('removed') + 1)
-  note(`widget removed events=${JSON.stringify(events)} state=${String(after.value?.state)}`)
-  await evaluate(main.webSocketDebuggerUrl, `document.getElementById(${JSON.stringify(frameId)})?.remove(), true`, deadline)
-  if (after.value?.state !== 'state-removed') return `widget removed: the removed state did not stay: ${String(after.value?.state)}`
-  if (tail.length > 0) return `widget removed: the page kept using the stream after removed: ${JSON.stringify(tail)}`
+  const hellos = await withWidgetWindows(deadline, countHellos())
+  await withWidgetWindows(deadline, pauseStream())
+  try {
+    await hostWidgets(deadline, 'async () => { await globalThis.__deepwidgetsSmokeRemove(); delete globalThis.__deepwidgetsSmokeRemove; return true }', [])
+    const removed = await pollWidget(page, Math.min(deadline, Date.now() + 10_000), (value) => value.state === 'state-removed')
+    if (!removed.ok) return `widget removed: no removed state: ${JSON.stringify(removed.value?.dw ?? removed.value)}`
+    // A page that opens the stream again would log connect and closed after removed within this wait (backoff 250 ms).
+    await delay(3000)
+    const after = await pollWidget(page, Math.min(deadline, Date.now() + 5000), () => true)
+    const events = after.value?.dw?.events ?? []
+    const tail = events.slice(events.lastIndexOf('removed') + 1)
+    note(`widget removed events=${JSON.stringify(events)} state=${String(after.value?.state)}`)
+    if (after.value?.state !== 'state-removed') return `widget removed: the removed state did not stay: ${String(after.value?.state)}`
+    if (tail.length > 0) return `widget removed: the page kept using the stream after removed: ${JSON.stringify(tail)}`
+  } finally {
+    await withWidgetWindows(deadline, resumeStream())
+  }
+  const hello = await waitHello(hellos, Math.min(deadline, Date.now() + 15_000))
+  if (hello !== undefined) return `widget removed: ${hello}`
   const closed = await waitPages(widgetUrl(slug), 0, Math.min(deadline, Date.now() + 10_000), 'the window of the removed widget')
   return closed ?? checkSlugOrigins(deadline)
 }

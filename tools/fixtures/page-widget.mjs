@@ -85,6 +85,22 @@ export const LIBRARY = library('<p className="text-xs" data-dw="note">{props.tex
 /** The good library with new page sources: its Note starts with `next: ` (`agent_library.serving`). */
 export const NEXT_LIBRARY = library('<p className="text-xs" data-dw="note">next: {props.text}</p>')
 
+/**
+ * A second HTML file of a page, with no `<meta>` CSP, that frames the page of the widget `sample`
+ * (`agent_library.serving`). The comment keeps it above the inline limit of Vite (4 KiB), so the build emits a file.
+ */
+export const FRAME_HTML = `<!doctype html>
+<html>
+  <body>
+    <iframe id="other" src="dsh-app://w-sample.widget/widget/?slug=sample"></iframe>
+    <!-- ${'pad '.repeat(1100)}-->
+  </body>
+</html>
+`
+
+/** The good child, and the URL of the emitted `frame.html` on the root element (`data-frame`). */
+export const FRAME_CHILD = `${CHILD}\ndocument.documentElement.dataset.frame = new URL('./frame.html', import.meta.url).href\n`
+
 /** A library whose Note throws when it renders. The host gates and the build pass. */
 export const THROWING_LIBRARY = library("{ throw new Error('the page component broke on purpose: ' + props.text) }")
 
