@@ -168,6 +168,10 @@ On the widget origin of the slug S, Electron main answers only these paths:
 
 - A page of the slug A can not call an action of the slug B. The fixed `index.html` allows connections to its own origin only. Electron main refuses the path of another slug on that origin.
 
+- Electron main sends a content security policy as a response header on each response of a widget origin, and on the route `/widget/` of the origin `app`. The header has the rules of the fixed `index.html`, and also `frame-ancestors 'none'`.
+
+- The reason: a page can emit a second HTML file, and that file has no `<meta>` policy. With the header, such a file can not frame the page of another widget, and no page of a widget can be in a frame.
+
 ### Page changes `agent_library.serving.changes`
 
 - Electron main does not know the profile folder. The host uses its IPC channel to Electron main. When the host is ready, it sends the widget root folder and the slugs that have a page link. It sends a message again after each change of a page link.
