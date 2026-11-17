@@ -767,7 +767,7 @@ export class WidgetInstaller {
         nextStep: `Tell the user that the file ${file} is broken. It lists the widgets that the user turned off in the main window. The user can delete it and turn those widgets off again.`,
       })
     }
-    return new Set(parsed as string[])
+    return new Set(parsed)
   }
 
   /** Store the Turn off (`off`) or the Turn on of `slug`. The file is replaced in one rename. */
