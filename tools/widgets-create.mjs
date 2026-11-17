@@ -52,7 +52,8 @@
  * of the shell and the kit only, so it does not hold a workspace package that only the theme names as one.
  * Window part: it runs tools/smoke-desktop.mjs with DSH_SMOKE_CREATE set to a bundle with a good page and
  * DSH_SMOKE_CREATE_CASES set to render cases that install first: a page that loops forever (not-ready), a page whose
- * component throws (render-error), a page that overrides a dw-core style (lost-core-styles), and a page with no body
+ * component throws (render-error), a page that overrides a dw-core style (lost-core-styles), each with the next step of
+ * the gate page-render that tells the agent to fix the component or the styles, and a page with no body
  * height and wide content (two warnings), a bundle of widget_template and library_template with no catalog
  * (wrong-catalog, with a next step that names CATALOG_ID), and the same bundle with catalog set and a program that uses
  * the example component (its window shows it). The good page then passes the render check, and its window opens at the
@@ -850,10 +851,12 @@ async function desktopPart() {
   // agent_library.serving: the good page also emits frame.html, which tries to frame the page of sample.
   const dir = writePageWidget(join(work, 'agent', 'create-window'), 'create-window', { 'page/child.tsx': FRAME_CHILD, 'page/frame.html': FRAME_HTML })
   const styles = templateText('styles.css')
+  // The next step of a render failure that is not wrong-catalog (PAGE_NEXT_STEP['page-render'] of page-gate.ts).
+  const renderStep = 'Fix the component or the styles at each diagnostic'
   const cases = [
-    { dir: writePageWidget(join(work, 'agent', 'create-window-loop'), 'create-window-loop', { 'page/child.tsx': LOOPING_CHILD }), refuse: 'not-ready' },
-    { dir: writePageWidget(join(work, 'agent', 'create-window-throw'), 'create-window-throw', { 'page/library.tsx': THROWING_LIBRARY }), refuse: 'render-error' },
-    { dir: writePageWidget(join(work, 'agent', 'create-window-lost'), 'create-window-lost', { 'page/styles.css': `${styles}${LOST_STYLES}` }), refuse: 'lost-core-styles' },
+    { dir: writePageWidget(join(work, 'agent', 'create-window-loop'), 'create-window-loop', { 'page/child.tsx': LOOPING_CHILD }), refuse: 'not-ready', nextStep: renderStep },
+    { dir: writePageWidget(join(work, 'agent', 'create-window-throw'), 'create-window-throw', { 'page/library.tsx': THROWING_LIBRARY }), refuse: 'render-error', nextStep: renderStep },
+    { dir: writePageWidget(join(work, 'agent', 'create-window-lost'), 'create-window-lost', { 'page/styles.css': `${styles}${LOST_STYLES}` }), refuse: 'lost-core-styles', nextStep: renderStep },
     { dir: writePageWidget(join(work, 'agent', 'create-window-warn'), 'create-window-warn', { 'page/styles.css': `${styles}${WARNING_STYLES}` }), warnings: ['has no height', 'wider than the window'] },
     // agent_library.guide: the bundle of widget_template and library_template with no catalog, then with catalog set
     // and a program that uses the example component Note.
