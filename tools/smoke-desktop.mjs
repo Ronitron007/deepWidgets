@@ -21,6 +21,8 @@
  * render cases [{ dir, refuse?: <code>, warnings?: [<text>] }], each case installs first, in order: a case with
  * `refuse` must fail in the gate page-render with a diagnostic that starts with that code, and a case with
  * `warnings` must install with each text in its warnings (the check then removes it).
+ * With DSH_SMOKE_LOG=1, the check makes the folder $DSH_HOME/deepwidgets read-only and asks the MCP port for a token.
+ * The answer must be 500, and the output of the app must have the ctx.logger line of @deepwidgets/mcp (safe_host.log).
  * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://w-sample.widget/widget/?slug=sample.
  * It turns the sample row off through the host plugin manager and finds that window closed.
  * With DSH_SMOKE_HOST_RESTART=1, the check kills the host once. The sample widget page must be live again
@@ -57,7 +59,7 @@
 
 import { spawn, execFile } from 'node:child_process'
 import { createHmac, randomBytes } from 'node:crypto'
-import { appendFileSync, cpSync, existsSync, openSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, cpSync, existsSync, openSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp } from 'node:fs/promises'
 import { request as httpRequest } from 'node:http'
 import { createServer } from 'node:net'
@@ -69,6 +71,8 @@ import { pinnedExpression, pinnedFunction } from './in-host.mjs'
 
 const root = join(import.meta.dirname, '..')
 const timeoutMs = positiveInteger(process.env.DSH_SMOKE_TIMEOUT_MS, 240_000)
+/** The error line of `issueToken` in deepwidgets/mcp/src/index.ts, as the console exporter prints it. Same pattern as tools/host-log.mjs. */
+const TOKEN_LOG_LINE = /\[E\] .*mcp: the token file \S+mcp-tokens\.json was not written; no token was issued/u
 const groupWatcherSource = `
 import ctypes, ctypes.util, os, select, sys, traceback
 libc = ctypes.CDLL(ctypes.util.find_library("c"))
@@ -446,6 +450,7 @@ try {
         if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === 'watchdog') failed = await checkHostWatchdog(deadline)
         if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === 'mcp-port') failed = await checkMcpPortOwner(deadline)
         if (failed === undefined && (process.env.DSH_SMOKE_CREATE ?? '') !== '') failed = await checkCreate(deadline)
+        if (failed === undefined && process.env.DSH_SMOKE_LOG === '1') failed = await checkLog(deadline)
       }
     }
   }
@@ -1738,6 +1743,38 @@ async function checkServing(slug, dir, tool, deadline) {
   failed = await install('next after the notice', next) ?? await step('next page after the notice', onPage('next: '))
   if (failed !== undefined) return failed
   return await install('page at the end', dir) ?? await step('page at the end', onPage())
+}
+
+async function checkLog(deadline) {
+  const folder = join(home, 'deepwidgets')
+  const tokenRequest = (port) => rawRequest(port, '/mcp/token', { headers: { 'content-type': 'application/json' }, body: tokenBody('smoke log') })
+  let port
+  while (port === undefined && Date.now() < deadline) {
+    let named
+    try { named = JSON.parse(readFileSync(join(folder, 'mcp.json'), 'utf8')).port } catch { named = undefined }
+    const ready = typeof named === 'number' ? await tokenRequest(named).catch(() => undefined) : undefined
+    if (ready?.status === 200) port = named
+    else await delay(500)
+  }
+  if (port === undefined) return 'log: the MCP port gave no token'
+  chmodSync(folder, 0o500)
+  let refused
+  try {
+    refused = await tokenRequest(port)
+  } finally {
+    chmodSync(folder, 0o700)
+  }
+  if (refused.status !== 500) return `log: the token request with a read-only folder gave ${String(refused.status)}, not 500`
+  const until = Math.min(deadline, Date.now() + 5_000)
+  while (Date.now() < until) {
+    const line = readFileSync(logPath, 'utf8').split('\n').find((text) => TOKEN_LOG_LINE.test(text))
+    if (line !== undefined) {
+      note(`log found=${JSON.stringify(line)}`)
+      return undefined
+    }
+    await delay(100)
+  }
+  return 'log: the output of the app has no ctx.logger line of @deepwidgets/mcp'
 }
 
 async function checkWidget(page, deadline) {
