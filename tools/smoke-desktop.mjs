@@ -23,6 +23,13 @@
  * `warnings` must install with each text in its warnings (the check then removes it).
  * With DSH_SMOKE_LOG=1, the check makes the folder $DSH_HOME/deepwidgets read-only and asks the MCP port for a token.
  * The answer must be 500, and the output of the app must have the ctx.logger line of @deepwidgets/mcp (safe_host.log).
+ * With DSH_SMOKE_MAIN=1, Electron main opens a hidden test window of 420 by 600 on the panel page of the main widget,
+ * dsh-app://w-main.widget/widget/main.html?slug=main (main_widget.widget). The page must show a row for sample with its
+ * state rev, and no row for main. A state write of sample over the host Loader must change the rev in that row: the
+ * stream of main carries each change of another widget (main_widget.widgets). The row of sample opens with its state
+ * viewer, Turn off, and no Remove. Turn off and Turn on in the page change its status. The check saves two screenshots
+ * with webContents.capturePage(): $TMPDIR/deepwidgets-main-page/main-page.png, and main-page-state.png with the state of
+ * sample open.
  * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://w-sample.widget/widget/?slug=sample.
  * It turns the sample row off through the host plugin manager and finds that window closed.
  * With DSH_SMOKE_HOST_RESTART=1, the check kills the host once. The sample widget page must be live again
@@ -443,6 +450,8 @@ try {
         if (failed === undefined && (process.env.DSH_SMOKE_ROWS ?? '') !== '') failed = await checkRows(page, deadline)
         if (failed === undefined && (process.env.DSH_SMOKE_INSTALL ?? '') !== '') failed = await checkInstall(deadline)
         if (failed === undefined && (process.env.DSH_SMOKE_WIDGET ?? '') !== '') failed = await checkWidget(page, deadline)
+        // Before the windows check: that check ends with the sample row off, and this one needs the sample window.
+        if (failed === undefined && process.env.DSH_SMOKE_MAIN === '1') failed = await checkMain(deadline)
         if (failed === undefined && process.env.DSH_SMOKE_WINDOWS === '1') failed = await checkWindows(deadline)
         if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === '1') failed = await checkHostRestart(page, deadline)
         if (failed === undefined && process.env.DSH_SMOKE_HOST_RESTART === 'give-up') failed = await checkHostGiveUp(deadline)
@@ -1873,6 +1882,136 @@ async function checkSlugOrigins(deadline) {
     if (closed !== undefined) return closed
   }
   return undefined
+}
+
+/** The panel URL of the main widget (main_widget.widget): the second shell entry on the widget origin of main. */
+const MAIN_PAGE_URL = 'dsh-app://w-main.widget/widget/main.html?slug=main'
+/** The folder of the screenshots of DSH_SMOKE_MAIN. */
+const MAIN_SHOTS = join(tmpdir(), 'deepwidgets-main-page')
+
+/** Read the page of main: the core diagnostics, the problems that it shows, and each widget row. */
+function mainReadExpression() {
+  return `JSON.stringify({
+  dw: window.__dw === undefined ? null : { catalog: window.__dw.catalog, state: window.__dw.state, stream: window.__dw.stream, refreshes: window.__dw.refreshes, errors: window.__dw.errors },
+  problems: [...document.querySelectorAll('[data-dw=state-error], [data-dw=query-error], [data-dw=main-problem], [data-dw=control-error]')].map((node) => node.textContent),
+  tabs: [...document.querySelectorAll('[data-dw=tab]')].map((node) => node.textContent),
+  rows: [...document.querySelectorAll('[data-dw=widget-row]')].map((row) => ({
+    slug: row.dataset.slug,
+    open: row.dataset.open,
+    rev: row.querySelector('[data-dw=state-rev]')?.dataset.rev ?? null,
+    status: row.querySelector('[data-dw=status]')?.dataset.kind ?? null,
+    viewer: row.querySelector('[data-dw=state-viewer]') !== null,
+    turnOff: row.querySelector('[data-dw=turn-off]') !== null,
+    turnOn: row.querySelector('[data-dw=turn-on]') !== null,
+    remove: row.querySelector('[data-dw=remove]') !== null,
+  })),
+})`
+}
+
+/** Poll the page of main until `accept` takes the read value. */
+async function pollMain(target, until, accept) {
+  let last
+  while (Date.now() < until) {
+    try {
+      last = JSON.parse(String(await evaluate(target.webSocketDebuggerUrl, mainReadExpression(), until)))
+      if (accept(last)) return { value: last, ok: true }
+    } catch (error) {
+      last = { error: error instanceof Error ? error.message : 'evaluate failed' }
+    }
+    await delay(250)
+  }
+  return { value: last, ok: false }
+}
+
+/** Click the first element at `selector` in the page of main. Gives false when there is none. */
+async function clickMain(target, selector, deadline) {
+  return evaluate(target.webSocketDebuggerUrl, `(() => { const node = document.querySelector(${JSON.stringify(selector)}); if (node === null) return false; node.click(); return true })()`, deadline)
+}
+
+/** Save a PNG of the test window of main with webContents.capturePage(). Gives the path. */
+async function shootMain(name, deadline) {
+  const data = await withWidgetWindows(deadline, `async function () {
+    const window = globalThis.__deepwidgetsSmokeMain
+    let image = await window.webContents.capturePage(undefined, { stayHidden: true })
+    // A hidden window can give an empty image: show it without focus for the capture.
+    if (image.isEmpty()) {
+      window.showInactive()
+      await new Promise((done) => { setTimeout(done, 500) })
+      image = await window.webContents.capturePage()
+      window.hide()
+    }
+    return image.isEmpty() ? null : image.toPNG().toString('base64')
+  }`)
+  if (typeof data !== 'string') throw new Error(`main: the capture of ${name} is empty`)
+  await mkdir(MAIN_SHOTS, { recursive: true })
+  const path = join(MAIN_SHOTS, name)
+  writeFileSync(path, Buffer.from(data, 'base64'))
+  note(`main screenshot=${path} bytes=${String(Math.round(data.length * 3 / 4))}`)
+  return path
+}
+
+async function checkMain(deadline) {
+  const soon = () => Math.min(deadline, Date.now() + 15_000)
+  // The test window takes the BrowserWindow class from the window of sample: Electron main opens none for main.
+  if (await findWidgetPage('sample', deadline) === undefined) return 'main: no window of sample'
+  await withWidgetWindows(deadline, `function () {
+    const BrowserWindow = this.windows.get('sample').window.constructor
+    const window = new BrowserWindow({ show: false, width: 420, height: 600, useContentSize: true,
+      webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false } })
+    globalThis.__deepwidgetsSmokeMain = window
+    void window.loadURL(${JSON.stringify(MAIN_PAGE_URL)})
+    return window.id
+  }`)
+  try {
+    let target
+    while (target === undefined && Date.now() < soon()) {
+      const targets = await (await fetch(`http://127.0.0.1:${String(rendererPort)}/json/list`, { signal: AbortSignal.timeout(2000) })).json().catch(() => [])
+      target = targets.find((item) => item?.type === 'page' && item.url === MAIN_PAGE_URL && typeof item.webSocketDebuggerUrl === 'string')
+      if (target === undefined) await delay(250)
+    }
+    if (target === undefined) return `main: no page at ${MAIN_PAGE_URL}`
+    const sampleRow = (value) => value.rows?.find((row) => row.slug === 'sample')
+    const first = await pollMain(target, soon(), (value) => value.dw?.stream === 'open' && /^\d+$/u.test(sampleRow(value)?.rev ?? ''))
+    note(`main first=${JSON.stringify(first.value)}`)
+    if (!first.ok) return `main: no row of sample with a state rev: ${JSON.stringify(first.value)}`
+    const read = first.value
+    if (read.dw.catalog !== 'deepwidgets-main@1') return `main: the page has the catalog ${String(read.dw.catalog)}`
+    if (read.rows.some((row) => row.slug === 'main')) return 'main: the page has a row for main'
+    if (read.problems.length > 0) return `main: the page shows a problem: ${JSON.stringify(read.problems)}`
+    if (JSON.stringify(read.tabs) !== '["Widgets","Settings"]') return `main: the tabs are ${JSON.stringify(read.tabs)}`
+    await shootMain('main-page.png', deadline)
+
+    // A state write of sample that does not come from the page: only the stream of main can tell the page.
+    const before = Number(sampleRow(read).rev)
+    const written = await hostWidgets(deadline, `async (widgets) => {
+      await widgets.update('sample', (state) => ({ count: state.count + 1 }), { by: 'smoke-main' })
+      return widgets.get('sample').rev
+    }`, [])
+    note(`main sample write rev=${String(written)} before=${String(before)}`)
+    if (typeof written !== 'number' || written <= before) return `main: the state write of sample gave rev ${String(written)}`
+    const shown = await pollMain(target, Math.min(deadline, Date.now() + 10_000), (value) => sampleRow(value)?.rev === String(written))
+    note(`main after-write=${JSON.stringify(shown.value)}`)
+    if (!shown.ok) return `main: the row of sample did not show rev ${String(written)}: ${JSON.stringify(sampleRow(shown.value) ?? shown.value)}`
+
+    // The state viewer of sample, and its controls: a built-in widget has Turn off and no Remove.
+    if (await clickMain(target, '[data-dw=widget-row][data-slug=sample] [data-dw=row-toggle]', deadline) !== true) return 'main: no toggle in the row of sample'
+    const opened = await pollMain(target, soon(), (value) => sampleRow(value)?.open === 'true' && sampleRow(value)?.viewer === true)
+    note(`main opened=${JSON.stringify(sampleRow(opened.value))}`)
+    if (!opened.ok) return `main: the state of sample did not open: ${JSON.stringify(sampleRow(opened.value) ?? opened.value)}`
+    if (!sampleRow(opened.value).turnOff || sampleRow(opened.value).remove) return `main: the controls of sample are wrong: ${JSON.stringify(sampleRow(opened.value))}`
+    await shootMain('main-page-state.png', deadline)
+
+    // Turn off and Turn on from the page: the status of the row follows, and the row stays open.
+    for (const [button, status] of [['turn-off', 'turned-off'], ['turn-on', 'live']]) {
+      if (await clickMain(target, `[data-dw=widget-row][data-slug=sample] [data-dw=${button}]`, deadline) !== true) return `main: no ${button} in the row of sample`
+      const changed = await pollMain(target, soon(), (value) => sampleRow(value)?.status === status)
+      note(`main ${button}=${JSON.stringify({ row: sampleRow(changed.value), problems: changed.value?.problems })}`)
+      if (!changed.ok) return `main: after ${button}, the status of sample is not ${status}: ${JSON.stringify(changed.value)}`
+    }
+    return undefined
+  } finally {
+    await withWidgetWindows(deadline, 'function () { globalThis.__deepwidgetsSmokeMain?.destroy(); delete globalThis.__deepwidgetsSmokeMain; return true }').catch(() => undefined)
+  }
 }
 
 async function checkHello(page, deadline) {
