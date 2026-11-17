@@ -540,6 +540,11 @@ export class WidgetInstallerService extends Service {
     return this.installer.source(slug)
   }
 
+  /** The source folder of each agent widget of `slugs`, with one read of the bundle list. A slug that is not an agent widget has no item. */
+  sources(slugs: readonly string[]): Promise<Map<string, string>> {
+    return this.installer.sources(slugs)
+  }
+
   /**
    * Remove the agent bundle of `slug`, as `widget_remove` does. Its window closes, and its state stays. A Turn off of the
    * slug ends with it.

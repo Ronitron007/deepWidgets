@@ -189,6 +189,8 @@ export function apply(ctx: Context): void {
     const slugs = new Set([...listed.keys(), ...rows.flatMap((info) => slugOfEntry(info.entryId) ?? [])])
     slugs.delete(widgetSlugs[0])
     const installer = ctx.get('widgetInstaller')
+    // widgets_query_cost: one read of the bundle list for each query, not one for each slug.
+    const sources = installer === undefined ? new Map<string, string>() : await installer.sources([...slugs])
     const out: MainWidget[] = []
     for (const slug of [...slugs].sort()) {
       const summary = listed.get(slug)
@@ -205,7 +207,8 @@ export function apply(ctx: Context): void {
         status = { kind: 'failed', reason: on.map((info) => info.diagnostic ?? `the row ${rowOf(info).id} is ${info.fiberPhase ?? 'not running'} and did not register ${slug}`).join('; ') }
       }
       const live = status.kind === 'live' ? describeLive(slug) : undefined
-      const [state, program, source] = await Promise.all([records.stateRecord(slug), records.programRecord(slug), installer?.source(slug)])
+      const source = sources.get(slug)
+      const [state, program] = await Promise.all([records.stateRecord(slug), records.programRecord(slug)])
       out.push({
         slug,
         ...(summary === undefined ? {} : { title: summary.title }),

@@ -669,8 +669,8 @@ export class WidgetInstaller {
    * when the profile dependency of that name is the agent folder of the slug. Another bundle with the older name is not
    * an agent bundle and stays. A built-in widget is not installed in the profile, so its row never shows here.
    */
-  private async installedNames(slug: string): Promise<string[]> {
-    const installed = new Map((await this.services.pluginManager.listBundles()).filter((bundle) => bundle.installed).map((bundle) => [bundle.name, bundle]))
+  private async installedNames(slug: string, bundles?: BundleInfo[]): Promise<string[]> {
+    const installed = new Map((bundles ?? await this.services.pluginManager.listBundles()).filter((bundle) => bundle.installed).map((bundle) => [bundle.name, bundle]))
     const names = [bundleName(slug), secondBundleName(slug)].filter((name) => installed.has(name))
     const legacy = installed.get(legacyBundleName(slug))
     if (legacy !== undefined && await this.isAgentFolder(legacy.source, slug)) names.push(legacyBundleName(slug))
@@ -1046,5 +1046,20 @@ export class WidgetInstaller {
     const names = await this.installedNames(slug)
     if (names.length === 0) return undefined
     return (await this.meta(slug, names))?.source
+  }
+
+  /**
+   * main_widget.widgets: the source folder of each agent widget of `slugs`, as {@link source} gives it, with one read of
+   * the bundle list for all of them. A slug with no agent bundle has no item.
+   */
+  async sources(slugs: readonly string[]): Promise<Map<string, string>> {
+    const bundles = await this.services.pluginManager.listBundles()
+    const out = new Map<string, string>()
+    for (const slug of slugs) {
+      const names = await this.installedNames(slug, bundles)
+      const source = names.length === 0 ? undefined : (await this.meta(slug, names))?.source
+      if (source !== undefined) out.set(slug, source)
+    }
+    return out
   }
 }

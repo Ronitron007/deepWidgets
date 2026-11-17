@@ -342,6 +342,14 @@ async function hostPart() {
 
   // ---- main_widget.widgets: the query ----
   const rows = await mainRows()
+  // widgets_query_cost: the time of the query widgets, for the PR. Five calls; the first one warms the caches.
+  const times = []
+  for (let i = 0; i < 5; i += 1) {
+    const started = performance.now()
+    await mainRows()
+    times.push(Math.round(performance.now() - started))
+  }
+  console.log(`INFO the query widgets took ${JSON.stringify(times)} ms with ${String(rows.size)} rows`)
   check('the query of main has no row for main', !rows.has('main'), JSON.stringify([...rows.keys()]))
   const sampleProblems = liveFields(rows.get('sample'), { title: 'Sample', agent: false, rowId: 'deepwidgets-widget-sample', packageName: '@deepwidgets/widget-sample', source: undefined })
   check('the query of main lists sample with each field', sampleProblems.length === 0 && rows.get('sample')?.state?.data?.count === 2, `${sampleProblems.join('; ')} ${JSON.stringify(rows.get('sample'))}`)
