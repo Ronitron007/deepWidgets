@@ -52,14 +52,17 @@ const jsonStyles = {
   collapsedContent: `${defaultStyles.collapsedContent} dwm-json-icon`,
 }
 
-/** The state viewer: the state JSON, with each level that folds and unfolds. The first level is open. */
+/**
+ * The state viewer: the state JSON, with each level that folds and unfolds. The fields of the top level show with no
+ * braces around them, and each value below them starts folded. A click on a field name also folds and unfolds it.
+ */
 export function StateView({ data }: { data: unknown }) {
-  if (data === null || typeof data !== 'object') {
+  if (data === null || typeof data !== 'object' || Object.keys(data).length === 0) {
     return <code className="dwm-json dwm-json-scalar" data-dw="state-viewer">{data === undefined ? 'undefined' : JSON.stringify(data)}</code>
   }
   return (
     <div className="dwm-json-box" data-dw="state-viewer">
-      <JsonView data={data} style={jsonStyles} shouldExpandNode={collapseAllNested} />
+      <JsonView data={data} style={jsonStyles} shouldExpandNode={collapseAllNested} compactTopLevel clickToExpandNode />
     </div>
   )
 }

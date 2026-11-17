@@ -186,6 +186,10 @@ const TEST_WIDGET = 'safe-mode-test'
 const TEST_WIDGET_MODULE = 'deepwidgets-widget-safe-mode-test'
 /** The slug of the widget of deepwidgets/widgets/fixtures/built-in-name-widget, a bundle named @deepwidgets/widget-sample. */
 const NAME_WIDGET = 'built-in-name-test'
+/** The panel URL of the main widget (main_widget.widget): the second shell entry on the widget origin of main. */
+const MAIN_PAGE_URL = 'dsh-app://w-main.widget/widget/main.html?slug=main'
+/** The folder of the screenshots of DSH_SMOKE_MAIN. */
+const MAIN_SHOTS = join(tmpdir(), 'deepwidgets-main-page')
 await mkdir(home)
 await mkdir(userData)
 openSync(logPath, 'a')
@@ -1883,11 +1887,6 @@ async function checkSlugOrigins(deadline) {
   }
   return undefined
 }
-
-/** The panel URL of the main widget (main_widget.widget): the second shell entry on the widget origin of main. */
-const MAIN_PAGE_URL = 'dsh-app://w-main.widget/widget/main.html?slug=main'
-/** The folder of the screenshots of DSH_SMOKE_MAIN. */
-const MAIN_SHOTS = join(tmpdir(), 'deepwidgets-main-page')
 
 /** Read the page of main: the core diagnostics, the problems that it shows, and each widget row. */
 function mainReadExpression() {

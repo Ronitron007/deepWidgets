@@ -12,7 +12,6 @@
   padding: 12px 12px 4px;
   background: var(--card);
 }
-.dwm-mark { width: 10px; height: 10px; border-radius: 3px; background: var(--dsw-alias-brand-primary); }
 /* This sheet is not in a layer, so its rules win over the Tailwind classes of the shadcn pieces. */
 .dwm-tabs-list { width: 100%; }
 

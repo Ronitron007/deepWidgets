@@ -4,6 +4,7 @@
  * badge, the state viewer, and the actions list are parts of each row, and a program can also use each one alone.
  * @module @deepwidgets/shell/main-widget/library
  */
+import { LayoutGrid } from 'lucide-react'
 import { z } from 'zod'
 import { action, createLibrary, defineComponent, useTriggerAction } from '@openuidev/react-lang'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs.tsx'
@@ -143,7 +144,7 @@ const Panel = defineComponent({
       <Tabs defaultValue="0" data-dw="main-panel">
         <div className="dwm-panel-head">
           <span className="flex items-center gap-2">
-            <span className="dwm-mark" aria-hidden="true" />
+            <LayoutGrid className="size-4 text-muted-foreground" aria-hidden="true" />
             <strong className="text-sm font-semibold text-foreground">{props.title}</strong>
           </span>
           <TabsList className="dwm-tabs-list" aria-label={props.title}>
