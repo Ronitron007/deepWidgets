@@ -5,8 +5,10 @@
  * widget_list names sample, widget_call add adds 1, widget_changes shows the change with `by` set
  * to the agent, a request with an Origin header gets 403, a request with no token gets 401, and a
  * bad token gets 401. It also checks the token file mode.
- * Modes (spec modes): the instructions line, deepwidgets_modes with interact and create only, the settings file
+ * Modes (spec modes): the instructions line, deepwidgets_modes with interact, create, and library, the settings file
  * read at each call (an unparseable file turns no mode off), a guide for each mode, and no source for sample.
+ * The mode library (agent_library.guide): its setting modes.library and its tool library_template, the page guide in
+ * at most 8,000 characters, and library_template returns mode-off when modes.library is false.
  * Prints `widgets-mcp: pass` and exits 0 only when every check passes.
  * Needs `corepack pnpm run build:artifacts` first.
  */
@@ -237,7 +239,7 @@ async function main() {
     check('tools/list advertises the input schema of widget_call', callSchema?.properties?.slug?.type === 'string' && callSchema?.properties?.args?.type === 'object' && callSchema?.required?.includes('action'), JSON.stringify(callSchema))
     const interact = ['widget_call', 'widget_changes', 'widget_describe', 'widget_list']
     const create = ['widget_guide', 'widget_install', 'widget_reload', 'widget_remove', 'widget_template']
-    check('tools are deepwidgets_modes, the interact tools widget_call, widget_changes, widget_describe, widget_list, and the create tools of widget.creation', JSON.stringify(tools) === JSON.stringify(['deepwidgets_modes', ...interact, ...create].sort()), JSON.stringify(tools))
+    check('tools are deepwidgets_modes, the interact tools widget_call, widget_changes, widget_describe, widget_list, the create tools of widget.creation, and library_template', JSON.stringify(tools) === JSON.stringify(['deepwidgets_modes', ...interact, ...create, 'library_template'].sort()), JSON.stringify(tools))
 
     // modes.instructions, modes.tool, modes.guide, modes.source, modes.settings.
     check('the server instructions are exactly "Call deepwidgets_modes first."', client.getInstructions() === 'Call deepwidgets_modes first.', JSON.stringify(client.getInstructions()))
@@ -246,14 +248,16 @@ async function main() {
     const settingsFile = join(home, 'deepwidgets', 'settings.json')
     const modes = body(await client.callTool({ name: 'deepwidgets_modes', arguments: {} }))
     const byName = new Map((modes?.modes ?? []).map((mode) => [mode.name, mode]))
-    check('deepwidgets_modes lists interact and create only, both on with no settings file, and the settings file path',
-      JSON.stringify((modes?.modes ?? []).map((mode) => mode.name)) === JSON.stringify(['interact', 'create']) && byName.get('interact')?.on === true && byName.get('create')?.on === true && modes?.settingsFile === settingsFile && modes?.settingsError === undefined,
+    check('deepwidgets_modes lists interact, create, and library, each on with no settings file, and the settings file path',
+      JSON.stringify((modes?.modes ?? []).map((mode) => mode.name)) === JSON.stringify(['interact', 'create', 'library']) && [...byName.values()].every((mode) => mode.on === true) && modes?.settingsFile === settingsFile && modes?.settingsError === undefined,
       JSON.stringify(modes))
     const interactMode = byName.get('interact')
     const createMode = byName.get('create')
+    const libraryMode = byName.get('library')
     check('each mode gives its goal, setting, tools, and guide',
       typeof interactMode?.goal === 'string' && interactMode?.setting === null && JSON.stringify(interactMode?.tools) === JSON.stringify(['widget_describe', 'widget_call', 'widget_changes']) && interactMode?.guide?.tool === 'widget_guide' && interactMode?.guide?.args?.mode === 'interact'
-        && typeof createMode?.goal === 'string' && createMode?.setting === 'modes.create' && JSON.stringify(createMode?.tools) === JSON.stringify(['widget_template', 'widget_install', 'widget_reload', 'widget_remove']) && createMode?.guide?.args?.mode === 'create',
+        && typeof createMode?.goal === 'string' && createMode?.setting === 'modes.create' && JSON.stringify(createMode?.tools) === JSON.stringify(['widget_template', 'widget_install', 'widget_reload', 'widget_remove']) && createMode?.guide?.args?.mode === 'create'
+        && typeof libraryMode?.goal === 'string' && libraryMode?.setting === 'modes.library' && JSON.stringify(libraryMode?.tools) === JSON.stringify(['library_template']) && libraryMode?.guide?.args?.mode === 'library',
       JSON.stringify(modes?.modes))
 
     // The settings file is read at each call: an unparseable file turns no mode off, and the error is reported.
@@ -283,15 +287,41 @@ async function main() {
       JSON.stringify(off?.modes))
     const offTools = (await client.listTools()).tools.map((tool) => tool.name).sort()
     check('the create tools stay listed when create is off', JSON.stringify(offTools) === JSON.stringify(tools), JSON.stringify(offTools))
+    // agent_library.guide.mode: modes.library false turns library off, and library_template returns mode-off.
+    writeFileSync(settingsFile, JSON.stringify({ modes: { library: false } }))
+    const libraryOff = body(await client.callTool({ name: 'deepwidgets_modes', arguments: {} }))
+    const libraryOffByName = new Map((libraryOff?.modes ?? []).map((mode) => [mode.name, mode]))
+    const offTemplate = await client.callTool({ name: 'library_template', arguments: { slug: 'mcp-check' } })
+    const offError = body(offTemplate)?.error
+    check('with modes.library false, deepwidgets_modes shows library off and create on, and library_template returns mode-off naming the mode library and its setting',
+      libraryOffByName.get('library')?.on === false && libraryOffByName.get('create')?.on === true && offTemplate.isError === true && offError?.code === 'mode-off' && offError?.mode === 'library' && offError?.setting === 'modes.library' && offError?.settingsFile === settingsFile,
+      JSON.stringify([libraryOff?.modes, body(offTemplate)]))
     rmSync(settingsFile)
+    const onTemplate = body(await client.callTool({ name: 'library_template', arguments: { slug: 'mcp-check' } }))
+    check('with no settings file, library_template gives five page files', JSON.stringify(onTemplate?.files?.map((file) => file.path)) === JSON.stringify(['page/index.html', 'page/main.tsx', 'page/styles.css', 'page/child.tsx', 'page/library.tsx']),
+      JSON.stringify(onTemplate?.error ?? onTemplate?.files?.map((file) => file.path)))
 
     const interactGuide = body(await client.callTool({ name: 'widget_guide', arguments: { mode: 'interact' } }))
     const createGuide = body(await client.callTool({ name: 'widget_guide', arguments: { mode: 'create' } }))
+    const libraryGuide = body(await client.callTool({ name: 'widget_guide', arguments: { mode: 'library' } }))
     const iText = interactGuide?.guide ?? ''
     const cText = createGuide?.guide ?? ''
+    const lText = libraryGuide?.guide ?? ''
     check('widget_guide gives a different guide for each mode: interact has the requestId and cursor rules, create has the widget API',
       iText !== '' && cText !== '' && iText !== cText && /requestId/.test(iText) && /widget_changes/.test(iText) && /cursor/.test(iText) && !iText.includes('interface WidgetContext') && cText.includes('interface WidgetContext'),
       `interact ${String(iText.length)} characters, create ${String(cText.length)} characters`)
+    // agent_library.guide.text: each part of the page guide, in at most 8,000 characters, with no copy of the create guide.
+    const parts = {
+      folder: lText.includes('page/index.html') && lText.includes('page/main.tsx') && lText.includes('dw-core'),
+      contract: lText.includes('ChildProps') && lText.includes('CATALOG_ID') && lText.includes('catalog'),
+      imports: lText.includes('@deepwidgets/shell/library') && lText.includes('@deepwidgets/shell/ui/*') && lText.includes('zod'),
+      component: lText.includes('defineComponent') && lText.includes('z.object('),
+      gates: ['page-files', 'page-types', 'page-build', 'page-render', 'render-error', 'not-ready', 'lost-core-styles', 'wrong-catalog', 'load-failed', 'no height', 'wider than the window'].every((word) => lText.includes(word)),
+      see: lText.includes('widget_describe') && lText.includes('window'),
+      create: lText.includes('widget_guide with mode "create"') && !lText.includes('interface WidgetContext'),
+    }
+    check('widget_guide with mode library gives the page guide with each part, in at most 8,000 characters', !libraryGuide?.error && lText.length > 0 && lText.length <= 8000 && Object.values(parts).every(Boolean),
+      `${String(lText.length)} characters, parts ${JSON.stringify(parts)}`)
     const noMode = await client.callTool({ name: 'widget_guide', arguments: {} })
     check('widget_guide with no mode gives invalid-args with a nextStep that names the modes', noMode.isError === true && body(noMode)?.error?.code === 'invalid-args' && /interact/.test(body(noMode)?.error?.nextStep ?? ''), JSON.stringify(body(noMode)))
 

@@ -41,12 +41,22 @@
  *   it. The page link points at the new build, and no .tmp build or staging copy stays. widget_reload of such a page
  *   logs a line too;
  * - a bundle with no page/ installs with the host gates only. The page link goes, and the builds stay.
+ * The mode library (agent_library.guide), in the CLI host:
+ * - deepwidgets_modes lists interact, create, and library. library_template gives five files: the fixed files of the
+ *   template, and an example child with the catalog <slug>@1 and an example library that extends the shell library;
+ * - a bundle from widget_template and library_template, with only catalog set in src/index.ts, passes each gate;
+ * - with { "modes": { "library": false } }, library_template, widget_install of a bundle with page/, and widget_reload
+ *   of a slug with page/ return mode-off with the mode library. So does an install whose page/ comes during the host
+ *   gates. A bundle with no page/ installs, and the installed page keeps its page link.
  * Allowed set (agent_library.fence_warn), before the host starts: allowedFolders follows the development dependencies
  * of the shell and the kit only, so it does not hold a workspace package that only the theme names as one.
  * Window part: it runs tools/smoke-desktop.mjs with DSH_SMOKE_CREATE set to a bundle with a good page and
  * DSH_SMOKE_CREATE_CASES set to render cases that install first: a page that loops forever (not-ready), a page whose
- * component throws (render-error), a page that overrides a dw-core style (lost-core-styles), and a page with no body
- * height and wide content (two warnings). The good page then passes the render check, and its window opens at the
+ * component throws (render-error), a page that overrides a dw-core style (lost-core-styles), each with the next step of
+ * the gate page-render that tells the agent to fix the component or the styles, and a page with no body
+ * height and wide content (two warnings), a bundle of widget_template and library_template with no catalog
+ * (wrong-catalog, with a next step that names CATALOG_ID), and the same bundle with catalog set and a program that uses
+ * the example component (its window shows it). The good page then passes the render check, and its window opens at the
  * widget origin of its slug (agent_library.serving): the page component shows, its own program gives 200 and the
  * program of sample 403, an install with new page sources shows the new page in the open window, an install with no
  * page/ shows the shared shell, and two renderer ends in 60 s leave the shared shell with the notice. Skip the
@@ -56,7 +66,7 @@
  */
 import { spawn } from 'node:child_process'
 import { createHmac, randomBytes } from 'node:crypto'
-import { cpSync, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
@@ -255,8 +265,8 @@ async function hostPart() {
   const slugs = async () => (await call('widget_list')).body?.widgets?.map((widget) => widget.slug) ?? []
   try {
     const tools = (await client.listTools()).tools.map((tool) => tool.name).sort()
-    const want = ['deepwidgets_modes', 'widget_call', 'widget_changes', 'widget_describe', 'widget_guide', 'widget_install', 'widget_list', 'widget_reload', 'widget_remove', 'widget_template']
-    check('tools/list has deepwidgets_modes, the four interact tools, and the five create tools', JSON.stringify(tools) === JSON.stringify(want), JSON.stringify(tools))
+    const want = ['deepwidgets_modes', 'library_template', 'widget_call', 'widget_changes', 'widget_describe', 'widget_guide', 'widget_install', 'widget_list', 'widget_reload', 'widget_remove', 'widget_template']
+    check('tools/list has deepwidgets_modes, the four interact tools, the five create tools, and library_template', JSON.stringify(tools) === JSON.stringify(want), JSON.stringify(tools))
 
     const guide = await call('widget_guide', { mode: 'create' })
     const text = guide.body?.guide ?? ''
@@ -373,6 +383,7 @@ async function hostPart() {
     await legacyPart(call, slugs)
     await foreignPart(call)
     await pagePart(call, slugs)
+    await libraryPart(call, slugs)
   } finally {
     await client.close()
   }
@@ -703,6 +714,135 @@ async function pagePart(call, slugs) {
   await call('widget_remove', { slug: PAGE })
 }
 
+const LIBRARY_SLUG = 'create-library'
+const LIBRARY_FILES = ['page/index.html', 'page/main.tsx', 'page/styles.css', 'page/child.tsx', 'page/library.tsx']
+/** The line of the template definition that the catalog goes after. */
+const TITLE_LINE = "    title: '__TITLE__',"
+/** The text of the example Note in the program of the window part. */
+const LIBRARY_NOTE = 'the example component of library_template'
+/** The bundle folders of the window part, written by libraryPart while the host runs. */
+const libraryWindow = { wrong: '', note: '' }
+
+/**
+ * Write a bundle from widget_template and library_template of `slug` into `dir`, with no change, or with `catalog`
+ * set in src/index.ts, and with `program` edits of the program text.
+ */
+async function libraryBundle(call, slug, dir, { catalog = false, program = (text) => text } = {}) {
+  const template = (await call('widget_template', { slug, title: 'Library check' })).body?.files ?? []
+  const page = (await call('library_template', { slug })).body?.files ?? []
+  if (page.length !== LIBRARY_FILES.length) throw new Error(`library_template gave ${String(page.length)} files for ${slug}`)
+  const source = template.find((file) => file.path === 'src/index.ts')?.text ?? ''
+  const titleLine = TITLE_LINE.replace('__TITLE__', 'Library check')
+  if (!source.includes(titleLine)) throw new Error('the template changed: no title line')
+  const edited = program(catalog ? source.replace(titleLine, `${titleLine}\n    catalog: '${slug}@1',`) : source)
+  for (const file of [{ path: 'src/index.ts', text: edited }, ...page]) {
+    mkdirSync(dirname(join(dir, file.path)), { recursive: true })
+    writeFileSync(join(dir, file.path), file.text)
+  }
+  return dir
+}
+
+/**
+ * The mode library (agent_library.guide) in the CLI host. deepwidgets_modes lists it, library_template gives the five
+ * page files, and a bundle from widget_template and library_template with catalog set passes each page gate. With
+ * modes.library false, library_template, widget_install of a bundle with page/, and widget_reload of a slug with
+ * page/ return mode-off, a bundle with no page/ installs, and the page link of the installed page stays.
+ */
+async function libraryPart(call, slugs) {
+  const settingsFile = join(home, 'deepwidgets', 'settings.json')
+  const profileDir = await inHost("return loader.ctx.get('pluginManager').profile.dir")
+  const pageDir = join(profileDir, 'deepwidgets-widgets', LIBRARY_SLUG, 'page')
+  const modes = (await call('deepwidgets_modes')).body?.modes ?? []
+  const library = modes.find((mode) => mode.name === 'library')
+  check('deepwidgets_modes lists interact, create, and library; library has the setting modes.library and the tool library_template',
+    JSON.stringify(modes.map((mode) => mode.name)) === JSON.stringify(['interact', 'create', 'library']) && library?.on === true && library?.setting === 'modes.library' && JSON.stringify(library?.tools) === JSON.stringify(['library_template']),
+    JSON.stringify(modes))
+
+  const answer = await call('library_template', { slug: LIBRARY_SLUG })
+  const files = answer.body?.files ?? []
+  const text = (path) => files.find((file) => file.path === path)?.text
+  check('library_template gives five files: the three fixed files of the template, and the example child and library',
+    !answer.isError && JSON.stringify(files.map((file) => file.path)) === JSON.stringify(LIBRARY_FILES) && ['index.html', 'main.tsx', 'styles.css'].every((name) => text(`page/${name}`) === templateText(name)),
+    JSON.stringify(answer.body?.error ?? files.map((file) => file.path)))
+  check('the example child names the catalog <slug>@1, and the example library extends the library of the shell with one component',
+    text('page/child.tsx')?.includes(`export const CATALOG_ID = '${LIBRARY_SLUG}@1'`) === true && text('page/library.tsx')?.includes("from '@deepwidgets/shell/library'") === true && text('page/library.tsx')?.includes('widgetLibrary.extend(') === true,
+    JSON.stringify(answer.body?.nextStep))
+
+  const dir = await libraryBundle(call, LIBRARY_SLUG, join(work, 'agent', LIBRARY_SLUG), { catalog: true })
+  const installed = await call('widget_install', { dir })
+  check('a bundle from widget_template and library_template, with only catalog set, passes each gate in the CLI host',
+    !installed.isError && installed.body?.application === 'applied' && installed.body?.gates?.map((gate) => gate.gate).join() === PAGE_GATES && installed.body?.gates?.every((gate) => gate.ok) && installed.body?.page === pageDir,
+    JSON.stringify(installed.body?.error ?? installed.body?.gates?.map((gate) => [gate.gate, gate.ok, gate.diagnostics, gate.warnings])))
+  const pageFence = installed.body?.gates?.find((gate) => gate.gate === 'page-build')?.warnings
+  check('the page of library_template installs with no fence warning', Array.isArray(pageFence) && pageFence.length === 0, JSON.stringify(pageFence))
+  const link = linkTarget(pageDir)
+
+  const otherDir = await libraryBundle(call, `${LIBRARY_SLUG}-off`, join(work, 'agent', `${LIBRARY_SLUG}-off`), { catalog: true })
+  // The bundle of the race: its page/ waits aside, and comes into the folder while the host gates of the install run.
+  const raceSlug = `${LIBRARY_SLUG}-race`
+  const raceDir = await libraryBundle(call, raceSlug, join(work, 'agent', raceSlug), { catalog: true })
+  const racePage = join(work, 'race-page')
+  renameSync(join(raceDir, 'page'), racePage)
+  // The bundles of the window part: one with no catalog (wrong-catalog), and one whose program uses the example Note.
+  libraryWindow.wrong = await libraryBundle(call, `${LIBRARY_SLUG}-wrong`, join(work, 'agent', `${LIBRARY_SLUG}-wrong`))
+  libraryWindow.note = await libraryBundle(call, `${LIBRARY_SLUG}-note`, join(work, 'agent', `${LIBRARY_SLUG}-note`), {
+    catalog: true,
+    program: (text) => {
+      if (!text.includes('"A counter"), ')) throw new Error('the template changed: no CardHeader in the program')
+      return text.replace('"A counter"), ', `"A counter"), Note("${LIBRARY_NOTE}"), `)
+    },
+  })
+
+  // agent_library.guide.mode: the setting stops an install of a page, not a page.
+  writeFileSync(settingsFile, `${JSON.stringify({ modes: { library: false } })}\n`)
+  const shown = (await call('deepwidgets_modes')).body?.modes ?? []
+  check('with modes.library false, deepwidgets_modes shows library off and create on',
+    shown.find((mode) => mode.name === 'library')?.on === false && shown.find((mode) => mode.name === 'create')?.on === true, JSON.stringify(shown))
+  const refused = {
+    library_template: await call('library_template', { slug: LIBRARY_SLUG }),
+    'widget_install of a bundle with page/': await call('widget_install', { dir: otherDir }),
+    'widget_install of the installed page': await call('widget_install', { dir }),
+    'widget_reload of a slug with page/': await call('widget_reload', { slug: LIBRARY_SLUG }),
+  }
+  for (const [name, refusal] of Object.entries(refused)) {
+    const error = refusal.body?.error
+    check(`with library off, ${name} returns mode-off naming the mode library, its setting, and the settings file`,
+      refusal.isError && error?.code === 'mode-off' && error.mode === 'library' && error.setting === 'modes.library' && error.settingsFile === settingsFile && error.message.includes('modes.library'),
+      JSON.stringify(refusal.body))
+  }
+  // The race: the folder has no page/ when the call comes, and page/ comes 400 ms later, while the host gates run. The
+  // one look at page/ after the host gates finds it, and the switch refuses it.
+  const racing = call('widget_install', { dir: raceDir })
+  await new Promise((done) => { setTimeout(done, 400) })
+  renameSync(racePage, join(raceDir, 'page'))
+  const wroteAt = Date.now()
+  const race = await racing
+  const answeredAt = Date.now()
+  const raceError = race.body?.error
+  const raceLink = join(profileDir, 'deepwidgets-widgets', raceSlug, 'page')
+  check('with library off, a page/ written 400 ms after widget_install, while the host gates run, gives mode-off with the mode library, and no page link',
+    answeredAt > wroteAt && race.isError && raceError?.code === 'mode-off' && raceError.mode === 'library' && raceError.setting === 'modes.library' && raceError.settingsFile === settingsFile
+      && linkTarget(raceLink) === null && !(await slugs()).includes(raceSlug),
+    JSON.stringify({ answerMs: answeredAt - wroteAt, body: race.body, link: linkTarget(raceLink) }))
+  check('with library off, the refused page installs change no widget, and the installed page keeps its page link',
+    !(await slugs()).includes(`${LIBRARY_SLUG}-off`) && (await slugs()).includes(LIBRARY_SLUG) && linkTarget(pageDir) === link && link !== null,
+    JSON.stringify({ slugs: await slugs(), link, now: linkTarget(pageDir) }))
+  const plainDir = writeWidget(`${LIBRARY_SLUG}-plain`, [{ path: 'src/index.ts', text: (await call('widget_template', { slug: `${LIBRARY_SLUG}-plain` })).body?.files?.[0]?.text ?? '' }])
+  const plain = await call('widget_install', { dir: plainDir })
+  check('with library off, a bundle with no page/ installs with the host gates only',
+    !plain.isError && plain.body?.application === 'applied' && plain.body?.gates?.map((gate) => gate.gate).join() === 'compile,lint,test',
+    JSON.stringify(plain.body?.error ?? plain.body?.gates?.map((gate) => gate.gate)))
+  const guide = await call('widget_guide', { mode: 'library' })
+  check('with library off, widget_guide with mode library still answers, in at most 8,000 characters',
+    !guide.isError && typeof guide.body?.guide === 'string' && guide.body.guide.length > 0 && guide.body.guide.length <= 8000,
+    JSON.stringify(guide.body?.error ?? guide.body?.guide?.length))
+  rmSync(settingsFile)
+
+  const reloaded = await call('widget_reload', { slug: LIBRARY_SLUG })
+  check('with the settings file gone, widget_reload of the page applies', !reloaded.isError && reloaded.body?.application === 'applied', JSON.stringify(reloaded.body?.error ?? reloaded.body?.application))
+  for (const slug of [LIBRARY_SLUG, `${LIBRARY_SLUG}-plain`]) await call('widget_remove', { slug })
+}
+
 /**
  * Window part: the desktop smoke runs the render cases, then installs a bundle with a good page over MCP and finds
  * its window.
@@ -711,11 +851,17 @@ async function desktopPart() {
   // agent_library.serving: the good page also emits frame.html, which tries to frame the page of sample.
   const dir = writePageWidget(join(work, 'agent', 'create-window'), 'create-window', { 'page/child.tsx': FRAME_CHILD, 'page/frame.html': FRAME_HTML })
   const styles = templateText('styles.css')
+  // The next step of a render failure that is not wrong-catalog (PAGE_NEXT_STEP['page-render'] of page-gate.ts).
+  const renderStep = 'Fix the component or the styles at each diagnostic'
   const cases = [
-    { dir: writePageWidget(join(work, 'agent', 'create-window-loop'), 'create-window-loop', { 'page/child.tsx': LOOPING_CHILD }), refuse: 'not-ready' },
-    { dir: writePageWidget(join(work, 'agent', 'create-window-throw'), 'create-window-throw', { 'page/library.tsx': THROWING_LIBRARY }), refuse: 'render-error' },
-    { dir: writePageWidget(join(work, 'agent', 'create-window-lost'), 'create-window-lost', { 'page/styles.css': `${styles}${LOST_STYLES}` }), refuse: 'lost-core-styles' },
+    { dir: writePageWidget(join(work, 'agent', 'create-window-loop'), 'create-window-loop', { 'page/child.tsx': LOOPING_CHILD }), refuse: 'not-ready', nextStep: renderStep },
+    { dir: writePageWidget(join(work, 'agent', 'create-window-throw'), 'create-window-throw', { 'page/library.tsx': THROWING_LIBRARY }), refuse: 'render-error', nextStep: renderStep },
+    { dir: writePageWidget(join(work, 'agent', 'create-window-lost'), 'create-window-lost', { 'page/styles.css': `${styles}${LOST_STYLES}` }), refuse: 'lost-core-styles', nextStep: renderStep },
     { dir: writePageWidget(join(work, 'agent', 'create-window-warn'), 'create-window-warn', { 'page/styles.css': `${styles}${WARNING_STYLES}` }), warnings: ['has no height', 'wider than the window'] },
+    // agent_library.guide: the bundle of widget_template and library_template with no catalog, then with catalog set
+    // and a program that uses the example component Note.
+    { dir: libraryWindow.wrong, refuse: 'wrong-catalog', nextStep: 'CATALOG_ID of page/child.tsx' },
+    { dir: libraryWindow.note, shows: LIBRARY_NOTE },
   ]
   const casesFile = join(work, 'render-cases.json')
   writeFileSync(casesFile, JSON.stringify(cases))
@@ -732,7 +878,7 @@ async function desktopPart() {
   smoke.stderr.on('data', (chunk) => { text += chunk })
   const code = await new Promise((resolve) => smoke.once('close', resolve))
   const last = text.trim().split('\n').slice(-3).join(' | ')
-  check('desktop: the render check refuses a page that loops (not-ready), a component that throws (render-error), and a lost dw-core style (lost-core-styles); it warns of no body height and wide content; then a good page passes, and its window opens at the widget origin of its slug and shows its component; its own program gives 200 and the program of sample 403; new page sources show the new page, no page/ shows the shared shell, two renderer ends in 60 s leave the shared shell with the notice, and a page change ends the notice in the same window; each widget response has the CSP header, and a second HTML file of a page can not frame the page of sample; widget_remove closes the window', code === 0, `smoke exit ${String(code)}: ${last}`)
+  check('desktop: the render check refuses a page that loops (not-ready), a component that throws (render-error), a lost dw-core style (lost-core-styles), and a page whose catalog is not the catalog of the widget (wrong-catalog); it warns of no body height and wide content; the page of library_template with catalog set shows its example component in its window; then a good page passes, and its window opens at the widget origin of its slug and shows its component; its own program gives 200 and the program of sample 403; new page sources show the new page, no page/ shows the shared shell, two renderer ends in 60 s leave the shared shell with the notice, and a page change ends the notice in the same window; each widget response has the CSP header, and a second HTML file of a page can not frame the page of sample; widget_remove closes the window', code === 0, `smoke exit ${String(code)}: ${last}`)
 }
 
 /**

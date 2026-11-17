@@ -3,9 +3,11 @@
  * The Host asks for it over its IPC channel after it built the page of a widget bundle. Electron main loads the
  * built page in a hidden window of the widget size, 320 by 300, at a route that serves only the check:
  * `dsh-app://widget-check/widget/<slug>/`. The same origin answers the page channel from the test run of the Host
- * gates: the program, and the answer of each query. The page never reaches the live Host.
- * The check fails when a component throws, when the page does not reach `ready` in time, or when a page-state box
- * lost a `dw-core` style. A body with no height and content wider than the window are warnings.
+ * gates: the program with the catalog of the widget, and the answer of each query. The page never reaches the live
+ * Host.
+ * The check fails when a component throws, when the page does not reach `ready` in time, when a page-state box
+ * lost a `dw-core` style, or when the page has another catalog than the widget (`agent_library.guide.catalog`).
+ * A body with no height and content wider than the window are warnings.
  * @module deepwidgets-render-check
  */
 import { isAbsolute } from 'node:path'
@@ -38,6 +40,8 @@ export interface RenderCheckJob {
   /** The absolute folder of the built page while the gates run: `<profile>/deepwidgets-widgets/<slug>/page-<hash>.tmp`. */
   readonly pageDir: string
   readonly program: string
+  /** The catalog of the widget definition. The core of the page refuses the program when its own catalog differs. */
+  readonly catalog: string
   readonly answers: Readonly<Record<string, RenderAnswer>>
   /** The `dw-core` block of the template. */
   readonly coreCss: string
@@ -58,9 +62,10 @@ export interface RenderCheckResult {
 export function parseRenderCheckJob(value: unknown): RenderCheckJob | undefined {
   if (typeof value !== 'object' || value === null) return undefined
   const job = value as Record<string, unknown>
-  const { slug, pageDir, program, answers, coreCss } = job
+  const { slug, pageDir, program, catalog, answers, coreCss } = job
   if (typeof slug !== 'string' || !SLUG.test(slug) || typeof pageDir !== 'string' || !isAbsolute(pageDir)
-    || !isCheckBuild(pageDir, slug) || typeof program !== 'string' || typeof coreCss !== 'string' || typeof answers !== 'object' || answers === null) return undefined
+    || !isCheckBuild(pageDir, slug) || typeof program !== 'string' || typeof catalog !== 'string' || catalog === ''
+    || typeof coreCss !== 'string' || typeof answers !== 'object' || answers === null) return undefined
   const parsed: Record<string, RenderAnswer> = {}
   for (const [name, answer] of Object.entries(answers)) {
     if (typeof answer !== 'object' || answer === null) return undefined
@@ -69,11 +74,12 @@ export function parseRenderCheckJob(value: unknown): RenderCheckJob | undefined 
     else if (item.ok === false && typeof item.message === 'string') parsed[name] = { ok: false, message: item.message }
     else return undefined
   }
-  return { slug, pageDir, program, answers: parsed, coreCss }
+  return { slug, pageDir, program, catalog, answers: parsed, coreCss }
 }
 
 /** The diagnostics of the core in the page (`window.__dw` of `@deepwidgets/widget-kit`). */
 interface PageDiagnostics {
+  readonly catalog?: unknown
   readonly state?: unknown
   readonly errors?: unknown
 }
@@ -186,7 +192,7 @@ export class DesktopRenderCheck {
 
   /** The page channel from the test run: the program, the query answers, and a stream that says only `hello`. */
   private async api(job: RenderCheckJob, route: string, request: Request): Promise<Response> {
-    if (route === 'program' && request.method === 'GET') return json(200, { rev: 0, text: job.program })
+    if (route === 'program' && request.method === 'GET') return json(200, { rev: 0, text: job.program, catalog: job.catalog })
     if (route === 'stream' && request.method === 'GET') {
       const hello = new TextEncoder().encode(`data: ${JSON.stringify({ type: 'hello', rev: 0, programRev: 0 })}\n\n`)
       // The stream stays open, so the page does not open it again. It ends with the window.
@@ -274,7 +280,10 @@ export class DesktopRenderCheck {
     const diagnostics: string[] = []
     // React and the page log one error more than once.
     const detail = [...new Set(errors)].slice(0, MAX_LINES).join(' | ')
-    if (pageErrors.includes('runtime: render-error') || thrown.length > 0) {
+    const pageCatalog = probe.dw?.catalog
+    if (typeof pageCatalog === 'string' && pageCatalog !== job.catalog) {
+      diagnostics.push(`wrong-catalog: the page has the catalog ${JSON.stringify(pageCatalog)} (CATALOG_ID of page/child.tsx), and the widget has the catalog ${JSON.stringify(job.catalog)}, so the page refused the program`)
+    } else if (pageErrors.includes('runtime: render-error') || thrown.length > 0) {
       diagnostics.push(`render-error: a component threw while the page rendered the program of the test run${detail === '' ? '' : `: ${detail}`}`)
     } else if (state !== 'ready') {
       diagnostics.push(`not-ready: the page did not reach ready in ${String(READY_LIMIT_MS)} ms (state ${JSON.stringify(state ?? null)})${detail === '' ? '' : `: ${detail}`}`)

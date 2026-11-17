@@ -3,6 +3,7 @@
  * tools/smoke-desktop.mjs. `writePageWidget` writes a bundle folder: `src/index.ts`, the fixed page files of the
  * template, and a child and a library that use only allowed imports. A variant changes one file.
  * The library defines two components with zod schemas (`Stack` and `Note`) and uses the CardHeader of the shell.
+ * The widget sets `catalog` to the `CATALOG_ID` of the child, `page-check@1` (`agent_library.guide.catalog`).
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -13,6 +14,9 @@ const TEMPLATE = join(ROOT, 'deepwidgets/mcp/widget/template/page')
 
 /** The text that the render check shows: the answer of the query `get` in the test run. */
 export const PAGE_NOTE = 'ready from the test run'
+
+/** The catalog id of the child of the fixture, and of the widget source. */
+export const PAGE_CATALOG = 'page-check@1'
 
 /** The widget source: a counter whose program shows the note of the query `get`. */
 export function pageSource(slug) {
@@ -30,6 +34,7 @@ export function apply(ctx: WidgetContext): void {
   ctx.widgets.register({
     slug: '${slug}',
     title: 'Page check',
+    catalog: '${PAGE_CATALOG}',
     program: PROGRAM,
     initialState: { count: 0, note: '${PAGE_NOTE}' },
     actions: [
@@ -50,7 +55,7 @@ export const CHILD = `import { Renderer } from '@openuidev/react-lang'
 import type { ChildProps } from '@deepwidgets/widget-kit'
 import { pageLibrary } from './library.tsx'
 
-export const CATALOG_ID = 'page-check@1'
+export const CATALOG_ID = '${PAGE_CATALOG}'
 
 export function Child({ root, children }: ChildProps) {
   return <Renderer.Root {...root} library={pageLibrary}>{children}</Renderer.Root>

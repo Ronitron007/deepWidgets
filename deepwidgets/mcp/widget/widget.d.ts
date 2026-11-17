@@ -35,6 +35,11 @@ declare module 'deepwidgets:widget' {
     title: string
     /** The seed OpenUI Lang text. See widget_guide. */
     program: string
+    /**
+     * The id of the component set of the program. The default is `shadcn-widgets@1`, the set of the shared page.
+     * A widget with a page sets it to the `CATALOG_ID` of `page/child.tsx`. See widget_guide with mode "library".
+     */
+    catalog?: string
     initialState: S
     timeoutMs?: number
     actions: { readonly [K in keyof T]: WidgetAction<S, T[K]> }

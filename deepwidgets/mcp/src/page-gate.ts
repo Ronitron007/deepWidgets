@@ -11,8 +11,9 @@
  *    fence do not refuse the build (`agent_library.fence_warn`): each import that is not on the allowed list, and each
  *    file outside `page/` and the allowed packages, is a warning of this gate. A config file, `@plugin`, `@config`,
  *    and a build error refuse it.
- * 4. `page-render`: Electron main loads the built page in a hidden window, with the program and the query answers
- *    of the test run. A CLI host has no Electron main, so the check does not run there, and the gate gives a warning.
+ * 4. `page-render`: Electron main loads the built page in a hidden window, with the program, the catalog, and the
+ *    query answers of the test run. A CLI host has no Electron main, so the check does not run there, and the gate
+ *    gives a warning.
  *
  * Vite builds into `<profile>/deepwidgets-widgets/<slug>/page-<hash>.tmp`, and the gates rename it to `page-<hash>`
  * when they pass. The installer points the link `<slug>/page` at it after the install applies.
@@ -46,6 +47,8 @@ const ALLOWED = [
   'react-dom/client',
   '@openuidev/react-lang',
   '@deepwidgets/widget-kit',
+  // The component set of the shell, which an agent library extends (`agent_library.guide.template`).
+  '@deepwidgets/shell/library',
   // The props schemas of `defineComponent`. The page gets the copy of `@openuidev/react-lang`.
   'zod',
   // Vite adds this import to the entry of the page itself.
@@ -71,6 +74,8 @@ export interface RenderCheckRequest {
   pageDir: string
   /** The program of the test run. */
   program: string
+  /** The catalog of the widget definition (`agent_library.guide.catalog`). The page must have the same id. */
+  catalog: string
   /** The answer of each query action of the test run, by action name. */
   answers: Record<string, RenderAnswer>
   /** The `dw-core` block of the template, for the style check of the page-state boxes. */
@@ -80,7 +85,10 @@ export interface RenderCheckRequest {
 /** One query answer of the test run. */
 export type RenderAnswer = { ok: true, result: unknown } | { ok: false, message: string }
 
-/** What Electron main answers. `diagnostics` lines start with a code: `render-error`, `not-ready`, `lost-core-styles`, or `load-failed`. */
+/**
+ * What Electron main answers. `diagnostics` lines start with a code: `render-error`, `not-ready`, `lost-core-styles`,
+ * `wrong-catalog`, or `load-failed`.
+ */
 export interface RenderCheckResult {
   ok: boolean
   diagnostics: string[]
@@ -94,6 +102,7 @@ export type RenderCheck = (request: RenderCheckRequest) => Promise<RenderCheckRe
 export interface PageInput {
   slug: string
   program: string
+  catalog: string
   answers: Record<string, RenderAnswer>
 }
 
@@ -121,11 +130,20 @@ export interface PageOutcome {
 }
 
 /** The next step of each page gate. */
-export const PAGE_NEXT_STEP: Record<PageGateName, string> = {
+const PAGE_NEXT_STEP: Record<PageGateName, string> = {
   'page-files': 'Restore page/index.html, page/main.tsx, and the dw-core block of page/styles.css from the template, and replace each symbolic link in page/ with a file. Write your styles below the block. Then call widget_install again. Nothing was installed.',
   'page-types': `Fix the type error at each diagnostic, then call widget_install again. A page may import only: ${ALLOWED_TEXT}, and files in page/. Nothing was installed.`,
   'page-build': `Fix the build error at each diagnostic, then call widget_install again. A page may have no PostCSS or Tailwind config file, and no @plugin or @config in a stylesheet. A page may import only: ${ALLOWED_TEXT}, and files in page/; another import or a file outside page/ installs with a warning. Nothing was installed.`,
   'page-render': 'The page failed in the render check with the program and the query answers of the test run. Fix the component or the styles at each diagnostic, then call widget_install again. Nothing was installed.',
+}
+
+/** The next step of the diagnostic `wrong-catalog` of the gate `page-render` (`agent_library.guide.catalog`). */
+const WRONG_CATALOG_NEXT_STEP = 'The page refused the program: the catalog of the widget is not the CATALOG_ID of page/child.tsx. Set catalog in the widget definition in src/index.ts to the CATALOG_ID of page/child.tsx, then call widget_install again. Nothing was installed.'
+
+/** The next step of a failed page gate. The gate `page-render` has its own step for `wrong-catalog`. */
+export function pageNextStep(gate: PageGateName, diagnostics: readonly string[]): string {
+  if (gate === 'page-render' && diagnostics.some((line) => line.startsWith('wrong-catalog:'))) return WRONG_CATALOG_NEXT_STEP
+  return PAGE_NEXT_STEP[gate]
 }
 
 const elapsed = (started: number): number => Math.round(performance.now() - started)
@@ -367,7 +385,7 @@ async function renderGate(built: string, input: PageInput, renderCheck: RenderCh
     return { gate: 'page-render', ok: true, ms: elapsed(started), diagnostics: [], warnings: ['the render check of the page was skipped: this host has no Electron main (a CLI host)'] }
   }
   try {
-    const result = await renderCheck({ slug: input.slug, pageDir: built, program: input.program, answers: input.answers, coreCss: await templateCore() })
+    const result = await renderCheck({ slug: input.slug, pageDir: built, program: input.program, catalog: input.catalog, answers: input.answers, coreCss: await templateCore() })
     return { gate: 'page-render', ok: result.ok, ms: elapsed(started), diagnostics: result.diagnostics.slice(0, MAX_DIAGNOSTICS), warnings: result.warnings }
   } catch (error) {
     return { gate: 'page-render', ok: false, ms: elapsed(started), diagnostics: [`load-failed: the render check did not run: ${errorText(error)}`], warnings: [] }

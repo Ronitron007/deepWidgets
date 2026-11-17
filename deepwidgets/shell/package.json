@@ -7,6 +7,7 @@
     "./dist/*": "./dist/*",
     "./ui/*": "./src/ui/*",
     "./components/*": "./src/components/*",
+    "./library": "./src/library.tsx",
     "./page.css": "./page.css",
     "./package.json": "./package.json"
   },
@@ -14,7 +15,9 @@
     "dist",
     "page.css",
     "src/ui",
-    "src/components"
+    "src/components",
+    "src/library.tsx",
+    "src/charts-impl.tsx"
   ],
   "scripts": {
     "build": "vite build && tsx scripts/guide.ts"
