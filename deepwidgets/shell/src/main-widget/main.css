@@ -112,6 +112,8 @@
   background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 6%, transparent);
   font-size: 12px;
   line-height: 17px;
+  /* A slug of 63 characters is the name of a widget that is off: it wraps, so the panel does not scroll sideways. */
+  overflow-wrap: anywhere;
 }
 
 /* ---- program text and state viewer ---- */
