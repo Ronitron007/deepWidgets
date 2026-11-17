@@ -29,8 +29,16 @@ export const widgetSlugs = ['main'] as const
 /** The component set of the page of the main widget (`main_widget.catalog`). The default shell page refuses it. */
 export const CATALOG = 'deepwidgets-main@1'
 
-/** A placeholder program. The unit `main.page` gives the page of the main widget and its component set. */
-export const PROGRAM = `root = Card([CardHeader("deepWidgets", "The main widget")])
+/**
+ * The program of the panel page (`main_widget.widgets`), in the component set {@link CATALOG} of the shell entry
+ * `main.html`. The query `widgets` feeds the Widgets tab; its default is null, so the page shows a loading state, not an
+ * empty list. The row controls of `WidgetTable` call `turnOff`, `turnOn`, `remove`, and `program` with the slug of the
+ * row, then run `refresh`. The runtime also sends a `data` frame to the page of main on each change of another widget.
+ */
+export const PROGRAM = `root = Panel("deepWidgets", [widgetsTab, settingsTab])
+widgetsTab = Tab("Widgets", [WidgetTable(w.widgets, Action([@Run(w)]))])
+settingsTab = Tab("Settings", [Note("Settings come in a later unit.")])
+w = Query("widgets", {}, {widgets: null})
 `
 
 /** The time limit of an action that changes a plugin row. A remove runs pnpm in the profile. */
