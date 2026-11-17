@@ -337,9 +337,14 @@ vi.mock('../src/deepwidgets-trace.ts', () => ({ DesktopTraceSteps: class {
   hostGone() {}
 }, openTraceWindow() {} }))
 // deepWidgets menu bar (main_widget.menu_bar): electron-menubar imports the real electron module, which this file mocks.
+// The fake records each menu bar, so the macOS cases check the paths of the panel.
+interface FakeMenuBarOptions { iconPath: string; quit: () => void; failed: (error: Error) => void; attention: () => void }
+interface FakeMenuBar { options: FakeMenuBarOptions; open: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> }
+const menuBars = vi.hoisted(() => [] as FakeMenuBar[])
 vi.mock('../src/deepwidgets-menu-bar.ts', () => ({ DesktopMenuBar: class {
-  open() {}
-  dispose() {}
+  readonly open = vi.fn()
+  readonly dispose = vi.fn()
+  constructor(_app: unknown, readonly options: FakeMenuBarOptions) { menuBars.push(this) }
 } }))
 vi.mock('node:fs/promises', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:fs/promises')>()
@@ -443,6 +448,7 @@ beforeEach(() => {
   testAuth.login.mockResolvedValue('cancelled')
   vi.useFakeTimers()
   harness.reset()
+  menuBars.length = 0
   const userData = mkdtempSync(join(tmpdir(), 'dsh-main-user-data-'))
   onTestFinished(() => { rmSync(userData, { recursive: true, force: true }) })
   harness.app.getPath.mockImplementation(name => name === 'userData' ? userData : join(userData, `desktop-test-${name}`))
@@ -1287,10 +1293,11 @@ describe('desktop main startup', () => {
     return harness.hosts[0]!
   }
 
+  // deepwidgets-trim: main_widget.menu_bar. macOS keeps the DSH window hidden; the macOS case is below.
   it.each([
     ['win32', ['--updated'], true],
     ['win32', [], false],
-    ['darwin', ['--updated'], false],
+    // ['darwin', ['--updated'], false],
     ['linux', ['--updated'], false],
   ] as const)('raises the first workspace only for a Windows installer restart (%s, %j)', async (platform, args, raises) => {
     vi.stubGlobal('process', { ...process, platform, argv: ['desktop', ...args] })
@@ -1427,7 +1434,9 @@ describe('desktop main startup', () => {
     expect(window.hide).not.toHaveBeenCalled()
   })
 
-  it('leaves macOS fullscreen before hiding on close and reopens the hidden window on activate', async () => {
+  // deepwidgets-trim: main_widget.menu_bar. On macOS, activate opens the panel, also while a window shows.
+  // it('leaves macOS fullscreen before hiding on close and reopens the hidden window on activate', async () => {
+  it('leaves macOS fullscreen before hiding on close and opens the panel on activate', async () => {
     vi.stubGlobal('process', { ...process, platform: 'darwin', arch: 'arm64', resourcesPath: 'desktop-test-resources' })
     await readyWorkspace()
     const window = harness.windows[0]!
@@ -1439,9 +1448,74 @@ describe('desktop main startup', () => {
     expect(harness.backgroundNotice.close).not.toHaveBeenCalled()
     window.show.mockClear()
     harness.app.emit('activate', {}, false)
-    expect(window.show).toHaveBeenCalledOnce()
     harness.app.emit('activate', {}, true)
-    expect(window.show).toHaveBeenCalledOnce()
+    expect(menuBars[0]!.open).toHaveBeenCalledTimes(2)
+    expect(window.show).not.toHaveBeenCalled()
+  })
+
+  describe('macOS menu bar (main_widget.menu_bar)', () => {
+    beforeEach(() => {
+      vi.stubGlobal('process', { ...process, platform: 'darwin', arch: 'arm64', resourcesPath: 'desktop-test-resources', argv: ['desktop', '--updated'] })
+    })
+
+    it('makes one menu bar with the template icon and keeps the DSH window hidden', async () => {
+      await readyWorkspace()
+      const window = harness.windows[0]!
+      expect(menuBars).toHaveLength(1)
+      expect(menuBars[0]!.options.iconPath).toBe(join('desktop-test-resources', 'trayTemplate.png'))
+      expect(harness.trays).toHaveLength(0)
+      expect(window.show).not.toHaveBeenCalled()
+      expect(window.moveTop).not.toHaveBeenCalled()
+      expect(window.focus).not.toHaveBeenCalled()
+      expect(window.webContents.openDevTools).not.toHaveBeenCalled()
+    })
+
+    it('opens the panel on a second launch and on dsh://open, and makes no DSH window', async () => {
+      await readyWorkspace()
+      harness.app.emit('second-instance')
+      harness.app.emit('open-url', { preventDefault: vi.fn() }, 'dsh://open')
+      expect(menuBars[0]!.open).toHaveBeenCalledTimes(2)
+      expect(harness.windows).toHaveLength(1)
+      expect(harness.windows[0]!.show).not.toHaveBeenCalled()
+    })
+
+    it('quits through the confirmation, and the panel ends a cancelled shutdown', async () => {
+      const host = await readyWorkspace()
+      host.inspectQuit.mockResolvedValue({ activeTasks: true, scheduledTasks: false })
+      harness.dialog.showMessageBox.mockResolvedValue({ response: 1, checkboxChecked: false })
+      harness.powerMonitor.emit('shutdown')
+      // Another application vetoed the shutdown; the operator opens the panel.
+      menuBars[0]!.options.attention()
+      menuBars[0]!.options.quit()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(harness.dialog.showMessageBox).toHaveBeenCalledOnce()
+      expect(host.stop).not.toHaveBeenCalled()
+      expect(menuBars[0]!.dispose).not.toHaveBeenCalled()
+      // The quit of the test teardown has no task to ask about.
+      host.inspectQuit.mockResolvedValue({ activeTasks: false, scheduledTasks: false })
+    })
+
+    it('shows the fatal dialog when the menu bar fails', async () => {
+      await readyWorkspace()
+      const shown = Promise.withResolvers<undefined>()
+      harness.dialog.showMessageBox.mockImplementation(() => { shown.resolve(undefined); return new Promise(() => {}) })
+      menuBars[0]!.options.failed(new Error('the menu bar did not start'))
+      await shown.promise
+      expect((harness.dialog.showMessageBox.mock.calls[0]![0] as MessageBoxOptions).detail).toContain('the menu bar did not start')
+    })
+
+    it('removes the menu bar on quit', async () => {
+      await readyWorkspace()
+      harness.app.quit()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(menuBars[0]!.dispose).toHaveBeenCalledOnce()
+    })
+  })
+
+  it('makes no menu bar outside macOS', async () => {
+    vi.stubGlobal('process', { ...process, platform: 'linux' })
+    await readyWorkspace()
+    expect(menuBars).toHaveLength(0)
   })
 
   it('skips the confirmation during a macOS shutdown but asks again once a cancelled shutdown returns focus', async () => {
