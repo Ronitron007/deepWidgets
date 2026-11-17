@@ -12,12 +12,13 @@ This spec is stage 2 of the build order. It gives the MCP server one frame for a
 
 ## The modes `modes.list`
 
-The full list of modes is `interact`, `create`, `kit`, `library`, and `plugin`. This spec builds only `interact` and `create`. A later stage adds `kit`, `library`, or `plugin` when it ships. Until then, the server does not show that mode.
+The full list of modes is `interact`, `create`, `kit`, `library`, and `plugin`. This spec builds only `interact` and `create`. A later stage adds `kit`, `library`, or `plugin` when it ships. Until then, the server does not show that mode. The unit `library.guide` added `library` (`agent_library.guide.mode`, PR #132).
 
 | Mode | Goal | Tools | Gated |
 |---|---|---|---|
 | `interact` | Use widgets that exist | `widget_describe`, `widget_call`, `widget_changes` | No |
 | `create` | Write, change, or remove a widget | `widget_template`, `widget_install`, `widget_reload`, `widget_remove` | Yes, by the setting `modes.create` |
+| `library` | Write the page of a widget with components of the agent | `library_template`. When it is off, `widget_install` and `widget_reload` refuse a bundle with `page/`. | Yes, by the setting `modes.library` |
 
 `widget_list` and `widget_guide` are shared tools. They belong to no single mode, and they always answer.
 
