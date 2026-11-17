@@ -1068,12 +1068,17 @@ async function installBundle(folder, deadline) {
   })
 }
 
-/** GET /api/widgets from the widget page until `accept` takes the list. */
-async function pollList(widget, until, accept) {
+/**
+ * GET /api/widgets until `accept` takes the list. The request goes from the main window: a widget page has the origin
+ * of its slug, and that origin answers only the API of its slug (agent_library.serving.routes).
+ */
+async function pollList(_widget, until, accept) {
   let last
   while (Date.now() < until) {
     try {
-      const answer = JSON.parse(String(await evaluate(widget.webSocketDebuggerUrl,
+      const main = await waitForRenderer(until)
+      if (main === undefined) throw new Error('no main window')
+      const answer = JSON.parse(String(await evaluate(main.webSocketDebuggerUrl,
         "fetch('/api/widgets').then(async (response) => JSON.stringify({ status: response.status, body: await response.json() }))", until, true)))
       last = answer.body?.widgets ?? answer
       if (Array.isArray(last) && accept(last)) return { value: last, ok: true }
@@ -1103,7 +1108,10 @@ async function checkSafeMode(widget, url, until) {
   const onResult = await setHostPlugin(TEST_WIDGET_MODULE, true, until)
   note(`give-up safe mode toggle off=${JSON.stringify(offResult)} on=${JSON.stringify(onResult)}`)
   const after = await pollList(widget, until, (list) => offIn(list))
-  const program = JSON.parse(String(await evaluate(widget.webSocketDebuggerUrl,
+  // From the main window: the sample page may not read the program of another slug (agent_library.serving.routes).
+  const main = await waitForRenderer(until)
+  if (main === undefined) return 'no main window'
+  const program = JSON.parse(String(await evaluate(main.webSocketDebuggerUrl,
     `fetch('/api/widgets/${TEST_WIDGET}/program').then((response) => JSON.stringify({ status: response.status }))`, until, true)))
   note(`give-up safe mode after enable list=${JSON.stringify(after.value)} program=${JSON.stringify(program)}`)
   if (!after.ok) return `a plugin-manager enable turned the test widget on: ${JSON.stringify(after.value)}`
@@ -1253,8 +1261,11 @@ async function checkHostWatchdog(deadline) {
   // parse: a long synchronous step of healthy host code. The host must live.
   const parseFrom = Date.now()
   const pid = hostPid
-  const prepared = await postFrom(sample, '/api/watchdoghost/prepare', { mb: 150 }, until)
-  const parsed = await postFrom(sample, '/api/watchdoghost/parse', {}, until)
+  // The host routes of the fixture are not widget routes, so the main window (origin app) posts them (agent_library.serving.routes).
+  const main = await waitForRenderer(until)
+  if (main === undefined) return 'watchdog: no main window'
+  const prepared = await postFrom(main, '/api/watchdoghost/prepare', { mb: 150 }, until)
+  const parsed = await postFrom(main, '/api/watchdoghost/parse', {}, until)
   await delay(3_000)
   note(`watchdog parse=${JSON.stringify({ prepared, parsed })}`)
   if (parsed.status !== 200 || prepared.body?.mb < 150) return `watchdog: the parse did not run: ${JSON.stringify({ prepared, parsed })}`
