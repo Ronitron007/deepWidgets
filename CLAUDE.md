@@ -10,7 +10,7 @@ The goal is a floating desktop widget whose plugins run on Cordis. DSH already h
 
 ## Why most code does not run `head.why`
 
-Most code in this repository is DSH code that deepWidgets does not need. The repository has 403 workspace packages, with the root. At boot, the desktop app composes 201 plugin rows. The floating widget needs only a small part of them.
+Most code in this repository is DSH code that deepWidgets does not need. The repository has 403 workspace packages, with the root. At boot, the desktop app composes 202 plugin rows. The floating widget needs only a small part of them.
 
 The operator keeps the unused code on purpose. It shows how DSH writes Cordis plugins, and the operator reads it. Do not delete it to make the repository smaller.
 
@@ -30,11 +30,12 @@ Code without a comment can still be off. A plugin row is off when a patch layer 
 
 | Item | State on 2026-11-10 |
 |---|---|
-| Rows that deepWidgets turns off | `deepwidgets/trim/cordis.patch.yml` turns off 161 of the 201 rows. The rows `hmr` and `timer` are on again for the widget system (`widget_rows`). Some kept rows stay pending, because the agent rows are off. |
+| Rows that deepWidgets turns off | `deepwidgets/trim/cordis.patch.yml` turns off 161 of the 202 rows. The rows `hmr` and `timer` are on again for the widget system (`widget_rows`). The patch also inserts the row `logger-console` (`safe_host.log`). Some kept rows stay pending, because the agent rows are off. |
 | Our packages | `deepwidgets/probe` and `deepwidgets/trace` (TypeScript). `deepwidgets/trim`: the trim patch, the row lists, and the test bundle `fixtures/widget-rows-install`. The widget MVP (spec `widget_mvp`) adds these packages: `deepwidgets/widgets` (the runtime, service `widgets`), `deepwidgets/widget-sample` (the `sample` counter), `deepwidgets/shell` (the widget page, built with Vite), `deepwidgets/mcp` (the MCP server for agents, see its `README.md`). The agent library (spec `agent_library`) adds `deepwidgets/widget-kit`: the core of the widget page and the contract `ChildProps`. The shell keeps only the default child. The unit `library.build_gate` adds the page gates: when a bundle has `page/`, `widget_install` checks its fixed files, type-checks it, builds it with Vite (`deepwidgets/mcp/src/page-gate.ts`), and asks Electron main for the render check in a hidden window (`apps/desktop/src/deepwidgets-render-check.ts`). The import fence and the output fence of the build do not refuse a page. Each finding is a warning in the install answer, and the host logs one line for the install (spec `agent_library.fence_warn`). Vite builds into `<profile>/deepwidgets-widgets/<slug>/page-<hash>.tmp`, which becomes `page-<hash>` when the gates pass. After the install applies, the link `<slug>/page` swaps to that build. A slug keeps its last 3 builds. `apps/desktop/src/deepwidgets-page-path.ts` resolves a page file and refuses a path outside the folder of the slug. The shell exports its shadcn pieces (`./ui/*`, `./components/*`) and the base sheet `page.css` of an agent page. Electron main opens one floating window for each widget (`apps/desktop/src/deepwidgets-windows.ts`). |
 | MCP port | In the desktop app, Electron main binds the fixed port `DEEPWIDGETS_MCP_PORT` (default 47615). It forwards each request to the loopback port of the host, which the OS picks. Electron main writes `$DSH_HOME/deepwidgets/mcp.json` (spec `safe_host`, `apps/desktop/src/deepwidgets-mcp-port.ts`). A CLI host (`apps/cli`) does not read `DEEPWIDGETS_MCP_PORT`. It binds the port of its own `--port` option and writes the file itself. Smoke runs use port 0. |
 | MCP modes | The MCP server groups its tools in modes (spec `modes`). The settings file `$DSH_HOME/deepwidgets/settings.json` can turn a mode off, except `interact`, which is always on. A missing file means that each mode is on. |
 | Main window | The app opens the main window at once, with no welcome window. The main window shows only `hello` and the probe text. |
+| Host log | The row `logger-console` writes each `ctx.logger` line of the host to the stdout of the host (spec `safe_host`, part `safe_host.log`). The levels are `error`, `warn`, and `info`. Electron main copies the stdout of the host, so the terminal of `start:desktop` shows the lines. The packaged app has no log file. |
 | Checks | The scripts in `tools/` check the app, the host, and the widgets. `head.checks` lists each script and each smoke flag. |
 
 ## Checks `head.checks`
@@ -60,6 +61,8 @@ The smoke check `tools/smoke-desktop.mjs` boots the app. Each flag below adds a 
 - `DSH_SMOKE_WINDOWS=1` checks that `sample` gets one window. The window must close when the `sample` row turns off.
 
 - `DSH_SMOKE_CREATE=<widget source folder>` installs that folder over MCP with `widget_install`. Then it finds the window and removes the widget. When the folder has `page/`, the render check must pass, and the built page must be in the profile. With `DSH_SMOKE_CREATE_CASES=<JSON file>`, the render cases in that file install first: each one must be refused with its code, or install with its warnings.
+
+- `DSH_SMOKE_LOG=1` makes the token folder read-only and asks for a token. The answer must be 500, and the output of the app must have the `ctx.logger` line of `@deepwidgets/mcp`.
 
 - `DSH_SMOKE_HOST_RESTART=1` kills the host two times. After the first kill, the `sample` page and the main window must come back. Then the check kills the host again and quits the app while the restart waits. The app must exit by itself.
 
@@ -90,6 +93,8 @@ These scripts run with no app, unless the item says otherwise:
 - `tools/widgets-watchdog.mjs` checks the watchdog with a host.
 
 - `tools/widgets-create.mjs` checks widget creation over MCP with a host, also the page gates with the fixtures of `tools/fixtures/page-widget.mjs`. Then it runs the `DSH_SMOKE_CREATE` smoke with a page bundle, unless `WIDGETS_CREATE_DESKTOP=0`.
+
+- `tools/host-log.mjs` checks the host log with a host: a `ctx.logger` line of `@deepwidgets/mcp` must reach the stdout of the host. Then it runs the `DSH_SMOKE_LOG` smoke, unless `HOST_LOG_DESKTOP=0`.
 
 - `tools/widgets-action-replay.mjs` replays the `action_contract` model paths of widget actions on a host.
 
@@ -175,6 +180,7 @@ DSH_SMOKE_HELLO=1 node tools/smoke-desktop.mjs
 DSH_SMOKE_INSTALL="$PWD/deepwidgets/trim/fixtures/widget-rows-install" node tools/smoke-desktop.mjs
 DSH_SMOKE_WIDGET=sample node tools/smoke-desktop.mjs
 DSH_SMOKE_WINDOWS=1 node tools/smoke-desktop.mjs
+DSH_SMOKE_LOG=1 node tools/smoke-desktop.mjs
 node tools/widgets-runtime.mjs
 node tools/widgets-mcp.mjs
 node tools/widgets-mcp-port.mjs
@@ -189,6 +195,7 @@ DSH_SMOKE_ROWS=deepwidgets/trim DSH_SMOKE_ROWS_SNAPSHOT="${TMPDIR:-/tmp}/rows.js
 node tools/widgets-blame.mjs
 node tools/widgets-watchdog.mjs
 node tools/widgets-create.mjs
+node tools/host-log.mjs
 node tools/widgets-action-replay.mjs
 node tools/widgets-install-replay.mjs
 node tools/widgets-hmr-guards.mjs
