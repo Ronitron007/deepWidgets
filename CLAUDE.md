@@ -58,6 +58,8 @@ The smoke check `tools/smoke-desktop.mjs` boots the app. Each flag below adds a 
 
 - `DSH_SMOKE_WIDGET=<slug>` checks the widget page at the widget origin of the slug, and its live refresh. It also checks that the slugs `xn--abc`, `a-`, and a slug of 63 characters each get a window that loads.
 
+- `DSH_SMOKE_MAIN=1` opens a hidden test window on the panel page of `main`, `dsh-app://w-main.widget/widget/main.html?slug=main`. The page must show a row for `sample` with its state rev. A state write of `sample` must change that rev. The row of `sample` must open with its state viewer, and Turn off and Turn on must change its status. With the page open, 100 writes of `sample` in a row must take at most 3 times the time with the page closed, and a burst of 100 parallel writes must give no failure. A write of `sample` while the stream of `main` is down must show in the row after the stream opens again. The check saves two screenshots in `$TMPDIR/deepwidgets-main-page/`.
+
 - `DSH_SMOKE_WINDOWS=1` checks that `sample` gets one window. The window must close when the `sample` row turns off.
 
 - `DSH_SMOKE_CREATE=<widget source folder>` installs that folder over MCP with `widget_install`. Then it finds the window and removes the widget. When the folder has `page/`, the render check must pass, and the built page must be in the profile. With `DSH_SMOKE_CREATE_CASES=<JSON file>`, the render cases in that file install first: each one must be refused with its code, or install with its warnings. When the folder has `page/`, `DSH_SMOKE_CREATE_NEXT` and `DSH_SMOKE_CREATE_PLAIN` must name the same bundle with new page sources and with no `page/`. The check follows the window through these installs and two renderer crashes (`agent_library.serving`).
@@ -183,6 +185,7 @@ DSH_SMOKE_TRACE=1 node tools/smoke-desktop.mjs
 DSH_SMOKE_HELLO=1 node tools/smoke-desktop.mjs
 DSH_SMOKE_INSTALL="$PWD/deepwidgets/trim/fixtures/widget-rows-install" node tools/smoke-desktop.mjs
 DSH_SMOKE_WIDGET=sample node tools/smoke-desktop.mjs
+DSH_SMOKE_MAIN=1 node tools/smoke-desktop.mjs
 DSH_SMOKE_WINDOWS=1 node tools/smoke-desktop.mjs
 DSH_SMOKE_LOG=1 node tools/smoke-desktop.mjs
 node tools/widgets-runtime.mjs

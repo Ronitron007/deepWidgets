@@ -34,8 +34,16 @@ export const widgetSlugs = ['main'] as const
 /** The component set of the page of the main widget (`main_widget.catalog`). The default shell page refuses it. */
 export const CATALOG = 'deepwidgets-main@1'
 
-/** A placeholder program. The unit `main.page` gives the page of the main widget and its component set. */
-export const PROGRAM = `root = Card([CardHeader("deepWidgets", "The main widget")])
+/**
+ * The program of the panel page (`main_widget.widgets`), in the component set {@link CATALOG} of the shell entry
+ * `main.html`. The query `widgets` feeds the Widgets tab; its default is null, so the page shows a loading state, not an
+ * empty list. The row controls of `WidgetTable` call `turnOff`, `turnOn`, `remove`, and `program` with the slug of the
+ * row, then run `refresh`. The runtime also sends a `data` frame to the page of main on each change of another widget.
+ */
+export const PROGRAM = `root = Panel("deepWidgets", [widgetsTab, settingsTab])
+widgetsTab = Tab("Widgets", [WidgetTable(w.widgets, Action([@Run(w)]))])
+settingsTab = Tab("Settings", [Note("Settings come in a later unit.")])
+w = Query("widgets", {}, {widgets: null})
 `
 
 /** The time limit of an action that changes a plugin row. A remove runs pnpm in the profile. */
@@ -183,14 +191,40 @@ export function apply(ctx: Context): void {
     }
   }
 
+  /**
+   * fanout_query_blocks_writes: the plugin rows and the source folders of the widgets, cached. `listPlugins` and the
+   * bundle list take 100 ms and more, so the query `widgets`, which runs after each change of a widget, does not read
+   * them each time. A change of the plugin manager or of a fiber state drops the cache, and so does a new set of
+   * listed slugs. A state write changes none of these.
+   */
+  let plugins: { key: string, value: Promise<{ rows: PluginInfo[], sources: Map<string, string> }> } | undefined
+  const forget = (): void => { plugins = undefined }
+  ctx.on('plugin-manager/changed', forget)
+  ctx.on('internal/status', forget)
+
+  function pluginSnapshot(listed: readonly string[]): Promise<{ rows: PluginInfo[], sources: Map<string, string> }> {
+    const key = [...listed].sort().join('\n')
+    if (plugins?.key === key) return plugins.value
+    const value = (async () => {
+      const rows = await widgetRows()
+      const slugs = new Set([...listed, ...rows.flatMap((info) => slugOfEntry(info.entryId) ?? [])])
+      const installer = ctx.get('widgetInstaller')
+      // widgets_query_cost: one read of the bundle list for each snapshot, not one for each slug.
+      const sources = installer === undefined ? new Map<string, string>() : await installer.sources([...slugs])
+      return { rows, sources }
+    })()
+    const entry = { key, value }
+    plugins = entry
+    // A failed read is not kept: the next query reads again.
+    value.catch(() => { if (plugins === entry) plugins = undefined })
+    return value
+  }
+
   async function describeAll(): Promise<MainWidget[]> {
-    const rows = await widgetRows()
     const listed = new Map(ctx.widgets.list().map((summary) => [summary.slug, summary]))
+    const { rows, sources } = await pluginSnapshot([...listed.keys()])
     const slugs = new Set([...listed.keys(), ...rows.flatMap((info) => slugOfEntry(info.entryId) ?? [])])
     slugs.delete(widgetSlugs[0])
-    const installer = ctx.get('widgetInstaller')
-    // widgets_query_cost: one read of the bundle list for each query, not one for each slug.
-    const sources = installer === undefined ? new Map<string, string>() : await installer.sources([...slugs])
     const out: MainWidget[] = []
     for (const slug of [...slugs].sort()) {
       const summary = listed.get(slug)

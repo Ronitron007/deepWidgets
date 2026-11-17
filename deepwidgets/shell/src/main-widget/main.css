@@ -1,0 +1,148 @@
+/* The page of the main widget (component set deepwidgets-main@1). Plain CSS on the DSH tokens of styles.css. The
+   components lay out with Tailwind utilities; this sheet holds the row, the status tones, and the state viewer. */
+
+.dwm-panel-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: -12px -12px 0;
+  padding: 12px 12px 4px;
+  background: var(--card);
+}
+/* This sheet is not in a layer, so its rules win over the Tailwind classes of the shadcn pieces. */
+.dwm-tabs-list { width: 100%; }
+/* The panels have forceMount: the panel of the tab that is not active stays mounted and hidden. */
+.dwm-tab-panel[data-state='inactive'] { display: none; }
+
+/* ---- one widget row ---- */
+.dwm-row { list-style: none; border: 1px solid var(--border); border-radius: var(--dsw-radius-md); background: var(--card); }
+.dwm-row[data-open='true'] { border-color: var(--dsw-alias-border-l3); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05); }
+.dwm-row-head {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px 8px 8px;
+  border-radius: var(--dsw-radius-md);
+  cursor: pointer;
+}
+.dwm-row-head:hover { background: var(--accent); }
+.dwm-row-head:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.dwm-chevron { flex: none; width: 14px; height: 14px; color: var(--muted-foreground); transition: transform 120ms ease; }
+.dwm-row[data-open='true'] .dwm-chevron { transform: rotate(90deg); }
+.dwm-rev {
+  flex: none;
+  min-width: 46px;
+  text-align: right;
+  font-family: var(--ds-font-family-code), monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+}
+.dwm-fields {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr);
+  column-gap: 12px;
+  row-gap: 10px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 17px;
+}
+
+/* ---- status badge and kind tags ---- */
+.dwm-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+}
+.dwm-status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.dwm-status[data-kind='live'] { color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 13%, transparent); }
+.dwm-status[data-kind='failed'] { color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent); }
+.dwm-status[data-kind='safe-mode'] { color: var(--dsw-alias-state-warn-label); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 16%, transparent); }
+.dwm-status[data-kind='turned-off'] { color: var(--muted-foreground); background: var(--muted); }
+.dwm-status[data-kind='turned-off'] .dwm-status-dot { background: var(--dsw-alias-state-idle-primary); }
+
+.dwm-kind {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 15px;
+  color: var(--muted-foreground);
+  background: var(--muted);
+}
+.dwm-kind[data-kind='query'] { color: var(--dsw-alias-state-business-primary); background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 12%, transparent); }
+.dwm-kind[data-kind='mutation'] { color: var(--dsw-alias-state-warn-label); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 15%, transparent); }
+
+/* ---- controls in the details ---- */
+.dwm-link {
+  all: unset;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--dsw-alias-link, var(--foreground));
+  text-underline-offset: 3px;
+}
+.dwm-link:hover { text-decoration: underline; }
+.dwm-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 2px; }
+.dwm-remove { margin-left: auto; color: var(--destructive); }
+.dwm-remove:hover { color: var(--destructive); background: color-mix(in srgb, var(--destructive) 10%, transparent); }
+
+/* ---- notices in the details ---- */
+.dwm-callout { padding: 8px 10px; border-radius: var(--dsw-radius-sm); font-size: 12px; line-height: 17px; overflow-wrap: anywhere; }
+.dwm-callout strong { font-weight: 600; }
+.dwm-callout[data-tone='error'] { color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 9%, transparent); }
+.dwm-callout[data-tone='warn'] { color: var(--dsw-alias-state-warn-label); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 13%, transparent); }
+.dwm-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 25%, transparent);
+  border-radius: var(--dsw-radius-sm);
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 6%, transparent);
+  font-size: 12px;
+  line-height: 17px;
+  /* A slug of 63 characters is the name of a widget that is off: it wraps, so the panel does not scroll sideways. */
+  overflow-wrap: anywhere;
+}
+
+/* ---- program text and state viewer ---- */
+.dwm-code,
+.dwm-json-box {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-markdown-inline-code, var(--muted));
+}
+.dwm-code { font-family: var(--ds-font-family-code), monospace; font-size: 11px; line-height: 16px; white-space: pre; }
+.dwm-json {
+  font-family: var(--ds-font-family-code), monospace;
+  font-size: 11.5px;
+  line-height: 17px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--foreground);
+}
+.dwm-json-scalar { display: inline-block; padding: 1px 6px; border-radius: var(--dsw-radius-xs); background: var(--dsw-alias-markdown-inline-code, var(--muted)); }
+.dwm-json .dwm-json-label { color: var(--foreground); font-weight: 500; }
+.dwm-json .dwm-json-string { color: var(--dsw-alias-state-success-primary); }
+.dwm-json .dwm-json-number { color: var(--dsw-alias-state-business-primary); }
+.dwm-json .dwm-json-boolean { color: var(--dsw-alias-state-done-primary); }
+.dwm-json .dwm-json-null,
+.dwm-json .dwm-json-other,
+.dwm-json .dwm-json-punctuation,
+.dwm-json .dwm-json-icon { color: var(--muted-foreground); }
