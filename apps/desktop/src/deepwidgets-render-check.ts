@@ -8,12 +8,11 @@
  * lost a `dw-core` style. A body with no height and content wider than the window are warnings.
  * @module deepwidgets-render-check
  */
-import { readFile } from 'node:fs/promises'
-import { extname, isAbsolute } from 'node:path'
+import { isAbsolute } from 'node:path'
 import { BrowserWindow } from 'electron'
-import { isCheckBuild, pageFile } from './deepwidgets-page-path.ts'
+import { isCheckBuild, servePageFile } from './deepwidgets-page-path.ts'
 
-/** The host name of the check route. The live widget route is `app`. */
+/** The host name of the check route. A live widget page has the widget origin of its slug (`deepwidgets-origin.ts`). */
 export const RENDER_CHECK_HOST = 'widget-check'
 
 const WIDTH = 320
@@ -29,11 +28,6 @@ const MAX_LINES = 5
 
 /** The slug pattern of the Host runtime (`deepwidgets/widgets/src/index.ts`). */
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/u
-
-const MIME: Readonly<Record<string, string>> = {
-  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
-  '.svg': 'image/svg+xml', '.json': 'application/json', '.woff2': 'font/woff2', '.png': 'image/png',
-}
 
 /** One query answer of the test run. */
 export type RenderAnswer = { readonly ok: true; readonly result: unknown } | { readonly ok: false; readonly message: string }
@@ -187,13 +181,7 @@ export class DesktopRenderCheck {
     let path: string
     try { path = decodeURIComponent(url.pathname.slice(base.length)) } catch { return new Response(null, { status: 400 }) }
     // Each link resolves, and a file outside the folder of the slug is refused.
-    const found = await pageFile(job.pageDir, path, true)
-    if ('status' in found) return new Response(null, { status: found.status })
-    let body: Buffer
-    try { body = await readFile(found.file) } catch { return new Response(null, { status: 404 }) }
-    return new Response(request.method === 'HEAD' ? null : new Uint8Array(body), {
-      headers: { 'content-type': MIME[extname(found.file)] ?? 'application/octet-stream', 'cache-control': 'no-store' },
-    })
+    return servePageFile(request, job.pageDir, path, true)
   }
 
   /** The page channel from the test run: the program, the query answers, and a stream that says only `hello`. */

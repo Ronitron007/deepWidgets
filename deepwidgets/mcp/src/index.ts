@@ -37,7 +37,7 @@ import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import type { CallToolResult, StandardSchemaWithJSON } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { CreationError, templateFiles, widgetTypesText, WidgetInstaller } from './creation.ts'
-import type { CreationErrorCode, GateName, InstallOutcome } from './creation.ts'
+import type { CreationErrorCode, GateName, InstallOutcome, PageState } from './creation.ts'
 import { fenceCount, fenceFindings } from './page-gate.ts'
 import type { RenderCheck, RenderCheckRequest, RenderCheckResult } from './page-gate.ts'
 
@@ -366,7 +366,12 @@ function mainRenderCheck(): RenderCheck {
   })
 }
 
-function sendToMain(message: ForwardMessage): Promise<void> {
+/** The IPC message to Electron main with the page state of the widgets (`agent_library.serving.changes`). */
+interface PagesMessage extends PageState {
+  type: 'deepwidgets-pages'
+}
+
+function sendToMain(message: ForwardMessage | PagesMessage): Promise<void> {
   return new Promise((resolve, reject) => {
     if (!process.connected || process.send === undefined) { resolve(); return }
     process.send(message, (error: Error | null) => { if (error === null) resolve(); else reject(error) })
@@ -697,6 +702,12 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       records: ctx.widgetRecords,
       // agent_library.build_gate.render: only the desktop host has Electron main. A CLI host skips the check.
       renderCheck: forwarded && process.connected ? mainRenderCheck() : undefined,
+      // agent_library.serving.changes: Electron main serves each page from the folder of its slug below the root.
+      onPages: forwarded && process.connected ? (state) => {
+        sendToMain({ type: 'deepwidgets-pages', ...state }).catch((error: unknown) => {
+          ctx.logger.warn('mcp: Electron main did not get the page state of the widgets', error)
+        })
+      } : undefined,
     })
     inner.effect(() => () => { installer = undefined }, 'mcp: the widget installer')
   })

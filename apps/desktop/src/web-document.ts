@@ -72,12 +72,17 @@ const PLUGIN_BUNDLE_PATH = /^\/plugins\//u
  * @param request - Request from the application origin.
  * @param host - Owned Host URL.
  * @param cookie - Host-issued authentication cookie.
+ * @param allowedOrigin - deepWidgets `agent_library.serving`: the one `Origin` that may send the request.
  * @returns Host response without connection-level headers.
  */
-export async function forwardWebRequest(request: Request, host: string, cookie: string): Promise<Response> {
+// deepwidgets-trim: agent_library.serving. A widget origin forwards the API of its slug with its own origin.
+// export async function forwardWebRequest(request: Request, host: string, cookie: string): Promise<Response> {
+export async function forwardWebRequest(request: Request, host: string, cookie: string, allowedOrigin = 'dsh-app://app'): Promise<Response> {
   const source = new URL(request.url)
   const origin = request.headers.get('origin')
-  if (origin !== null && origin !== 'dsh-app://app') return new Response(null, { status: 403 })
+  // deepwidgets-trim: agent_library.serving. The allowed origin is a parameter.
+  // if (origin !== null && origin !== 'dsh-app://app') return new Response(null, { status: 403 })
+  if (origin !== null && origin !== allowedOrigin) return new Response(null, { status: 403 })
   const target = new URL(host)
   target.pathname = source.pathname
   target.search = source.search

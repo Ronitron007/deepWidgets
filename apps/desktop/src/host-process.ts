@@ -10,6 +10,8 @@ import { desktopNodeEnvironment } from './node-environment.ts'
 import { isHostMcp, type HostMcp } from './deepwidgets-mcp-port.ts'
 // deepwidgets-trim: added import; agent_library.build_gate.render. The Host asks Electron main for the render check of a page.
 import { parseRenderCheckJob, type RenderCheckJob, type RenderCheckResult } from './deepwidgets-render-check.ts'
+// deepwidgets-trim: added import; agent_library.serving. The Host sends the page state of the widgets.
+import { parseWidgetPages, type WidgetPages } from './deepwidgets-origin.ts'
 import { parsePluginOperationRecord, type PluginOperationRecord, type PluginOperationRunId } from '@deepseek-ai/dsh-plugin-manager/diagnostic'
 
 interface ReadyEvent {
@@ -33,11 +35,15 @@ interface PlatformSessionEvent {
 // deepwidgets-trim: safe_host.port. The MCP row tells Electron main its port, nonce, and forward secret, or null when it goes.
 // type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | {
 /**
- * The deepWidgets events: the MCP row state (`safe_host.port`), and a request for the render check of a built page
- * (`agent_library.build_gate.render`).
+ * The deepWidgets events: the MCP row state (`safe_host.port`), a request for the render check of a built page
+ * (`agent_library.build_gate.render`), and the page state of the widgets (`agent_library.serving.changes`).
  */
+// deepwidgets-trim: agent_library.serving. The page state of the widgets is one more event.
+// type DeepwidgetsHostEvent = { readonly type: 'deepwidgets-mcp'; readonly mcp: HostMcp | null }
+//   | { readonly type: 'deepwidgets-render-check'; readonly checkId: number; readonly check: RenderCheckJob }
 type DeepwidgetsHostEvent = { readonly type: 'deepwidgets-mcp'; readonly mcp: HostMcp | null }
   | { readonly type: 'deepwidgets-render-check'; readonly checkId: number; readonly check: RenderCheckJob }
+  | { readonly type: 'deepwidgets-pages'; readonly root: string; readonly pages: Readonly<Record<string, string>> }
 
 // deepwidgets-trim: agent_library.build_gate.render. The deepWidgets events are one type, with the render check.
 // type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent
@@ -92,6 +98,9 @@ function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
     // deepwidgets-trim: added case; agent_library.build_gate.render.
     case 'deepwidgets-render-check':
       return Number.isSafeInteger(candidate.checkId) && parseRenderCheckJob(candidate.check) !== undefined
+    // deepwidgets-trim: added case; agent_library.serving.
+    case 'deepwidgets-pages':
+      return parseWidgetPages(candidate) !== undefined
     case 'ready':
       return typeof candidate.url === 'string'
     case 'platform-session': {
@@ -212,6 +221,7 @@ export class DesktopHostProcess {
    * @param onPluginOperation - Optional diagnostic sink; malformed records are ignored without failing the Host.
    * @param onMcp - deepWidgets `safe_host.port`: the MCP row state of this Host, and null when the Host exits.
    * @param onRenderCheck - deepWidgets `agent_library.build_gate.render`: runs the render check of a built page.
+   * @param onPages - deepWidgets `agent_library.serving.changes`: the page state of the widgets, at each change.
    */
   constructor(
     private readonly node: string,
@@ -229,6 +239,8 @@ export class DesktopHostProcess {
     private readonly onMcp?: (mcp: HostMcp | null) => void,
     // deepwidgets-trim: added parameter; agent_library.build_gate.render. Runs the render check that the Host asks for.
     private readonly onRenderCheck?: (check: RenderCheckJob) => Promise<RenderCheckResult>,
+    // deepwidgets-trim: added parameter; agent_library.serving. Receives the page state of the widgets.
+    private readonly onPages?: (pages: WidgetPages) => void,
   ) {}
 
   /**
@@ -281,6 +293,11 @@ export class DesktopHostProcess {
       else if (message.type === 'deepwidgets-render-check') {
         const check = parseRenderCheckJob(message.check)
         if (check !== undefined) this.renderCheck(child, message.checkId, check)
+      }
+      // deepwidgets-trim: added branch; agent_library.serving.
+      else if (message.type === 'deepwidgets-pages') {
+        const pages = parseWidgetPages(message)
+        if (pages !== undefined) this.onPages?.(pages)
       }
       else if (message.type === 'shutdown-complete') {
         if (this.stopping) this.shutdownCompleted = true
