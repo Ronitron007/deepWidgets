@@ -555,6 +555,9 @@ importers:
       '@deepwidgets/trim':
         specifier: workspace:*
         version: link:../../deepwidgets/trim
+      '@deepwidgets/widget-main':
+        specifier: workspace:*
+        version: link:../../deepwidgets/widget-main
       '@deepwidgets/widget-sample':
         specifier: workspace:*
         version: link:../../deepwidgets/widget-sample
@@ -1445,6 +1448,25 @@ importers:
       '@types/react-dom':
         specifier: 18.3.7
         version: 18.3.7(@types/react@18.3.31)
+
+  deepwidgets/widget-main:
+    dependencies:
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:~
+        version: link:../../vendor/cordis
+      '@deepseek-ai/dsh-plugin-manager':
+        specifier: workspace:*
+        version: link:../../packages/boot/plugin-manager
+      '@deepwidgets/mcp':
+        specifier: workspace:*
+        version: link:../mcp
+      '@deepwidgets/widgets':
+        specifier: workspace:*
+        version: link:../widgets
 
   deepwidgets/widget-sample:
     dependencies:

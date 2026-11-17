@@ -182,6 +182,14 @@ export function runAs<T>(row: string | undefined, fn: () => T): T {
   return row === undefined ? fn() : blameStore.run(row, () => inSlot(row, fn))
 }
 
+/**
+ * main_widget.widgets: run `fn` outside the store of any widget row. The work that `fn` starts is host code: a crash
+ * in it is not blamed on a row, and it can use the install records. The runtime checks who may call it.
+ */
+export function outsideRow<T>(fn: () => T): T {
+  return blameStore.exit(fn)
+}
+
 const stateDir = (): string => join(resolveDshHome(), 'deepwidgets')
 const crashFile = (): string => join(stateDir(), 'crash.json')
 const quarantineFile = (): string => join(stateDir(), 'quarantine.json')

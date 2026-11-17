@@ -91,6 +91,10 @@ The server `instructions` text is one line: "Call deepwidgets_modes first." An M
 
 Each tool error gives `code`, `message`, and `nextStep`. A creation error also gives `gate` and `diagnostics`.
 
+The main widget, with the slug `main`, is for the operator only (`main_widget.widget`). `widget_list` does not list it, and `widget_changes` does not give its changes. `widget_describe` and `widget_call` give `unknown-widget` for it, as for a slug that does not exist. `widget_install` gives `slug-taken` for it, because it is a built-in widget.
+
+The row also provides the service `widgetInstaller` to the main widget. It gives the remove path of `widget_remove` and the source folder of an agent widget. The mode `create` does not gate it, because the operator calls it, not an agent.
+
 ## Modes `mcp_readme.modes`
 
 A mode is one type of job that an agent does through this server. The spec is `docs/specs/modes.md`.

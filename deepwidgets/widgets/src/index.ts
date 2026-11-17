@@ -16,7 +16,7 @@ import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { z } from 'zod'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import { agentRow, callerRoot, createIsolation, expiredFiber, hostCrashing, isAgentRow, rowId, runAs, runningRow, widgetRow } from './isolation.ts'
+import { agentRow, callerRoot, createIsolation, expiredFiber, hostCrashing, isAgentRow, outsideRow, rowId, runAs, runningRow, widgetRow } from './isolation.ts'
 import { readJson, writeJsonSync } from './records.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -46,7 +46,16 @@ export const SAFE_MODE_ENV = 'DEEPWIDGETS_SAFE_MODE'
  * is off for that Host start. The check uses the real path of the module that the Loader loaded, not the module
  * name: an installed bundle can take the package name of a built-in bundle.
  */
-export const BUILT_IN_WIDGET_FOLDERS: readonly string[] = ['widget-sample']
+export const BUILT_IN_WIDGET_FOLDERS: readonly string[] = ['widget-sample', 'widget-main']
+
+/** The component set of a widget definition with no `catalog` (`main_widget.catalog`). The default shell page renders it. */
+export const DEFAULT_CATALOG = 'shadcn-widgets@1'
+
+/**
+ * The slug of the main widget of `@deepwidgets/widget-main` (`main_widget.widget`). The panel is its only window, so the
+ * events route does not list it, and Electron main opens no widget window for it.
+ */
+export const MAIN_SLUG = 'main'
 
 /** This file is `deepwidgets/widgets/lib/index.js` (or `src/index.ts`), so `../..` is the repository folder `deepwidgets/`. */
 const BUILT_IN_ROOTS = BUILT_IN_WIDGET_FOLDERS.map((folder) => join(realpathSync(fileURLToPath(new URL('../..', import.meta.url))), folder) + sep)
@@ -208,6 +217,11 @@ export interface WidgetDef<S, T extends readonly unknown[] = readonly unknown[]>
   title: string
   /** The seed OpenUI Lang text. A stored program wins over it. */
   program: string
+  /**
+   * The id of the component set that the program uses (`main_widget.catalog`). Defaults to {@link DEFAULT_CATALOG}.
+   * A page refuses a program of another set.
+   */
+  catalog?: string
   initialState: S
   /** The timeout of each action without its own `timeoutMs`. */
   timeoutMs?: number
@@ -227,6 +241,8 @@ export interface WidgetActionDescription {
 /** The answer of `describe()`. */
 export interface WidgetDescription extends WidgetSummary {
   actions: WidgetActionDescription[]
+  /** The component set of the program (`main_widget.catalog`). Only a live widget has it: a failed or off widget has no definition. */
+  catalog?: string
 }
 
 /** One item of `list()`. */
@@ -324,6 +340,7 @@ interface Registration {
   slug: string
   title: string
   program: string
+  catalog: string
   initialState: unknown
   timeoutMs: number | undefined
   actions: Map<string, WidgetAction<unknown>>
@@ -368,6 +385,8 @@ interface Runtime {
   update(slug: string, fn: (state: unknown) => unknown, by: string): Promise<unknown>
   setProgram(slug: string, text: string, by: string): Promise<{ rev: number }>
   programRecord(slug: string): Promise<ProgramRecord | undefined>
+  stateRecord(slug: string): Promise<{ rev: number, data: unknown } | undefined>
+  asHost<T>(fn: () => T): T
   restoreProgram(slug: string, record: ProgramRecord | undefined, by: string): Promise<void>
   adoptSeed(slug: string, seed: string): Promise<void>
   clearOff(slug: string): void
@@ -386,6 +405,7 @@ function buildRegistration(def: WidgetDef<unknown>): Registration {
   if (typeof def.slug !== 'string' || !SLUG.test(def.slug)) throw new TypeError(`widgets: bad slug ${JSON.stringify(def.slug)}`)
   if (typeof def.title !== 'string' || def.title === '') throw new TypeError(`widgets: ${def.slug}: title is required`)
   if (typeof def.program !== 'string') throw new TypeError(`widgets: ${def.slug}: program text is required`)
+  if (def.catalog !== undefined && (typeof def.catalog !== 'string' || def.catalog === '')) throw new TypeError(`widgets: ${def.slug}: catalog must be a non-empty string`)
   if (!Array.isArray(def.actions)) throw new TypeError(`widgets: ${def.slug}: actions must be an array`)
   if (def.timeoutMs !== undefined && !(Number.isFinite(def.timeoutMs) && def.timeoutMs > 0)) throw new TypeError(`widgets: ${def.slug}: timeoutMs must be positive`)
   const actions = new Map<string, WidgetAction<unknown>>()
@@ -399,7 +419,7 @@ function buildRegistration(def: WidgetDef<unknown>): Registration {
     if (actions.has(action.name)) throw new TypeError(`widgets: ${def.slug}: action ${action.name} repeats`)
     actions.set(action.name, action)
   }
-  return { slug: def.slug, title: def.title, program: def.program, initialState: def.initialState, timeoutMs: def.timeoutMs, actions }
+  return { slug: def.slug, title: def.title, program: def.program, catalog: def.catalog ?? DEFAULT_CATALOG, initialState: def.initialState, timeoutMs: def.timeoutMs, actions }
 }
 
 const hashOf = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -515,6 +535,7 @@ export class WidgetsService extends Service {
 /**
  * The service `widgetRecords` (`widget_fv.install`): the install records of the widget runtime. The installer of
  * `@deepwidgets/mcp` uses it. Widget code can not: each method throws when it runs in the store of a widget row.
+ * Only {@link WidgetRecordsService.asHost} takes a call from widget code, and only from the code of a built-in row.
  */
 export class WidgetRecordsService extends Service {
   // A private field (#) does not work: the caller context reads the service through a proxy.
@@ -532,6 +553,27 @@ export class WidgetRecordsService extends Service {
    */
   programRecord(slug: string): Promise<ProgramRecord | undefined> {
     return guard(() => this.runtime.programRecord(slug))
+  }
+
+  /**
+   * main_widget.widgets: the stored state record of `slug` and its rev, also when the slug is not live.
+   * For a live slug, it waits for the seed write of its registration.
+   * @returns undefined when storage has no state for the slug.
+   */
+  stateRecord(slug: string): Promise<{ rev: number, data: unknown } | undefined> {
+    return guard(() => this.runtime.stateRecord(slug))
+  }
+
+  /**
+   * main_widget.widgets: run `fn` as host code. `fn` and the work that it starts run outside the store of a widget row
+   * and outside the queue slot of a call, so they can use the install records, and a crash in them is not blamed on the
+   * widget. A built-in widget, such as `main`, calls it for host work: the plugin manager and the installer.
+   * @throws {Error} when the caller is widget code of a row that is not built in.
+   */
+  asHost<T>(fn: () => T): T {
+    const row = runningRow()
+    if (row !== undefined && !isBuiltInRow(this.ctx, this.ctx.fiber)) throw new Error(`widgets: the widget row ${row} is not built in, so it can not run host code`)
+    return this.runtime.asHost(fn)
   }
 
   /** Put back the program record that `programRecord` gave before an install, or delete it when that gave undefined. */
@@ -807,7 +849,10 @@ export function apply(ctx: Context, config: Config): void {
     const frame = sseFrame(message)
     for (const open of [...entry.streams]) open.send(frame)
   }
-  function pushEvent(message: unknown): void {
+  /** main_widget.widget: the main widget has no widget window, so the events route does not name it. */
+  const windowed = (slug: string): boolean => slug !== MAIN_SLUG
+  function pushEvent(message: { type: 'added' | 'removed', slug: string }): void {
+    if (!windowed(message.slug)) return
     const frame = sseFrame(message)
     for (const open of [...events]) open.send(frame)
   }
@@ -1124,6 +1169,14 @@ export function apply(ctx: Context, config: Config): void {
     return store.table('program').get(slug)
   }
 
+  async function stateRecord(slug: string): Promise<{ rev: number, data: unknown } | undefined> {
+    const store = await ready
+    // A live slug can still have its seed write in flight. A failed seed is logged in add().
+    await widgets.get(slug)?.seeded.catch(() => undefined)
+    const state = store.table('state').get(slug)
+    return state === undefined ? undefined : { rev: state.rev, data: state.data }
+  }
+
   async function restoreProgram(slug: string, record: ProgramRecord | undefined, by: string): Promise<void> {
     const table = (await ready).table('program')
     await widgets.get(slug)?.seeded.catch(() => undefined)
@@ -1154,7 +1207,7 @@ export function apply(ctx: Context, config: Config): void {
             if (entry.failure !== undefined) throw new WidgetError('widget-failed', `${slug} failed: ${entry.failure}`)
             await entry.seeded
             const program = opened().table('program').get(slug)
-            return json(200, { rev: program?.rev ?? 0, text: program?.text ?? entry.registration.program })
+            return json(200, { rev: program?.rev ?? 0, text: program?.text ?? entry.registration.program, catalog: entry.registration.catalog })
           } catch (error) {
             return failure(error)
           }
@@ -1445,6 +1498,7 @@ export function apply(ctx: Context, config: Config): void {
     const entry = liveEntry(slug)
     return {
       ...summary(entry),
+      catalog: entry.registration.catalog,
       actions: [...entry.registration.actions.values()].map((action) => ({
         name: action.name,
         kind: action.kind,
@@ -1465,14 +1519,14 @@ export function apply(ctx: Context, config: Config): void {
     path: '/api/widgets/events',
     methods: ['GET'],
     requestBody: 'buffered',
-    fetch: guarded((request) => Promise.resolve(eventStream(request, events, () => ({ type: 'hello', slugs: [...widgets.keys()] })))),
+    fetch: guarded((request) => Promise.resolve(eventStream(request, events, () => ({ type: 'hello', slugs: [...widgets.keys()].filter(windowed) })))),
   })
 
   // widget_phase2.isolation.blame: a quarantined widget row loads as one failed entry for each of its slugs.
   const isolation = createIsolation(ctx, {
     hold(slugs, row, reason, fiber) {
       const disposers = slugs.filter((slug) => !widgets.has(slug)).map((slug) => add({
-        slug, title: slug, program: '', initialState: null, timeoutMs: undefined, actions: new Map(), row, agent: isAgentRow(row),
+        slug, title: slug, program: '', catalog: DEFAULT_CATALOG, initialState: null, timeoutMs: undefined, actions: new Map(), row, agent: isAgentRow(row),
       }, undefined, () => fiber !== undefined && isBuiltInRow(ctx, fiber), reason))
       return async () => { for (const dispose of disposers) await dispose() }
     },
@@ -1504,6 +1558,10 @@ export function apply(ctx: Context, config: Config): void {
     update: (slug, fn, by) => admit(() => update(slug, fn, by)),
     setProgram: (slug, text, by) => admit(() => setProgram(slug, text, by)),
     programRecord,
+    stateRecord,
+    // A call runs in the async context of its queue slot (`slot`) and of its widget row (the blame store). Host work
+    // leaves both, so it is not a write of that call and not code of that row.
+    asHost: (fn) => slot.exit(() => outsideRow(fn)),
     restoreProgram: (slug, record, by) => admit(() => restoreProgram(slug, record, by)),
     adoptSeed: (slug, seed) => admit(() => adoptSeed(slug, seed)),
     clearOff: (slug) => { if (off.get(slug)?.agent === true) off.delete(slug) },

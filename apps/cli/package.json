@@ -93,6 +93,7 @@
     "@deepwidgets/probe": "workspace:*",
     "@deepwidgets/shell": "workspace:*",
     "@deepwidgets/trace": "workspace:*",
+    "@deepwidgets/widget-main": "workspace:*",
     "@deepwidgets/widget-sample": "workspace:*",
     "@deepwidgets/widgets": "workspace:*",
     "@deepwidgets/trim": "workspace:*",

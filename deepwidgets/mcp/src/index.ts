@@ -16,6 +16,10 @@
  * The tools are grouped in modes (spec `modes`). `deepwidgets_modes` lists them, and the settings
  * file `$DSH_HOME/deepwidgets/settings.json` can turn a gated mode off. The server reads that file
  * at each call of a tool that needs it, so an edit takes effect with no restart.
+ *
+ * The main widget is for the operator only (`main_widget.widget`): the tools treat the slug `main` as a slug that
+ * does not exist. The row also provides the service `widgetInstaller`, the remove path of `widget_remove` for the main
+ * widget.
  * @module @deepwidgets/mcp
  */
 import { execFile } from 'node:child_process'
@@ -25,6 +29,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
+import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type {} from '@deepseek-ai/dsh-app-boot'
@@ -38,8 +43,17 @@ import type { CallToolResult, StandardSchemaWithJSON } from '@modelcontextprotoc
 import { z } from 'zod'
 import { CreationError, templateFiles, widgetTypesText, WidgetInstaller } from './creation.ts'
 import type { CreationErrorCode, GateName, InstallOutcome, PageState } from './creation.ts'
+
+export type { CreationErrorCode } from './creation.ts'
 import { fenceCount, fenceFindings } from './page-gate.ts'
 import type { RenderCheck, RenderCheckRequest, RenderCheckResult } from './page-gate.ts'
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** The remove path and the source lookup of the widget installer, for the main widget. It is there while the installer is. */
+    widgetInstaller: WidgetInstallerService
+  }
+}
 
 export const name = 'deepwidgets-mcp'
 export const inject = ['webServer', 'widgets', 'widgetRecords']
@@ -59,6 +73,18 @@ const AGENT_NAME = /^[\x20-\x7e]{1,64}$/
 const CHALLENGE = /^[A-Za-z0-9_-]{22,256}$/
 /** The slug pattern of the runtime (`deepwidgets/widgets/src/index.ts`). */
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/
+/**
+ * The slug of the main widget, `MAIN_SLUG` of `@deepwidgets/widgets`. Its actions change the settings and the other
+ * widgets, so an agent never sees it (`main_widget.widget`).
+ */
+const MAIN_SLUG = 'main'
+
+/** The error of the runtime for a slug that does not exist, with the same code and text. The tools give it for `main`. */
+function unknownWidget(slug: string): Error & { code: 'unknown-widget' } {
+  const error = Object.assign(new Error(`no widget ${JSON.stringify(slug)}`), { code: 'unknown-widget' as const })
+  error.name = 'WidgetError'
+  return error
+}
 
 /** An error code of a tool answer: a runtime code, or a code of this package. */
 type ToolErrorCode = WidgetErrorCode | CreationErrorCode | 'stale-cursor' | 'internal-error' | 'mode-off'
@@ -495,6 +521,49 @@ async function loadTokens(tokenFile: string): Promise<Map<string, TokenRow>> {
   return new Map(Object.entries(checked.data))
 }
 
+/**
+ * The service `widgetInstaller` (`main_widget.widgets`): the remove path and the source lookup of the installer of
+ * `widget_remove`, for the main widget. The mode `create` does not gate it: the operator calls it, not an agent.
+ * Each method uses the install records, so a widget calls it only as host code (`widgetRecords.asHost`).
+ */
+export class WidgetInstallerService extends Service {
+  // A private field (#) does not work: the caller context reads the service through a proxy.
+  private readonly installer: WidgetInstaller
+
+  constructor(ctx: Context, installer: WidgetInstaller) {
+    super(ctx, 'widgetInstaller')
+    this.installer = installer
+  }
+
+  /** The folder that the agent widget `slug` was installed from (`modes.source`), or undefined for a widget that is not an agent widget. */
+  source(slug: string): Promise<string | undefined> {
+    return this.installer.source(slug)
+  }
+
+  /** The source folder of each agent widget of `slugs`, with one read of the bundle list. A slug that is not an agent widget has no item. */
+  sources(slugs: readonly string[]): Promise<Map<string, string>> {
+    return this.installer.sources(slugs)
+  }
+
+  /**
+   * Remove the agent bundle of `slug` for the operator, with the remove path of `widget_remove`. Its window closes, and
+   * its state stays. Unlike `widget_remove` of an agent, it also ends a Turn off of the slug.
+   * @throws {CreationError} `not-installed` when no agent bundle has the slug, or `install-failed`.
+   */
+  remove(slug: string): ReturnType<WidgetInstaller['remove']> {
+    return this.installer.remove(slug, { operator: true })
+  }
+
+  /**
+   * Turn off (`off`) or Turn on `slug` for the operator: `change` sets the plugin rows of the slug. It runs in the queue of
+   * the installer, so never during an install, a replace, or a remove. The choice lasts across host starts: while it is
+   * off, `widget_install` and `widget_reload` of the slug install the new row off.
+   */
+  turn<T>(slug: string, off: boolean, change: () => Promise<T>): Promise<T> {
+    return this.installer.turn(slug, off, change)
+  }
+}
+
 export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const tokenFile = config.tokenFile ?? dshHomePath('deepwidgets', 'mcp-tokens.json')
   const portFile = config.portFile ?? dshHomePath('deepwidgets', 'mcp.json')
@@ -599,13 +668,14 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       description: 'List the live widgets: slug, title, state revision, program revision. Also gives a cursor for widget_changes.',
       inputSchema: lenient(listInput),
       annotations: { readOnlyHint: true },
-    }, tool(listInput, () => ({ cursor: widgets.cursor(), widgets: widgets.list() })))
+    }, tool(listInput, () => ({ cursor: widgets.cursor(), widgets: widgets.list().filter((widget) => widget.slug !== MAIN_SLUG) })))
 
     mcp.registerTool('widget_describe', {
       description: 'Describe one widget: its actions (name, kind, args JSON Schema, timeoutMs) and its current state. For a widget that widget_install installed, `source` is the absolute folder of its files. Call it before widget_call on a widget you have not described.',
       inputSchema: lenient(describeInput),
       annotations: { readOnlyHint: true },
     }, tool(describeInput, async ({ slug }) => {
+      if (slug === MAIN_SLUG) throw unknownWidget(slug)
       const description = widgets.describe(slug)
       // modes.source: only an agent bundle has a source folder; a built-in widget such as sample has none.
       const source = await installer?.source(slug)
@@ -620,6 +690,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       description: 'Run one widget action. For a mutation, pass a new requestId. After a timeout, retry with the same requestId.',
       inputSchema: lenient(callInput),
     }, tool(callInput, async ({ slug, action, args, requestId }) => {
+      if (slug === MAIN_SLUG) throw unknownWidget(slug)
       const outcome = await widgets.call(slug, action, args ?? {}, { caller: agentId, ...(requestId === undefined ? {} : { requestId }) })
       // widget_fv.action: a replay whose answer was lost says so, with the rev of its write.
       if (outcome.resultLost === true) return { ...outcome, nextStep: 'The call wrote before a host restart, and its answer was lost. Read the state with widget_describe. Do not send this requestId again for a new operation.' }
@@ -631,9 +702,10 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       inputSchema: lenient(changesInput),
       annotations: { readOnlyHint: true },
     }, tool(changesInput, ({ since }) => {
-      const out = widgets.changes(since)
+      const all = widgets.changes(since)
+      const out = { ...all, changes: all.changes.filter((change) => change.slug !== MAIN_SLUG) }
       if (out.reset === true) return { ...out, error: { code: 'stale-cursor', message: 'the cursor is from another host process or too old', nextStep: NEXT_STEP['stale-cursor'] } }
-      return { ...out }
+      return out
     }))
 
     mcp.registerTool('widget_template', {
@@ -656,18 +728,27 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     mcp.registerTool('widget_install', {
       description: 'Install the widget in a folder (absolute path, with src/index.ts). The gates compile, lint, type-check, and test-run the code first; code that fails a gate is not installed. A folder with page/ also runs the page gates: the fixed files, the type check, the build, and the render check. A page that imports or uses a file outside page/ installs with a warning. A second install of the same slug replaces the bundle; the state stays.',
       inputSchema: lenient(installInput),
-    }, tool(installInput, async ({ dir }) => ({ ...logFence(await creator().install(dir)), nextStep: 'Call widget_describe with the slug, then widget_call each action to check it.' }), { mode: 'create' }))
+    }, tool(installInput, async ({ dir }) => withNextStep(logFence(await creator().install(dir)), 'Call widget_describe with the slug, then widget_call each action to check it.'), { mode: 'create' }))
 
     mcp.registerTool('widget_reload', {
       description: 'Run the gates again on the folder that the widget was installed from, and replace the bundle. Use it after you edit the files. The state stays.',
       inputSchema: lenient(slugInput),
-    }, tool(slugInput, async ({ slug }) => ({ ...logFence(await creator().reload(slug)), nextStep: 'Call widget_describe with the slug, then widget_call the changed actions.' }), { mode: 'create' }))
+    }, tool(slugInput, async ({ slug }) => withNextStep(logFence(await creator().reload(slug)), 'Call widget_describe with the slug, then widget_call the changed actions.'), { mode: 'create' }))
 
     mcp.registerTool('widget_remove', {
       description: 'Remove the bundle of a widget that widget_install installed. Its window closes. The state stays, so a later install of the slug gets it back.',
       inputSchema: lenient(slugInput),
     }, tool(slugInput, async ({ slug }) => ({ ...await creator().remove(slug) }), { mode: 'create' }))
     return mcp
+  }
+
+  /**
+   * The answer of `widget_install` and `widget_reload` with its next step. main_widget.widgets: when the user turned the
+   * widget off in the main window, the new version is off, and the agent asks the user to turn it on.
+   */
+  function withNextStep(outcome: InstallOutcome, nextStep: string): Record<string, unknown> {
+    if (outcome.turnedOff === undefined) return { ...outcome, nextStep }
+    return { ...outcome, nextStep: 'The user turned this widget off in the main window of deepWidgets, so the new version is installed off and does not run. Ask the user to turn it on in the main window. Until then, widget_describe and widget_call do not find it.' }
   }
 
   /**
@@ -709,6 +790,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
         })
       } : undefined,
     })
+    new WidgetInstallerService(inner, installer)
     inner.effect(() => () => { installer = undefined }, 'mcp: the widget installer')
   })
 
