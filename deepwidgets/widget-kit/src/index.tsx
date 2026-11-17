@@ -130,6 +130,7 @@ function Core({ env }: { env: Env }) {
       return
     }
     setLoad((current) => (current.status === 'loading' || current.status === 'error' ? { status: 'loading' } : current))
+    const hostSeen = helloRef.current
     try {
       const answer = await channel.program()
       dw.programLoads++
@@ -148,9 +149,15 @@ function Core({ env }: { env: Env }) {
       }
       setLoad((current) => (current.status === 'removed' ? current : { status: 'ready', text: answer.text }))
     } catch (error) {
-      // main_widget.panel: the panel loads its page from disk, also before the Host is ready. With no answer (a network
-      // error) before the first `hello`, the page keeps its loading state, and the first `hello` loads the program again.
-      if (error instanceof TypeError && !helloRef.current) { waitingRef.current = true; record('program-wait'); return }
+      // main_widget.panel: the panel loads its page from disk, also before the Host is ready. A load that started before
+      // the first `hello` and got no answer (a network error) keeps the loading state. When the `hello` came during the
+      // load, the Host is ready now, so the page loads again at once. Else the first `hello` loads the program again.
+      if (error instanceof TypeError && !hostSeen) {
+        record('program-wait')
+        if (helloRef.current) void loadProgram()
+        else waitingRef.current = true
+        return
+      }
       dw.state = 'error'
       dw.errors.push(`program: ${error instanceof Error ? error.message : String(error)}`)
       setLoad((current) => (current.status === 'removed' ? current
