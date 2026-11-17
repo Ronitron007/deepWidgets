@@ -27,7 +27,8 @@ export interface GateEntry {
   /** The entry id, with the ids of its groups in front. */
   readonly id: string
   readonly options: { readonly id?: unknown, readonly name?: unknown }
-  readonly fiber?: unknown
+  /** The fiber of the last load. A turn-off disposes it and keeps it on the entry, with uid null (Cordis). */
+  readonly fiber?: { readonly uid: number | null }
   readonly disabled?: boolean
   readonly parent?: { readonly tree?: GateTree }
   init: (this: GateEntry) => Promise<void>
@@ -87,11 +88,14 @@ const agentId = (id: unknown): boolean => typeof id === 'string' && AGENT_ROW.te
 
 const nameOf = (entry: GateEntry): string | undefined => typeof entry.options.name === 'string' ? entry.options.name : undefined
 
-/** Whether `entry` is still a live entry of its tree that is on and has no fiber. */
+/**
+ * Whether `entry` is still a live entry of its tree that is on and has no running fiber. A disposed fiber (uid null)
+ * does not count: the Loader keeps it after a turn-off and loads the entry again at a turn-on (`Entry.update`).
+ */
 function loadable(entry: GateEntry): boolean {
   const id = entry.options.id
   const store = entry.parent?.tree?.store
-  return entry.fiber === undefined && entry.disabled !== true && (store === undefined || typeof id !== 'string' || store[id] === entry)
+  return !entry.fiber?.uid && entry.disabled !== true && (store === undefined || typeof id !== 'string' || store[id] === entry)
 }
 
 /** Load a stub in place of the module of `entry`: the Loader gives the row a fiber, and no code of the row runs. */
