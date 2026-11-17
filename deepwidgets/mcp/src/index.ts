@@ -546,12 +546,12 @@ export class WidgetInstallerService extends Service {
   }
 
   /**
-   * Remove the agent bundle of `slug`, as `widget_remove` does. Its window closes, and its state stays. A Turn off of the
-   * slug ends with it.
+   * Remove the agent bundle of `slug` for the operator, with the remove path of `widget_remove`. Its window closes, and
+   * its state stays. Unlike `widget_remove` of an agent, it also ends a Turn off of the slug.
    * @throws {CreationError} `not-installed` when no agent bundle has the slug, or `install-failed`.
    */
   remove(slug: string): ReturnType<WidgetInstaller['remove']> {
-    return this.installer.remove(slug)
+    return this.installer.remove(slug, { operator: true })
   }
 
   /**

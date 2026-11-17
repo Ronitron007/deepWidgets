@@ -82,6 +82,14 @@ The research for this spec is in `main_widget.research`.
 
 - The page has two tabs: Widgets (`main_widget.widgets`) and Settings (`main_widget.settings`).
 
+## The program of a built-in widget `main_widget.seed`
+
+- Today the host stores the program of a built-in widget one time, at its first start. Later, nothing replaces it. Thus a new program of `main` never reaches a profile that ran an older `main`. A review of `main.page` found this.
+
+- At each start, the host compares the seed hash of a built-in widget with the seed hash in its stored program record (`widget_fv.install`). When the two differ, the host stores the new seed program and its hash in one write.
+
+- An agent widget keeps the rules of `widget_fv.install`.
+
 ## The catalog of a widget `main_widget.catalog`
 
 - A widget definition gets the optional field `catalog`. The default value is `shadcn-widgets@1`.

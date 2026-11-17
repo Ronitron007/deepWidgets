@@ -786,38 +786,59 @@ export class WidgetInstaller {
   /**
    * main_widget.widgets: Turn off (`off`) or Turn on `slug` for the operator. `change` turns the plugin rows of the slug
    * off or on. It runs in the queue, so it never runs during an install, a replace, or a remove. The choice is stored
-   * first, and it lasts across host starts: while it is off, an install or a reload of the slug installs the new row off.
-   * When `change` throws, the stored choice goes back to what it was.
+   * only after `change` returns, and it lasts across host starts: while it is off, an install or a reload of the slug
+   * installs the new row off. When `change` throws, for example a refusal with no row to change, nothing is stored.
    */
   turn<T>(slug: string, off: boolean, change: () => Promise<T>): Promise<T> {
     return this.serial(async () => {
-      const was = (await this.turnedOffSlugs()).has(slug)
+      const result = await change()
       await this.writeTurnedOff(slug, off)
-      try {
-        return await change()
-      } catch (error) {
-        await this.writeTurnedOff(slug, was)
-        throw error
-      }
+      return result
     })
   }
 
   /**
    * main_widget.widgets: set the Loader row of the new bundle `name` on or off, as the operator chose. A Turn off of an
    * earlier bundle with the same name can stay in the profile patch, so the row can start in the other state.
-   * @returns false, with a diagnostic, when the row is not in the Loader or the plugin manager did not change it.
+   * @returns `same` when the row was already in that state, `changed` when the installer changed it, or false, with a
+   * diagnostic, when the row is not in the Loader or the plugin manager did not change it.
    */
-  private async settleRow(name: string, enabled: boolean, diagnostics: string[]): Promise<boolean> {
-    const row = (await this.services.pluginManager.listPlugins()).find((info) => info.entryId === name || info.entryId.endsWith(`:${name}`))
+  private async settleRow(name: string, enabled: boolean, diagnostics: string[]): Promise<'same' | 'changed' | false> {
+    const row = await this.rowOfName(name)
     if (row === undefined) {
       diagnostics.push(`the row ${name} is not in the Loader after the install`)
       return false
     }
-    if (row.enabled === enabled) return true
+    if (row.enabled === enabled) return 'same'
     const change = await this.services.pluginManager.setPluginEnabled(row.entryId, enabled)
-    if (change.application === 'applied') return true
+    if (change.application === 'applied') return 'changed'
     diagnostics.push(`the plugin manager did not turn the row ${name} ${enabled ? 'on' : 'off'}: ${resultDiagnostics(change).join('; ')}`)
     return false
+  }
+
+  /** The Loader row of the bundle `name`: its row id is the package name. */
+  private async rowOfName(name: string): Promise<PluginInfo | undefined> {
+    return (await this.services.pluginManager.listPlugins()).find((info) => info.entryId === name || info.entryId.endsWith(`:${name}`))
+  }
+
+  /**
+   * main_widget.widgets: remove the bundle `name` of `slug`. First end a Turn on that the profile patch keeps for its row.
+   * The bundle of a row that the installer installed off has `disabled: true`, so a Turn on of that row is an override in
+   * the profile patch. The override would outlive the bundle and start a later bundle with the same name before its first
+   * load, also while the operator keeps the slug off. Turning the row off again deletes the override, because off is what
+   * its bundle patch says. A live row ends at this step, as at the removal.
+   * @returns the result of the plugin manager: of the Turn off when it failed, else of the removal.
+   */
+  private async removeBundleOf(slug: string, name: string): Promise<ChangeResult> {
+    const patch = await readFile(join(this.folderOfName(slug, name), 'cordis.patch.yml'), 'utf8').catch(() => '')
+    if (name !== legacyBundleName(slug) && /^\s+disabled: true$/m.test(patch)) {
+      const row = await this.rowOfName(name)
+      if (row?.enabled === true) {
+        const change = await this.services.pluginManager.setPluginEnabled(row.entryId, false)
+        if (change.application !== 'applied') return change
+      }
+    }
+    return this.services.pluginManager.removeBundle(name)
   }
 
   private waitLive(slug: string): Promise<boolean> {
@@ -839,8 +860,11 @@ export class WidgetInstaller {
     })
   }
 
-  /** Remove the bundle of `slug`. Its state stays in storage. */
-  remove(slug: string): Promise<{ slug: string, application: ChangeResult['application'] }> {
+  /**
+   * Remove the bundle of `slug`. Its state stays in storage. With `operator`, the Remove of the main widget, it also ends
+   * a Turn off of the slug (main_widget.widgets). An agent `widget_remove` keeps it.
+   */
+  remove(slug: string, options: { operator?: boolean } = {}): Promise<{ slug: string, application: ChangeResult['application'] }> {
     return this.serial(async () => {
       const installed = await this.installedNames(slug)
       const names = await this.meta(slug, installed) === undefined ? [] : installed
@@ -848,7 +872,7 @@ export class WidgetInstaller {
       let application: ChangeResult['application'] = 'applied'
       const removed: string[] = []
       for (const name of names) {
-        const result = await this.services.pluginManager.removeBundle(name)
+        const result = await this.removeBundleOf(slug, name)
         if (result.application !== 'applied') {
           const done = removed.length === 0 ? '' : `; ${removed.join(', ')} was removed`
           throw new CreationError('install-failed', `the plugin manager did not remove ${name}${done}`, { diagnostics: resultDiagnostics(result) })
@@ -860,15 +884,16 @@ export class WidgetInstaller {
       await rm(this.folderOfName(slug, secondBundleName(slug)), { recursive: true, force: true })
       this.services.records.clearOff(slug)
       this.services.records.commit(slug, undefined)
-      // main_widget.widgets: a Turn off of the operator ends with the widget. A later install of the slug runs.
-      await this.writeTurnedOff(slug, false)
+      // main_widget.widgets: only the operator ends a Turn off: Turn on, or Remove in the main widget. After an agent
+      // `widget_remove`, a later `widget_install` of the slug installs it off.
+      if (options.operator === true) await this.writeTurnedOff(slug, false)
       return { slug, application }
     })
   }
 
   /** Remove the leftover bundle `name` of `slug` before the install. `keep` stays. When it fails, the install stops. */
   private async removeFirst(slug: string, name: string, keep: string): Promise<void> {
-    const removal = await this.services.pluginManager.removeBundle(name)
+    const removal = await this.removeBundleOf(slug, name)
     if (removal.application !== 'applied') {
       throw new CreationError('install-failed', `the plugin manager did not remove the leftover bundle ${name}; ${keep} stays, and nothing was installed`, { diagnostics: resultDiagnostics(removal) })
     }
@@ -979,18 +1004,22 @@ export class WidgetInstaller {
     const was = this.services.records.committed(slug)
     const result = await this.services.pluginManager.installBundle(folder)
     const diagnostics = resultDiagnostics(result)
+    const warnings = [...job.warnings]
     // A new row that is off counts as registered when it is in the Loader and off: its code runs at the Turn on.
-    let registered = result.application === 'applied' && await this.settleRow(name, !off, diagnostics)
+    const settled = result.application === 'applied' ? await this.settleRow(name, !off, diagnostics) : false
+    let registered = settled !== false
+    // The bundle patch starts the row off. Only an override in the profile patch that the installer did not remove can
+    // start it: then its code ran once before the installer turned it off, and the answer says so.
+    if (off && settled === 'changed') warnings.push(`the row ${name} started on, because the profile patch turned it on; the installer turned it off, but its code ran once`)
     if (registered && !off) {
       registered = await this.waitFor(() => this.registeredName(slug, [name], ['live', 'standby']) !== undefined)
       if (!registered) diagnostics.push(`the widget ${slug} of ${name} did not register within ${String(LIVE_WAIT_MS)} ms`)
     }
-    const warnings = [...job.warnings]
     // widget_fv.replace: the commit point. The new version registered, so from here a Host start loads it as the owner
     // of the slug, and the old version as its standby. A failure below puts back the committed name from before.
     if (registered) this.services.records.commit(slug, name)
     if (registered && old !== undefined) {
-      const removal = await this.services.pluginManager.removeBundle(old)
+      const removal = await this.removeBundleOf(slug, old)
       if (removal.application === 'applied') {
         await this.clearBundle(slug, old)
       } else if (this.registeredName(slug, [name], ['live']) !== undefined) {
@@ -1003,9 +1032,11 @@ export class WidgetInstaller {
       }
     }
     if (registered && off) {
-      // The new code did not run, so it applied no seed. At the Turn on, its registration applies its seed program.
+      // The new code did not run (unless a profile override started it), so it applied no seed. At the Turn on, its
+      // registration applies its seed program.
       this.services.records.settleLift(slug, true)
-      const turnedOff = { code: 'turned-off' as const, message: `the user turned ${slug} off in the main window, so the new version is installed off and does not run; its state stays` }
+      const ran = settled === 'changed' ? ', but its code ran once at the install' : ''
+      const turnedOff = { code: 'turned-off' as const, message: `the user turned ${slug} off in the main window, so the new version is installed off and does not run until the user turns it on${ran}; its state stays` }
       return { slug, replaced, application: result.application, programUpdated: false, gates: job.gates, warnings, turnedOff }
     }
     if (registered && await this.waitLive(slug)) {
@@ -1022,7 +1053,7 @@ export class WidgetInstaller {
     if (this.services.records.committed(slug) !== was) this.services.records.commit(slug, was)
 
     if ((await this.installedNames(slug)).includes(name)) {
-      const undo = await this.services.pluginManager.removeBundle(name)
+      const undo = await this.removeBundleOf(slug, name)
       if (undo.application !== 'applied') diagnostics.push(`the failed bundle was not removed: ${resultDiagnostics(undo).join('; ')}`)
     }
     this.services.records.clearOff(slug)
