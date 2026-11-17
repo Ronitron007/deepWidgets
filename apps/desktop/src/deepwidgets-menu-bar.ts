@@ -6,7 +6,7 @@
  * and hides it when it loses focus.
  * @module deepwidgets-menu-bar
  */
-import { Menu, nativeImage, Tray, type App, type BrowserWindow } from 'electron'
+import { BrowserWindow, Menu, nativeImage, Tray, type App } from 'electron'
 import { Menubar } from 'electron-menubar'
 import { widgetHost } from './deepwidgets-origin.ts'
 
@@ -39,6 +39,8 @@ export class DesktopMenuBar {
   readonly contextMenu: Menu
   private readonly menubar: Menubar
   private readonly readyDeadline: ReturnType<typeof setTimeout>
+  /** True from a click on the icon while the panel shows, until the panel hides: the operator closed the panel. */
+  private closingByClick = false
 
   /**
    * Create the icon and the panel. The panel loads its page at once, from disk, so it needs no Host to load
@@ -51,6 +53,8 @@ export class DesktopMenuBar {
     if (image.isEmpty()) throw new Error(`deepwidgets-menu-bar: no icon at ${options.iconPath}`)
     image.setTemplateImage(true)
     this.tray = new Tray(image)
+    // This listener runs before the click listener of menubar, which menubar adds once it starts.
+    this.tray.on('click', () => { this.closingByClick = this.panel?.isVisible() === true })
     this.contextMenu = Menu.buildFromTemplate([
       { label: 'Open deepWidgets', click: () => { this.open() } },
       { type: 'separator' },
@@ -87,6 +91,10 @@ export class DesktopMenuBar {
       options.failed(new Error(`deepwidgets-menu-bar: the menu bar did not start in ${String(READY_DEADLINE_MS / 1000)} s; the icon has no click and no menu`))
     }, READY_DEADLINE_MS)
     this.menubar.once('ready', () => { clearTimeout(this.readyDeadline) })
+    this.menubar.on('after-hide', () => {
+      if (this.closingByClick) this.giveFocusBack(app)
+      this.closingByClick = false
+    })
     this.menubar.on('before-load', () => {
       const panel = this.menubar.window
       if (panel === undefined) return
@@ -106,6 +114,20 @@ export class DesktopMenuBar {
    */
   open(): void {
     void this.menubar.showWindow().catch((error: unknown) => { console.warn('deepwidgets-menu-bar: the panel did not open', error) })
+  }
+
+  /**
+   * Give the keys back to the app that had them, after a click on the icon closed the panel. The panel activated this
+   * app, and with no window left the keys of the operator would go nowhere. app.hide() makes macOS activate the app
+   * before it, but it also hides each window of this app, so each floating window that showed shows again at once with
+   * no focus. A spike on Electron 44.7.0 kept the app before it in front. A hide at a loss of focus does not call this:
+   * the focus is already in another window or app.
+   */
+  private giveFocusBack(app: App): void {
+    const panel = this.panel
+    const shown = BrowserWindow.getAllWindows().filter(window => window !== panel && window.isVisible())
+    app.hide()
+    for (const window of shown) window.showInactive()
   }
 
   /** Remove the panel and the icon; called once the quit is confirmed so no dead icon outlives the process. */

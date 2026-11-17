@@ -31,7 +31,8 @@
  * run: a row for sample with its state rev, and no row for main. A state write of sample over the host Loader must
  * change the rev in that row: the stream of main carries each change of another widget (main_widget.widgets). The row
  * of sample opens with its state viewer, Turn off, and no Remove. Turn off and Turn on in the page change its status.
- * Then a second click closes the panel, "Open deepWidgets" opens it, a new window that takes the focus closes it, and a
+ * Then a second click closes the panel, another app comes in front (lsappinfo front), and the window of sample still
+ * shows. "Open deepWidgets" opens it, a new window that takes the focus closes it, and a
  * second launch of the dev app (its launcher HarnessDev) exits by itself and opens it. The check saves screenshots with
  * webContents.capturePage(): $TMPDIR/deepwidgets-main-page/main-page.png, main-page-state.png with the state of sample
  * open, and $TMPDIR/deepwidgets-app-menu-bar/panel.png.
@@ -2133,6 +2134,13 @@ async function checkNoDock(state, when) {
   return undefined
 }
 
+/** The pid of the app in front, from `lsappinfo front`, or undefined. */
+async function frontPid() {
+  const asn = (await capture('lsappinfo', ['front'])).stdout.trim()
+  if (asn === '') return undefined
+  return /pid = (\d+)/u.exec((await capture('lsappinfo', ['info', '-only', 'pid', asn])).stdout)?.[1]
+}
+
 /** A programmatic click on the menu bar icon: the click event of the Tray, with the bounds of the icon. */
 function clickIconDeclaration() {
   return "function () { this.tray.emit('click', { altKey: false, shiftKey: false, ctrlKey: false, metaKey: false, triggeredByAccessibility: false }, this.tray.getBounds()); return true }"
@@ -2213,6 +2221,16 @@ async function checkMain(deadline) {
   const toggled = await pollMenuBar(soon(), (value) => value.panel?.visible === false)
   note(`main panel after second click=${JSON.stringify(toggled.value?.panel)}`)
   if (!toggled.ok) return `main: a click on the icon did not close the open panel: ${JSON.stringify(toggled.value)}`
+  // panel_close_keeps_focus: the keys go back to another app, and the floating window of sample still shows.
+  let front
+  for (const until = Math.min(deadline, Date.now() + 5000); Date.now() < until; await delay(200)) {
+    front = await frontPid()
+    if (front !== undefined && front !== String(atStart.pid)) break
+  }
+  const sampleShown = await withWidgetWindows(deadline, "function () { return this.windows.get('sample')?.window?.isVisible() ?? null }")
+  note(`main after the close: front pid=${String(front)} app pid=${String(atStart.pid)} sample window shown=${String(sampleShown)}`)
+  if (front === undefined || front === String(atStart.pid)) return `main: after a click closed the panel, the app is still in front (pid ${String(front)})`
+  if (sampleShown !== true) return `main: after a click closed the panel, the window of sample does not show (${String(sampleShown)})`
 
   // "Open deepWidgets" in the menu of the icon opens the panel.
   await withMenuBar(deadline, "function () { this.contextMenu.items.find((item) => item.label === 'Open deepWidgets').click(); return true }")
