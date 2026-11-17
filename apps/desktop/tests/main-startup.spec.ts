@@ -474,6 +474,8 @@ beforeEach(() => {
   vi.stubEnv('DSH_DESKTOP_MANDATORY_UPDATE_CONFIG', undefined)
   vi.stubEnv('DSH_DESKTOP_UPDATE_JOURNAL_DIR', undefined)
   vi.stubEnv('DSH_CLIENT_VERSION', '1.2.3')
+  // deepWidgets supervisor: it reads `$DSH_HOME/deepwidgets/crash.json` and `provisional.json`. A real record would change its decisions.
+  vi.stubEnv('DSH_HOME', join(userData, 'dsh-home'))
   harness.analyticsEnabled = true
 })
 
