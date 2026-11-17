@@ -20,6 +20,8 @@ const PANEL_HEIGHT = 600
  * console.error in menubar. With no `ready` event in this time, the menu bar counts as failed.
  */
 export const READY_DEADLINE_MS = 30_000
+/** A second end of the renderer of the panel in this time counts as a failure of the menu bar. */
+export const PANEL_CRASH_WINDOW_MS = 60_000
 
 /** What Electron main gives the menu bar. */
 export interface DesktopMenuBarOptions {
@@ -43,6 +45,8 @@ export class DesktopMenuBar {
   private readonly readyDeadline: ReturnType<typeof setTimeout>
   /** True from a click on the icon while the panel shows, until the panel hides: the operator closed the panel. */
   private closingByClick = false
+  /** The times of the recent ends of the renderer of the panel. */
+  private crashes: number[] = []
 
   /**
    * Create the icon and the panel. The panel loads its page at once, from disk, so it needs no Host to load
@@ -104,6 +108,19 @@ export class DesktopMenuBar {
       panel.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
       panel.webContents.on('will-navigate', (event) => { event.preventDefault() })
       panel.on('focus', () => { options.attention() })
+      // The panel is the only window of the app: an ended renderer loads the page again, as a widget window does
+      // (agent_library.serving.failures). A second end in PANEL_CRASH_WINDOW_MS is a failure of the menu bar.
+      panel.webContents.on('render-process-gone', (_event, details) => {
+        if (details.reason === 'clean-exit' || panel.isDestroyed()) return
+        const now = Date.now()
+        this.crashes = [...this.crashes.filter(at => now - at < PANEL_CRASH_WINDOW_MS), now]
+        if (this.crashes.length >= 2) {
+          options.failed(new Error(`deepwidgets-menu-bar: the renderer of the panel ended two times in ${String(PANEL_CRASH_WINDOW_MS / 1000)} s (${details.reason})`))
+          return
+        }
+        console.warn(`deepwidgets-menu-bar: the renderer of the panel ended (${details.reason}); the panel loads its page again`)
+        void panel.webContents.loadURL(PANEL_URL).catch((error: unknown) => { console.warn('deepwidgets-menu-bar: the panel did not load its page again', error) })
+      })
     })
   }
 
