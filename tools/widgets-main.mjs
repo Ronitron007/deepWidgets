@@ -11,6 +11,8 @@
  *   and no row for main; Turn off keeps the row with the status turned-off and the state; Turn on brings back the
  *   same state, for the built-in sample and for the test widget; Remove refuses sample; Remove removes the test
  *   widget, and its state stays in storage. A refusal of an action of main is its result, with a code.
+ * - main_widget.widgets and widget_reload: a reload of a widget that the operator turned off keeps it off, with the
+ *   warning turned-off, and keeps its state; Turn on brings it back, and a reload after it gives a live widget.
  * - main_widget.widgets in safe mode: a second host start with DEEPWIDGETS_SAFE_MODE=1. An agent widget keeps the status
  *   safe-mode, and the field turnedOff follows Turn off and Turn on.
  * The calls of main go through POST /api/widgets/main/call with the host cookie, as the page of main calls them.
@@ -251,6 +253,35 @@ async function offAndOn(slug, rowId) {
     JSON.stringify({ on: on.body, row: onRow?.status, state: onRow?.state, before: before?.state }))
 }
 
+/**
+ * main_widget.widgets: the operator turns the test widget off, and an agent reloads it. The new version stays off, and
+ * the answer has the warning turned-off. Turn on brings it back. A reload after the Turn on gives a live widget, also
+ * when the profile patch still has the Turn off of the row name that the reload uses again.
+ */
+async function reloadKeepsTurnOff(call) {
+  const kept = (await mainRows()).get(SLUG)?.state
+  const turned = await route('main', 'turnOff', { slug: SLUG })
+  await waitRows((rows) => rows.get(SLUG)?.status?.kind === 'turned-off')
+  const reloaded = await call('widget_reload', { slug: SLUG })
+  const row = (await mainRows()).get(SLUG)
+  const listed = (await call('widget_list')).body?.widgets?.map((widget) => widget.slug) ?? []
+  check('a reload keeps a widget that the operator turned off off', turned.body?.result?.ok === true && !reloaded.isError && reloaded.body?.application === 'applied'
+    && row?.status?.kind === 'turned-off' && row.rows?.length === 1 && row.rows[0].id === `deepwidgets-agent-${SLUG}.b` && row.rows[0].enabled === false && !listed.includes(SLUG),
+    JSON.stringify({ turned: turned.body?.result, reloaded: reloaded.body?.error ?? reloaded.body?.application, row: { status: row?.status, rows: row?.rows }, listed }))
+  check('the reload answer has the warning turned-off, and its next step asks for a Turn on in the main window',
+    reloaded.body?.turnedOff?.code === 'turned-off' && /turn it on in the main window/.test(reloaded.body?.nextStep ?? ''), JSON.stringify({ turnedOff: reloaded.body?.turnedOff, nextStep: reloaded.body?.nextStep }))
+  check('the reload of a widget that is off keeps its state', row?.state !== undefined && JSON.stringify(row.state) === JSON.stringify(kept), JSON.stringify({ state: row?.state, kept }))
+  const on = await route('main', 'turnOn', { slug: SLUG })
+  const onRow = (await waitRows((rows) => rows.get(SLUG)?.status?.kind === 'live')).get(SLUG)
+  check('Turn on after the reload brings the new version back with the same state', on.body?.result?.ok === true && onRow?.status?.kind === 'live' && JSON.stringify(onRow.state) === JSON.stringify(kept),
+    JSON.stringify({ on: on.body?.result, status: onRow?.status, state: onRow?.state }))
+  const again = await call('widget_reload', { slug: SLUG })
+  const againRow = (await waitRows((rows) => rows.get(SLUG)?.status?.kind === 'live' && rows.get(SLUG)?.rows?.[0]?.id === `deepwidgets-agent-${SLUG}`)).get(SLUG)
+  check('a reload after the Turn on gives a live widget under the first row name', !again.isError && again.body?.turnedOff === undefined && againRow?.status?.kind === 'live'
+    && againRow.rows?.length === 1 && againRow.rows[0].id === `deepwidgets-agent-${SLUG}` && JSON.stringify(againRow.state) === JSON.stringify(kept),
+    JSON.stringify({ again: again.body?.error ?? again.body?.application, status: againRow?.status, rows: againRow?.rows }))
+}
+
 async function hostPart() {
   const port = await freePort()
   inspectPort = await freePort()
@@ -323,6 +354,7 @@ async function hostPart() {
   // ---- Turn off and Turn on ----
   await offAndOn('sample', 'deepwidgets-widget-sample')
   await offAndOn(SLUG, `deepwidgets-agent-${SLUG}`)
+  await reloadKeepsTurnOff(call)
   const offMain = await route('main', 'turnOff', { slug: 'main' })
   // main_widget.widgets: a refusal is the result of the action, with a code, not a handler-error with a code in its message.
   check('Turn off refuses main with the code unknown-widget', offMain.body?.ok === true && offMain.body.result?.ok === false && offMain.body.result.code === 'unknown-widget', JSON.stringify(offMain.body))

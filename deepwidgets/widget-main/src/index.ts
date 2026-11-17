@@ -4,8 +4,10 @@
  *
  * Its actions are the host half of the Widgets tab (`main_widget.widgets`): the query `widgets` lists each other widget,
  * also a widget that is turned off or that safe mode keeps off. The mutations `turnOff` and `turnOn` change the plugin
- * rows of a widget through the DSH plugin manager. The mutation `remove` removes an agent widget through the remove path
- * of `widget_remove` (the service `widgetInstaller` of `@deepwidgets/mcp`). The state of a widget stays in each case.
+ * rows of a widget through the DSH plugin manager, in the queue of the installer (the service `widgetInstaller` of
+ * `@deepwidgets/mcp`). The installer keeps a Turn off, so a later `widget_install` or `widget_reload` of the slug installs
+ * the new row off. The mutation `remove` removes an agent widget through the remove path of `widget_remove`. The state of
+ * a widget stays in each case.
  *
  * The plugin manager, the installer, and the install records are host code. The actions run them through
  * `widgetRecords.asHost`, so they run outside the store of this row: a crash in them is not blamed on this widget.
@@ -223,24 +225,34 @@ export function apply(ctx: Context): void {
     return out
   }
 
-  /** Set each row of `slug` that is not `enabled` to `enabled` with the plugin manager. */
+  /**
+   * Set each row of `slug` that is not `enabled` to `enabled` with the plugin manager. With the installer, the change runs
+   * in its queue, and the installer keeps the choice: a later install or reload of the slug keeps a Turn off.
+   */
   async function setEnabled(slug: string, enabled: boolean): Promise<{ slug: string, rows: { id: string, application: ChangeResult['application'] }[] }> {
     if (slug === widgetSlugs[0]) refuse('unknown-widget', 'the main widget can not turn itself off or on')
     const manager = ctx.get('pluginManager')
-    if (manager === undefined) refuse('unavailable', 'this host has no plugin manager')
-    const targets = rowsOfSlug(slug, await widgetRows()).filter((info) => info.enabled !== enabled)
-    if (targets.length === 0) refuse('no-row', `no plugin row of ${slug} is ${enabled ? 'off' : 'on'}`)
-    const changed: { id: string, application: ChangeResult['application'] }[] = []
-    for (const info of targets) {
-      const result = await manager.setPluginEnabled(info.entryId, enabled)
-      if (result.application !== 'applied') {
-        const done = changed.length === 0 ? '' : `; ${changed.map((item) => item.id).join(', ')} changed`
-        refuse('change-failed', `the plugin manager did not turn ${rowOf(info).id} ${enabled ? 'on' : 'off'}: ${result.application}${done}`, {
-          diagnostics: result.error === undefined ? [] : [JSON.stringify(result.error)],
-        })
+    if (manager === undefined) return refuse('unavailable', 'this host has no plugin manager')
+    // The rows are read in the queue, after each install or replace before this change.
+    const change = async (): Promise<{ id: string, application: ChangeResult['application'] }[]> => {
+      const targets = rowsOfSlug(slug, await widgetRows()).filter((info) => info.enabled !== enabled)
+      const changed: { id: string, application: ChangeResult['application'] }[] = []
+      for (const info of targets) {
+        const result = await manager.setPluginEnabled(info.entryId, enabled)
+        if (result.application !== 'applied') {
+          const done = changed.length === 0 ? '' : `; ${changed.map((item) => item.id).join(', ')} changed`
+          refuse('change-failed', `the plugin manager did not turn ${rowOf(info).id} ${enabled ? 'on' : 'off'}: ${result.application}${done}`, {
+            diagnostics: result.error === undefined ? [] : [JSON.stringify(result.error)],
+          })
+        }
+        changed.push({ id: rowOf(info).id, application: result.application })
       }
-      changed.push({ id: rowOf(info).id, application: result.application })
+      return changed
     }
+    const installer = ctx.get('widgetInstaller')
+    // With no row to change, the stored choice still follows the operator, so a later install keeps it.
+    const changed = installer === undefined ? await change() : await installer.turn(slug, !enabled, change)
+    if (changed.length === 0) refuse('no-row', `no plugin row of ${slug} is ${enabled ? 'off' : 'on'}`)
     return { slug, rows: changed }
   }
 

@@ -24,7 +24,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import type { BundleInfo, ChangeResult } from '@deepseek-ai/dsh-plugin-manager/types'
+import type { BundleInfo, ChangeResult, PluginEntryId, PluginInfo } from '@deepseek-ai/dsh-plugin-manager/types'
 import type { ProgramRecord } from '@deepwidgets/widgets'
 import { endlessLoops } from './loop-check.ts'
 import { hasPage, PAGE_BUILD, PAGE_BUILD_TMP, PAGE_NEXT_STEP, runPageGates } from './page-gate.ts'
@@ -61,6 +61,11 @@ const PAGE_DIR = 'page'
 const PAGE_BUILDS_KEPT = 3
 /** The folder of the staging copies of the page gates, under the widget root. The host start empties it. */
 const PAGE_STAGING = '.page-staging'
+/**
+ * main_widget.widgets: the file under the widget root with the slugs that the operator turned off in the main widget.
+ * It lasts across host starts. An install or a reload of such a slug installs its new row off.
+ */
+const TURNED_OFF_FILE = '.turned-off.json'
 /** A link under a temporary name, before the rename over `page`. */
 const PAGE_LINK_TMP = /^\.page-link-/
 /** A slug folder under the widget root (the slug pattern of the widgets runtime). */
@@ -130,6 +135,11 @@ export interface InstallOutcome {
   warnings: string[]
   /** The folder of the built page, `<profile>/deepwidgets-widgets/<slug>/page`, for a bundle with a page. */
   page?: string
+  /**
+   * main_widget.widgets: set when the operator turned the slug off in the main widget. The new version is installed with
+   * its row off, so it does not run until the operator turns it on. Its state stays.
+   */
+  turnedOff?: { code: 'turned-off', message: string }
 }
 
 /** The record that a profile-owned widget folder keeps. */
@@ -146,6 +156,9 @@ export interface CreationServices {
     installBundle(spec: string): Promise<ChangeResult>
     removeBundle(name: string): Promise<ChangeResult>
     listBundles(): Promise<BundleInfo[]>
+    /** main_widget.widgets: the rows of the Loader, to set the row of a new bundle to the choice of the operator. */
+    listPlugins(): Promise<PluginInfo[]>
+    setPluginEnabled(id: PluginEntryId, enabled: boolean): Promise<ChangeResult>
   }
   /** The folder of the current profile. */
   readonly profileDir: string
@@ -471,8 +484,8 @@ export async function runGates(dir: string, pages: PageRoots, renderCheck?: Rend
  * The patch file of a widget bundle: one row. Safe mode needs nothing here: the runtime refuses an
  * agent widget at `ctx.widgets.register` (`widget_phase2.isolation.supervisor`).
  */
-function patchText(name: string): string {
-  return ['- insert:', `    - id: ${name}`, `      name: ${name}`, ''].join('\n')
+function patchText(name: string, disabled: boolean): string {
+  return ['- insert:', `    - id: ${name}`, `      name: ${name}`, ...(disabled ? ['      disabled: true'] : []), ''].join('\n')
 }
 
 /** True for an entry of the folder of a slug that belongs to its pages: the link `page` and the builds `page-<hash>`. */
@@ -493,8 +506,11 @@ async function clearFolder(folder: string, keepPage: boolean): Promise<void> {
   if (!entries.some(isPageEntry)) await rmdir(folder).catch(() => undefined)
 }
 
-/** Write a complete bundle folder. With `keepPage`, the pages of the slug stay. */
-async function writeBundle(folder: string, name: string, widget: TestRunWidget, code: string, source: string, keepPage: boolean): Promise<void> {
+/**
+ * Write a complete bundle folder. With `keepPage`, the pages of the slug stay. With `disabled`, the row of the bundle
+ * starts off (main_widget.widgets: the operator turned the slug off).
+ */
+async function writeBundle(folder: string, name: string, widget: TestRunWidget, code: string, source: string, keepPage: boolean, disabled: boolean): Promise<void> {
   await clearFolder(folder, keepPage)
   await mkdir(folder, { recursive: true })
   await writeFile(join(folder, 'package.json'), `${JSON.stringify({
@@ -507,7 +523,7 @@ async function writeBundle(folder: string, name: string, widget: TestRunWidget, 
     dsh: { bundle: { patch: './cordis.patch.yml' } },
   }, null, 2)}\n`)
   await writeFile(join(folder, 'index.js'), code)
-  await writeFile(join(folder, 'cordis.patch.yml'), patchText(name))
+  await writeFile(join(folder, 'cordis.patch.yml'), patchText(name, disabled))
   const meta: WidgetMeta = { slug: widget.slug, source, installedAt: new Date().toISOString() }
   await writeFile(join(folder, META_FILE), `${JSON.stringify(meta, null, 2)}\n`)
 }
@@ -726,6 +742,84 @@ export class WidgetInstaller {
     return false
   }
 
+  /**
+   * main_widget.widgets: the slugs that the operator turned off in the main widget.
+   * @throws {CreationError} `install-failed` when the file exists and is not a list of slugs. The installer does not guess
+   * the choice of the operator.
+   */
+  private async turnedOffSlugs(): Promise<Set<string>> {
+    const file = join(this.root, TURNED_OFF_FILE)
+    let text: string
+    try {
+      text = await readFile(file, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return new Set()
+      throw error
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      parsed = undefined
+    }
+    if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === 'string')) {
+      throw new CreationError('install-failed', `the file ${file} is not a list of slugs, so the Turn off of the operator is not known`, {
+        nextStep: `Tell the user that the file ${file} is broken. It lists the widgets that the user turned off in the main window. The user can delete it and turn those widgets off again.`,
+      })
+    }
+    return new Set(parsed as string[])
+  }
+
+  /** Store the Turn off (`off`) or the Turn on of `slug`. The file is replaced in one rename. */
+  private async writeTurnedOff(slug: string, off: boolean): Promise<void> {
+    const slugs = await this.turnedOffSlugs()
+    if (slugs.has(slug) === off) return
+    if (off) slugs.add(slug)
+    else slugs.delete(slug)
+    await mkdir(this.root, { recursive: true })
+    const file = join(this.root, TURNED_OFF_FILE)
+    const temp = `${file}.${randomBytes(4).toString('hex')}.tmp`
+    await writeFile(temp, `${JSON.stringify([...slugs].sort())}\n`)
+    await rename(temp, file)
+  }
+
+  /**
+   * main_widget.widgets: Turn off (`off`) or Turn on `slug` for the operator. `change` turns the plugin rows of the slug
+   * off or on. It runs in the queue, so it never runs during an install, a replace, or a remove. The choice is stored
+   * first, and it lasts across host starts: while it is off, an install or a reload of the slug installs the new row off.
+   * When `change` throws, the stored choice goes back to what it was.
+   */
+  turn<T>(slug: string, off: boolean, change: () => Promise<T>): Promise<T> {
+    return this.serial(async () => {
+      const was = (await this.turnedOffSlugs()).has(slug)
+      await this.writeTurnedOff(slug, off)
+      try {
+        return await change()
+      } catch (error) {
+        await this.writeTurnedOff(slug, was)
+        throw error
+      }
+    })
+  }
+
+  /**
+   * main_widget.widgets: set the Loader row of the new bundle `name` on or off, as the operator chose. A Turn off of an
+   * earlier bundle with the same name can stay in the profile patch, so the row can start in the other state.
+   * @returns false, with a diagnostic, when the row is not in the Loader or the plugin manager did not change it.
+   */
+  private async settleRow(name: string, enabled: boolean, diagnostics: string[]): Promise<boolean> {
+    const row = (await this.services.pluginManager.listPlugins()).find((info) => info.entryId === name || info.entryId.endsWith(`:${name}`))
+    if (row === undefined) {
+      diagnostics.push(`the row ${name} is not in the Loader after the install`)
+      return false
+    }
+    if (row.enabled === enabled) return true
+    const change = await this.services.pluginManager.setPluginEnabled(row.entryId, enabled)
+    if (change.application === 'applied') return true
+    diagnostics.push(`the plugin manager did not turn the row ${name} ${enabled ? 'on' : 'off'}: ${resultDiagnostics(change).join('; ')}`)
+    return false
+  }
+
   private waitLive(slug: string): Promise<boolean> {
     return this.waitFor(() => this.services.widgets.list().some((widget) => widget.slug === slug))
   }
@@ -766,6 +860,8 @@ export class WidgetInstaller {
       await rm(this.folderOfName(slug, secondBundleName(slug)), { recursive: true, force: true })
       this.services.records.clearOff(slug)
       this.services.records.commit(slug, undefined)
+      // main_widget.widgets: a Turn off of the operator ends with the widget. A later install of the slug runs.
+      await this.writeTurnedOff(slug, false)
       return { slug, application }
     })
   }
@@ -838,7 +934,9 @@ export class WidgetInstaller {
     // `deepwidgets-widget-<slug>` uses the folder of the current name.
     const name = old === undefined || old === secondBundleName(slug) ? bundleName(slug) : secondBundleName(slug)
     const folder = this.folderOfName(slug, name)
-    await writeBundle(folder, name, widget, code, dir, folder === this.folderOf(slug))
+    // main_widget.widgets: the operator turned the slug off in the main widget. The new row starts off.
+    const off = (await this.turnedOffSlugs()).has(slug)
+    await writeBundle(folder, name, widget, code, dir, folder === this.folderOf(slug), off)
 
     // widget_fv.install: the program record before the load. A standby writes no seed, so only the load of a first
     // install, or a user edit through the live old version, can change it during the install.
@@ -846,7 +944,7 @@ export class WidgetInstaller {
     // widget_fv.install: a quarantine of the slug ends only when the whole install succeeds, not when the load does.
     this.services.records.holdLift(slug)
     try {
-      const done = await this.loadNew({ slug, widget, folder, name, old, replaced, before, gates: outcome.gates, warnings })
+      const done = await this.loadNew({ slug, widget, folder, name, old, replaced, before, off, gates: outcome.gates, warnings })
       // The bundle is live from here, so a failed link is a warning, not a failed install.
       const page = await this.linkPage(slug, outcome.page?.name).catch((error: unknown) => {
         done.warnings.push(`the page link of the built page was not written into the profile: ${errorText(error)}`)
@@ -872,15 +970,21 @@ export class WidgetInstaller {
     old: string | undefined
     replaced: boolean
     before: ProgramRecord | undefined
+    /** main_widget.widgets: the operator turned the slug off. The new row stays off, so it does not register. */
+    off: boolean
     gates: GateReport[]
     warnings: string[]
   }): Promise<InstallOutcome> {
-    const { slug, widget, folder, name, old, replaced, before } = job
+    const { slug, widget, folder, name, old, replaced, before, off } = job
     const was = this.services.records.committed(slug)
     const result = await this.services.pluginManager.installBundle(folder)
     const diagnostics = resultDiagnostics(result)
-    let registered = result.application === 'applied' && await this.waitFor(() => this.registeredName(slug, [name], ['live', 'standby']) !== undefined)
-    if (result.application === 'applied' && !registered) diagnostics.push(`the widget ${slug} of ${name} did not register within ${String(LIVE_WAIT_MS)} ms`)
+    // A new row that is off counts as registered when it is in the Loader and off: its code runs at the Turn on.
+    let registered = result.application === 'applied' && await this.settleRow(name, !off, diagnostics)
+    if (registered && !off) {
+      registered = await this.waitFor(() => this.registeredName(slug, [name], ['live', 'standby']) !== undefined)
+      if (!registered) diagnostics.push(`the widget ${slug} of ${name} did not register within ${String(LIVE_WAIT_MS)} ms`)
+    }
     const warnings = [...job.warnings]
     // widget_fv.replace: the commit point. The new version registered, so from here a Host start loads it as the owner
     // of the slug, and the old version as its standby. A failure below puts back the committed name from before.
@@ -897,6 +1001,12 @@ export class WidgetInstaller {
         registered = false
         diagnostics.push(`the plugin manager did not remove the old bundle ${old}: ${resultDiagnostics(removal).join('; ')}`)
       }
+    }
+    if (registered && off) {
+      // The new code did not run, so it applied no seed. At the Turn on, its registration applies its seed program.
+      this.services.records.settleLift(slug, true)
+      const turnedOff = { code: 'turned-off' as const, message: `the user turned ${slug} off in the main window, so the new version is installed off and does not run; its state stays` }
+      return { slug, replaced, application: result.application, programUpdated: false, gates: job.gates, warnings, turnedOff }
     }
     if (registered && await this.waitLive(slug)) {
       this.services.records.settleLift(slug, true)
