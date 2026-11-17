@@ -118,6 +118,10 @@ function Core({ env }: { env: Env }) {
 
   // The highest program rev applied. An answer with a lower rev arrived late; the page drops it.
   const programRevRef = useRef(-1)
+  // main_widget.panel: true after the first `hello` of the stream, which tells that the Host is ready.
+  const helloRef = useRef(false)
+  // main_widget.panel: true while the page waits for the Host: the program got no answer before the first `hello`.
+  const waitingRef = useRef(false)
 
   const loadProgram = useCallback(async () => {
     if (channel === undefined) {
@@ -144,6 +148,9 @@ function Core({ env }: { env: Env }) {
       }
       setLoad((current) => (current.status === 'removed' ? current : { status: 'ready', text: answer.text }))
     } catch (error) {
+      // main_widget.panel: the panel loads its page from disk, also before the Host is ready. With no answer (a network
+      // error) before the first `hello`, the page keeps its loading state, and the first `hello` loads the program again.
+      if (error instanceof TypeError && !helloRef.current) { waitingRef.current = true; record('program-wait'); return }
       dw.state = 'error'
       dw.errors.push(`program: ${error instanceof Error ? error.message : String(error)}`)
       setLoad((current) => (current.status === 'removed' ? current
@@ -168,7 +175,12 @@ function Core({ env }: { env: Env }) {
         record('hello')
         const previous = seen
         seen = { rev, programRev }
-        if (previous === undefined) return
+        if (previous === undefined) {
+          helloRef.current = true
+          // A page that loaded before the Host was ready has no program yet (main_widget.panel).
+          if (waitingRef.current) { waitingRef.current = false; void loadProgram() }
+          return
+        }
         if (previous.programRev !== programRev) void loadProgram()
         else if (previous.rev !== rev) refreshRef.current()
       },
