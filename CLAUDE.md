@@ -58,7 +58,7 @@ The smoke check `tools/smoke-desktop.mjs` boots the app. Each flag below adds a 
 
 - `DSH_SMOKE_WIDGET=<slug>` checks the widget page at the widget origin of the slug, and its live refresh. It also checks that the slugs `xn--abc`, `a-`, and a slug of 63 characters each get a window that loads.
 
-- `DSH_SMOKE_MAIN=1` opens a hidden test window on the panel page of `main`, `dsh-app://w-main.widget/widget/main.html?slug=main`. The page must show a row for `sample` with its state rev. A state write of `sample` must change that rev. The row of `sample` must open with its state viewer, and Turn off and Turn on must change its status. The check saves two screenshots in `$TMPDIR/deepwidgets-main-page/`.
+- `DSH_SMOKE_MAIN=1` opens a hidden test window on the panel page of `main`, `dsh-app://w-main.widget/widget/main.html?slug=main`. The page must show a row for `sample` with its state rev. A state write of `sample` must change that rev. The row of `sample` must open with its state viewer, and Turn off and Turn on must change its status. With the page open, 100 writes of `sample` in a row must take at most 3 times the time with the page closed, and a burst of 100 parallel writes must give no failure. The check saves two screenshots in `$TMPDIR/deepwidgets-main-page/`.
 
 - `DSH_SMOKE_WINDOWS=1` checks that `sample` gets one window. The window must close when the `sample` row turns off.
 

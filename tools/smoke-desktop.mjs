@@ -27,7 +27,9 @@
  * dsh-app://w-main.widget/widget/main.html?slug=main (main_widget.widget). The page must show a row for sample with its
  * state rev, and no row for main. A state write of sample over the host Loader must change the rev in that row: the
  * stream of main carries each change of another widget (main_widget.widgets). The row of sample opens with its state
- * viewer, Turn off, and no Remove. Turn off and Turn on in the page change its status. The check saves two screenshots
+ * viewer, Turn off, and no Remove. Turn off and Turn on in the page change its status. With the page open, 100 writes of
+ * sample in a row take at most 3 times the time with no page of main, a burst of 100 parallel writes gives no failure,
+ * and the page refreshes at most once for each 250 ms of writes (fanout_query_blocks_writes). The check saves two screenshots
  * with webContents.capturePage(): $TMPDIR/deepwidgets-main-page/main-page.png, and main-page-state.png with the state of
  * sample open.
  * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://w-sample.widget/widget/?slug=sample.
@@ -1949,10 +1951,49 @@ async function shootMain(name, deadline) {
   return path
 }
 
+/**
+ * fanout_query_blocks_writes: 100 state writes of sample in a row, then a burst of 100 parallel writes, timed in the host.
+ * Gives the time of the writes in a row, the failures of the burst, and the first failure text.
+ */
+function sampleWrites(deadline) {
+  return hostWidgets(deadline, `async (widgets) => {
+    const add = (by) => widgets.update('sample', (state) => ({ count: state.count + 1 }), { by })
+    const started = Date.now()
+    for (let i = 0; i < 100; i += 1) await add('smoke-main-row')
+    const sequentialMs = Date.now() - started
+    const burst = await Promise.allSettled(Array.from({ length: 100 }, () => add('smoke-main-burst')))
+    const failed = burst.filter((result) => result.status === 'rejected').map((result) => String(result.reason?.message ?? result.reason))
+    return { sequentialMs, burstMs: Date.now() - started - sequentialMs, failures: failed.length, first: failed[0] ?? null }
+  }`, [])
+}
+
+/**
+ * With the page of main open, the writes must stay fast: the writes in a row take at most 3 times the time with the page
+ * closed (a floor of 200 ms keeps a tiny baseline from failing on noise), and the burst gives no failure. The frames to
+ * main are merged (one in 250 ms), so the page refreshes at most once for each 250 ms of writes, plus the trailing frame.
+ */
+async function checkMainWrites(target, closed, deadline) {
+  const refreshes = async () => JSON.parse(String(await evaluate(target.webSocketDebuggerUrl, mainReadExpression(), deadline))).dw?.refreshes ?? 0
+  const before = await refreshes()
+  const open = await sampleWrites(deadline)
+  await delay(800)
+  const counted = await refreshes() - before
+  const limitMs = 3 * Math.max(closed.sequentialMs, 200)
+  const maxRefreshes = Math.floor((open.sequentialMs + open.burstMs) / 250) + 3
+  note(`main writes closed=${JSON.stringify(closed)} open=${JSON.stringify(open)} refreshes=${String(counted)} limitMs=${String(limitMs)} maxRefreshes=${String(maxRefreshes)}`)
+  if (closed.failures > 0) return `main: with the page closed, ${String(closed.failures)} of 100 parallel writes failed: ${String(closed.first)}`
+  if (open.failures > 0) return `main: with the page open, ${String(open.failures)} of 100 parallel writes failed: ${String(open.first)}`
+  if (open.sequentialMs > limitMs) return `main: with the page open, 100 writes in a row took ${String(open.sequentialMs)} ms, more than ${String(limitMs)} ms (3 times ${String(closed.sequentialMs)} ms closed)`
+  if (counted > maxRefreshes) return `main: the page refreshed ${String(counted)} times for 200 writes, more than ${String(maxRefreshes)}: the frames to main are not merged`
+  return undefined
+}
+
 async function checkMain(deadline) {
   const soon = () => Math.min(deadline, Date.now() + 15_000)
   // The test window takes the BrowserWindow class from the window of sample: Electron main opens none for main.
   if (await findWidgetPage('sample', deadline) === undefined) return 'main: no window of sample'
+  // The baseline of the writes, with no page of main open.
+  const closed = await sampleWrites(deadline)
   await withWidgetWindows(deadline, `function () {
     const BrowserWindow = this.windows.get('sample').window.constructor
     const window = new BrowserWindow({ show: false, width: 420, height: 600, useContentSize: true,
@@ -2007,7 +2048,7 @@ async function checkMain(deadline) {
       note(`main ${button}=${JSON.stringify({ row: sampleRow(changed.value), problems: changed.value?.problems })}`)
       if (!changed.ok) return `main: after ${button}, the status of sample is not ${status}: ${JSON.stringify(changed.value)}`
     }
-    return undefined
+    return await checkMainWrites(target, closed, deadline)
   } finally {
     await withWidgetWindows(deadline, 'function () { globalThis.__deepwidgetsSmokeMain?.destroy(); delete globalThis.__deepwidgetsSmokeMain; return true }').catch(() => undefined)
   }

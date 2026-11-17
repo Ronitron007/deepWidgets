@@ -191,14 +191,40 @@ export function apply(ctx: Context): void {
     }
   }
 
+  /**
+   * fanout_query_blocks_writes: the plugin rows and the source folders of the widgets, cached. `listPlugins` and the
+   * bundle list take 100 ms and more, so the query `widgets`, which runs after each change of a widget, does not read
+   * them each time. A change of the plugin manager or of a fiber state drops the cache, and so does a new set of
+   * listed slugs. A state write changes none of these.
+   */
+  let plugins: { key: string, value: Promise<{ rows: PluginInfo[], sources: Map<string, string> }> } | undefined
+  const forget = (): void => { plugins = undefined }
+  ctx.on('plugin-manager/changed', forget)
+  ctx.on('internal/status', forget)
+
+  function pluginSnapshot(listed: readonly string[]): Promise<{ rows: PluginInfo[], sources: Map<string, string> }> {
+    const key = [...listed].sort().join('\n')
+    if (plugins?.key === key) return plugins.value
+    const value = (async () => {
+      const rows = await widgetRows()
+      const slugs = new Set([...listed, ...rows.flatMap((info) => slugOfEntry(info.entryId) ?? [])])
+      const installer = ctx.get('widgetInstaller')
+      // widgets_query_cost: one read of the bundle list for each snapshot, not one for each slug.
+      const sources = installer === undefined ? new Map<string, string>() : await installer.sources([...slugs])
+      return { rows, sources }
+    })()
+    const entry = { key, value }
+    plugins = entry
+    // A failed read is not kept: the next query reads again.
+    value.catch(() => { if (plugins === entry) plugins = undefined })
+    return value
+  }
+
   async function describeAll(): Promise<MainWidget[]> {
-    const rows = await widgetRows()
     const listed = new Map(ctx.widgets.list().map((summary) => [summary.slug, summary]))
+    const { rows, sources } = await pluginSnapshot([...listed.keys()])
     const slugs = new Set([...listed.keys(), ...rows.flatMap((info) => slugOfEntry(info.entryId) ?? [])])
     slugs.delete(widgetSlugs[0])
-    const installer = ctx.get('widgetInstaller')
-    // widgets_query_cost: one read of the bundle list for each query, not one for each slug.
-    const sources = installer === undefined ? new Map<string, string>() : await installer.sources([...slugs])
     const out: MainWidget[] = []
     for (const slug of [...slugs].sort()) {
       const summary = listed.get(slug)
