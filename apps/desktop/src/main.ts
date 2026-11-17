@@ -1224,11 +1224,13 @@ async function main(): Promise<void> {
     } catch (error) { console.warn('desktop tray: unavailable', error) }
   }
   // deepwidgets-trim: main_widget.menu_bar. The menu bar icon is the only way into the app on macOS, so a failure here
-  // is fatal. "Quit deepWidgets" takes the quit path of today. Added lines.
+  // is fatal: a throw now, or a menu bar that does not start later, shows the fatal dialog, the way to quit.
+  // "Quit deepWidgets" takes the quit path of today. Added lines.
   if (darwin) {
     menuBar = new DesktopMenuBar(app, {
       iconPath: development ? join(app.getAppPath(), 'resources', 'trayTemplate.png') : join(process.resourcesPath, 'trayTemplate.png'),
       quit: () => { app.quit() },
+      failed: (error) => { reportFatal(error, 'main') },
     })
   }
   const backgroundNotice = process.platform === 'win32'

@@ -15,6 +15,11 @@ export const PANEL_URL = `dsh-app://${widgetHost('main')}/widget/main.html?slug=
 /** The panel size of `main_widget.provisional`. The operator can not resize it. */
 const PANEL_WIDTH = 420
 const PANEL_HEIGHT = 600
+/**
+ * menubar makes the panel and binds the click and the menu of the icon after it starts. A failure there only goes to
+ * console.error in menubar. With no `ready` event in this time, the menu bar counts as failed.
+ */
+export const READY_DEADLINE_MS = 30_000
 
 /** What Electron main gives the menu bar. */
 export interface DesktopMenuBarOptions {
@@ -22,6 +27,8 @@ export interface DesktopMenuBarOptions {
   readonly iconPath: string
   /** Request quit through the same confirmation as every other quit entry. */
   readonly quit: () => void
+  /** The menu bar can not work: Electron main shows the fatal dialog, the way out of an app with no Dock icon. */
+  readonly failed: (error: Error) => void
 }
 
 /** The menu bar icon for the whole run, and the panel with the page of the main widget. */
@@ -31,12 +38,13 @@ export class DesktopMenuBar {
   /** The menu of a right click on the icon. */
   readonly contextMenu: Menu
   private readonly menubar: Menubar
+  private readonly readyDeadline: ReturnType<typeof setTimeout>
 
   /**
    * Create the icon and the panel. The panel loads its page at once, from disk, so it needs no Host to load
    * (`main_widget.panel`). The page shows the loading state of the core until the Host is ready.
    * @param app - the Electron application.
-   * @param options - the icon path and the quit action.
+   * @param options - the icon path, the quit action, and the failure report.
    */
   constructor(app: App, options: DesktopMenuBarOptions) {
     const image = nativeImage.createFromPath(options.iconPath)
@@ -75,6 +83,10 @@ export class DesktopMenuBar {
         webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
       },
     })
+    this.readyDeadline = setTimeout(() => {
+      options.failed(new Error(`deepwidgets-menu-bar: the menu bar did not start in ${String(READY_DEADLINE_MS / 1000)} s; the icon has no click and no menu`))
+    }, READY_DEADLINE_MS)
+    this.menubar.once('ready', () => { clearTimeout(this.readyDeadline) })
     this.menubar.on('before-load', () => {
       const panel = this.menubar.window
       if (panel === undefined) return
@@ -98,6 +110,7 @@ export class DesktopMenuBar {
 
   /** Remove the panel and the icon; called once the quit is confirmed so no dead icon outlives the process. */
   dispose(): void {
+    clearTimeout(this.readyDeadline)
     this.menubar.destroy()
     if (!this.tray.isDestroyed()) this.tray.destroy()
   }
