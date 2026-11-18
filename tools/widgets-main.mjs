@@ -24,7 +24,8 @@
  * - main_widget.window_state: widget_call of show and hide of main gives unknown-widget. A Hide and a Show sent together
  *   end shown, and a queued Hide and then a forget leave no record (window_writes_skip_queued_write). Hide of sample gives the row the
  *   window hidden, a `window` frame on the events route, and the hidden state in its hello. Hide refuses main with
- *   unknown-widget and a slug with no window with no-window. A remove of the test widget forgets its hidden state: the
+ *   unknown-widget and a slug with no window with no-window. An agent widget_remove keeps the hidden state of the test
+ *   widget: the next widget_install comes up hidden (agent_remove_reinstall_unhides). The Remove of main ends it: the
  *   next widget_install starts it as shown. Sample stays hidden across the next host start; then Show shows it.
  * - main_widget.widgets in safe mode: a second host start with DEEPWIDGETS_SAFE_MODE=1. An agent widget keeps the status
  *   safe-mode, and the field turnedOff follows Turn off and Turn on.
@@ -427,17 +428,31 @@ async function windowPart(call, dir) {
       && none.body?.ok === true && none.body.result?.ok === false && none.body.result.code === 'no-window',
     JSON.stringify({ main: main.body, none: none.body }))
 
-  // A remove forgets the choice: an install of the slug after it is a new widget, so its window starts as shown.
+  // agent_remove_reinstall_unhides: an agent widget_remove keeps the Hide of the operator, as it keeps a Turn off. The
+  // next widget_install comes up hidden, and its `added` frame says so.
   const hideTest = await route('main', 'hide', { slug: SLUG })
   const hiddenTest = (await waitRows((rows) => rows.get(SLUG)?.window === 'hidden')).get(SLUG)
   const removed = await call('widget_remove', { slug: SLUG })
+  const installStream = await openEvents()
+  await installStream.next((item) => item.type === 'hello')
   const installed = await call('widget_install', { dir })
+  const added = await installStream.next((item) => item.type === 'added' && item.slug === SLUG)
+  await installStream.close()
   const back = (await waitRows((rows) => rows.get(SLUG)?.status?.kind === 'live')).get(SLUG)
   const backHello = await eventsHello()
-  check('a remove forgets the hidden state: the next install of the test widget starts as shown',
-    hideTest.body?.result?.ok === true && hiddenTest?.window === 'hidden' && !removed.isError && !installed.isError && installed.body?.application === 'applied'
-      && back?.window === 'shown' && backHello?.shown?.[SLUG] === true,
-    JSON.stringify({ hide: hideTest.body?.result, hidden: hiddenTest?.window, removed: removed.body?.error ?? removed.body?.application, installed: installed.body?.error ?? installed.body?.application, back: back?.window, hello: backHello?.shown }))
+  check('an agent widget_remove keeps the hidden state: the next widget_install comes up hidden, with shown false in its added frame',
+    hideTest.body?.result?.ok === true && hiddenTest?.window === 'hidden' && !removed.isError && removed.body?.application === 'applied' && !installed.isError && installed.body?.application === 'applied'
+      && added?.shown === false && back?.window === 'hidden' && backHello?.shown?.[SLUG] === false,
+    JSON.stringify({ hide: hideTest.body?.result, hidden: hiddenTest?.window, removed: removed.body?.error ?? removed.body?.application, installed: installed.body?.error ?? installed.body?.application, added, back: back?.window, hello: backHello?.shown }))
+
+  // Only the Remove of the operator in main ends the Hide: the next install is a new widget, so its window starts as shown.
+  const operatorRemoved = await route('main', 'remove', { slug: SLUG })
+  const reinstalled = await call('widget_install', { dir })
+  const fresh = (await waitRows((rows) => rows.get(SLUG)?.status?.kind === 'live')).get(SLUG)
+  const freshHello = await eventsHello()
+  check('the Remove of main ends the hidden state: the next widget_install of the test widget starts as shown',
+    operatorRemoved.body?.result?.ok === true && !reinstalled.isError && reinstalled.body?.application === 'applied' && fresh?.window === 'shown' && freshHello?.shown?.[SLUG] === true,
+    JSON.stringify({ removed: operatorRemoved.body?.result, installed: reinstalled.body?.error ?? reinstalled.body?.application, fresh: fresh?.window, hello: freshHello?.shown }))
 }
 
 /** main_widget.window_state: after a host start, sample is still hidden. Show shows it, and the hello gives shown again. */

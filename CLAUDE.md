@@ -98,7 +98,7 @@ These scripts run with no app, unless the item says otherwise:
 
 - `tools/widgets-create.mjs` checks widget creation over MCP with a host, also the page gates with the fixtures of `tools/fixtures/page-widget.mjs`. Then it runs the `DSH_SMOKE_CREATE` smoke with a page bundle, unless `WIDGETS_CREATE_DESKTOP=0`.
 
-- `tools/widgets-main.mjs` checks the main widget with a host: its query of all widgets, Show, Hide, Turn off, Turn on, Remove, the actions of the Settings tab, and the MCP rule that hides `main`. The shown state of a window must stay across a host start, and a remove must clear it.
+- `tools/widgets-main.mjs` checks the main widget with a host: its query of all widgets, Show, Hide, Turn off, Turn on, Remove, the actions of the Settings tab, and the MCP rule that hides `main`. The shown state of a window must stay across a host start and an agent `widget_remove`. Only the Remove of `main` must clear it.
 
 - `tools/widgets-seed-refresh.mjs` checks the program of a built-in widget with a host that starts four times (`main_widget.seed`). When the stored program has an older seed hash or no seed hash, a start stores the new seed program of `sample`. A start with the same seed changes nothing. An agent widget keeps its stored program.
 

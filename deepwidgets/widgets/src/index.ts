@@ -319,7 +319,8 @@ const programSchema = z.object({
 }).strict()
 /**
  * main_widget.window_state: the shown state of the widget window of a slug, as the operator chose it in the main widget.
- * A slug with no record shows: a new widget starts as shown. A remove of the widget deletes the record.
+ * A slug with no record shows: a new widget starts as shown. The Remove of the operator deletes the record. An agent
+ * `widget_remove` keeps it, so a later install of the slug comes up hidden, as a Turn off stays.
  */
 const windowSchema = z.object({ shown: z.boolean(), updatedAt: z.number() }).strict()
 const requestSchema = z.object({
@@ -650,7 +651,10 @@ export class WidgetRecordsService extends Service {
     return guard(() => this.runtime.setWindowShown(slug, shown))
   }
 
-  /** main_widget.window_state: forget the shown state of `slug`, so that a later install of it starts as shown. A remove calls it. */
+  /**
+   * main_widget.window_state: forget the shown state of `slug`, so that a later install of it starts as shown. The Remove
+   * of the operator in the main widget calls it. An agent `widget_remove` does not, as for a Turn off.
+   */
   forgetWindow(slug: string): Promise<void> {
     return guard(() => this.runtime.forgetWindow(slug))
   }
