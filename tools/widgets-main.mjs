@@ -21,6 +21,10 @@
  *   file that does not parse shows its error, and setMode refuses with settings-unreadable and keeps it. create on
  *   again: widget_install works. A third host start has an IPC parent that never answers: the query settings still
  *   gives the modes and the port, and the login item and setLoginItem give login-item-failed, not a timeout.
+ * - main_widget.window_state: widget_call of show and hide of main gives unknown-widget. Hide of sample gives the row the
+ *   window hidden, a `window` frame on the events route, and the hidden state in its hello. Hide refuses main with
+ *   unknown-widget and a slug with no window with no-window. A remove of the test widget forgets its hidden state: the
+ *   next widget_install starts it as shown. Sample stays hidden across the next host start; then Show shows it.
  * - main_widget.widgets in safe mode: a second host start with DEEPWIDGETS_SAFE_MODE=1. An agent widget keeps the status
  *   safe-mode, and the field turnedOff follows Turn off and Turn on.
  * The calls of main go through POST /api/widgets/main/call with the host cookie, as the page of main calls them.
@@ -205,6 +209,42 @@ async function eventsHello() {
   return line === undefined ? null : JSON.parse(line.slice(6))
 }
 
+/** Open GET /api/widgets/events and keep its frames. `next` waits for a frame that `test` takes. */
+async function openEvents() {
+  const controller = new AbortController()
+  const answer = await fetch(`${base}/api/widgets/events`, { headers: { cookie, accept: 'text/event-stream' }, signal: controller.signal })
+  const reader = answer.body.pipeThrough(new TextDecoderStream()).getReader()
+  const frames = []
+  let text = ''
+  const pump = (async () => {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) return
+        text += value
+        for (let cut = text.indexOf('\n\n'); cut >= 0; cut = text.indexOf('\n\n')) {
+          for (const line of text.slice(0, cut).split('\n')) if (line.startsWith('data: ')) frames.push(JSON.parse(line.slice(6)))
+          text = text.slice(cut + 2)
+        }
+      }
+    } catch { /* the stream was closed */ }
+  })()
+  return {
+    frames,
+    async next(test, ms = 5000) {
+      for (const until = Date.now() + ms; Date.now() < until; await new Promise((resolve) => setTimeout(resolve, 50))) {
+        const found = frames.find(test)
+        if (found !== undefined) return found
+      }
+      return undefined
+    },
+    close() {
+      controller.abort()
+      return pump
+    },
+  }
+}
+
 /** The rows of the query `widgets` of main, by slug. */
 async function mainRows() {
   const answer = await route('main', 'widgets')
@@ -343,6 +383,60 @@ async function agentRemoveKeepsTurnOff(call, dir) {
   const onRow = (await waitRows((rows) => rows.get(SLUG)?.status?.kind === 'live')).get(SLUG)
   check('Turn on after the agent remove and install brings the widget back with the same state', on.body?.result?.ok === true && onRow?.status?.kind === 'live' && JSON.stringify(onRow.state) === JSON.stringify(kept),
     JSON.stringify({ on: on.body?.result, status: onRow?.status, state: onRow?.state }))
+}
+
+/**
+ * main_widget.window_state: the actions show and hide of main. The test widget is live when this part starts, and it is
+ * live again at its end. Sample stays hidden, so the next host start checks that the host kept the choice.
+ */
+async function windowPart(call, dir) {
+  for (const action of ['show', 'hide']) {
+    const hidden = await call('widget_call', { slug: 'main', action, args: { slug: 'sample' } })
+    check(`widget_call of the action ${action} of main gives unknown-widget`, hidden.isError && hidden.body?.error?.code === 'unknown-widget', JSON.stringify(hidden.body))
+  }
+  const stream = await openEvents()
+  const opened = await stream.next((frame) => frame.type === 'hello')
+  const hide = await route('main', 'hide', { slug: 'sample' })
+  const frame = await stream.next((item) => item.type === 'window' && item.slug === 'sample')
+  await stream.close()
+  const row = (await waitRows((rows) => rows.get('sample')?.window === 'hidden')).get('sample')
+  const hello = await eventsHello()
+  check('hide of main hides sample: the row has the window hidden, a window frame tells Electron main, and the hello gives the hidden state',
+    opened?.shown?.sample === true && hide.body?.result?.ok === true && hide.body.result.window === 'hidden' && row?.window === 'hidden'
+      && frame?.shown === false && hello?.slugs?.includes('sample') && hello.shown?.sample === false && !hello.slugs.includes('main') && hello.shown.main === undefined,
+    JSON.stringify({ opened, hide: hide.body, row: row?.window, frame, hello }))
+  const again = await route('main', 'hide', { slug: 'sample' })
+  check('a second hide of sample gives the same result', again.body?.result?.ok === true && again.body.result.window === 'hidden', JSON.stringify(again.body))
+  const main = await route('main', 'hide', { slug: 'main' })
+  const none = await route('main', 'hide', { slug: 'no-such-widget' })
+  check('hide refuses main with unknown-widget and a slug with no window with no-window',
+    main.body?.ok === true && main.body.result?.ok === false && main.body.result.code === 'unknown-widget'
+      && none.body?.ok === true && none.body.result?.ok === false && none.body.result.code === 'no-window',
+    JSON.stringify({ main: main.body, none: none.body }))
+
+  // A remove forgets the choice: an install of the slug after it is a new widget, so its window starts as shown.
+  const hideTest = await route('main', 'hide', { slug: SLUG })
+  const hiddenTest = (await waitRows((rows) => rows.get(SLUG)?.window === 'hidden')).get(SLUG)
+  const removed = await call('widget_remove', { slug: SLUG })
+  const installed = await call('widget_install', { dir })
+  const back = (await waitRows((rows) => rows.get(SLUG)?.status?.kind === 'live')).get(SLUG)
+  const backHello = await eventsHello()
+  check('a remove forgets the hidden state: the next install of the test widget starts as shown',
+    hideTest.body?.result?.ok === true && hiddenTest?.window === 'hidden' && !removed.isError && !installed.isError && installed.body?.application === 'applied'
+      && back?.window === 'shown' && backHello?.shown?.[SLUG] === true,
+    JSON.stringify({ hide: hideTest.body?.result, hidden: hiddenTest?.window, removed: removed.body?.error ?? removed.body?.application, installed: installed.body?.error ?? installed.body?.application, back: back?.window, hello: backHello?.shown }))
+}
+
+/** main_widget.window_state: after a host start, sample is still hidden. Show shows it, and the hello gives shown again. */
+async function windowKeptPart() {
+  const kept = (await waitRows((rows) => rows.get('sample')?.status?.kind === 'live')).get('sample')
+  const hello = await eventsHello()
+  check('after a host start, the window of sample is still hidden', kept?.window === 'hidden' && hello?.shown?.sample === false, JSON.stringify({ row: kept?.window, hello }))
+  const show = await route('main', 'show', { slug: 'sample' })
+  const shown = (await waitRows((rows) => rows.get('sample')?.window === 'shown')).get('sample')
+  const after = await eventsHello()
+  check('show of main shows sample again', show.body?.result?.ok === true && show.body.result.window === 'shown' && shown?.window === 'shown' && after?.shown?.sample === true,
+    JSON.stringify({ show: show.body, row: shown?.window, hello: after?.shown }))
 }
 
 /**
@@ -499,6 +593,7 @@ async function hostPart() {
   const offMain = await route('main', 'turnOff', { slug: 'main' })
   // main_widget.widgets: a refusal is the result of the action, with a code, not a handler-error with a code in its message.
   check('Turn off refuses main with the code unknown-widget', offMain.body?.ok === true && offMain.body.result?.ok === false && offMain.body.result.code === 'unknown-widget', JSON.stringify(offMain.body))
+  await windowPart(call, dir)
 
   // ---- Remove ----
   const before = (await mainRows()).get(SLUG)?.state
@@ -587,6 +682,7 @@ async function safeModePart(port) {
     await new Promise((resolve) => setTimeout(resolve, 100))
     up = await route('main', 'widgets').catch(() => undefined)
   }
+  await windowKeptPart()
   const first = await waitRows((rows) => rows.get(SAFE_SLUG)?.status?.kind === 'safe-mode')
   check('safe mode: the agent widget has the status safe-mode and no turnedOff', first.get(SAFE_SLUG)?.status?.kind === 'safe-mode' && first.get(SAFE_SLUG)?.turnedOff === undefined, JSON.stringify(first.get(SAFE_SLUG)))
   const off = await route('main', 'turnOff', { slug: SAFE_SLUG })

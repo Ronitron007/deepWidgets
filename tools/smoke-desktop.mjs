@@ -33,6 +33,7 @@
  * run: a row for sample with its state rev, and no row for main. A state write of sample over the host Loader must
  * change the rev in that row: the stream of main carries each change of another widget (main_widget.widgets). The row
  * of sample opens with its state viewer, Turn off, and no Remove. Turn off and Turn on in the page change its status.
+ * Hide in the row hides the window of sample, and the row shows Hidden. Show shows the window again (main_widget.window_state).
  * Then a second click closes the panel, another app comes in front (lsappinfo front), and the window of sample still
  * shows. "Open deepWidgets" opens it, a new window that takes the focus closes it, and a
  * second launch of the dev app (its launcher HarnessDev) exits by itself and opens it. The check saves screenshots with
@@ -54,7 +55,9 @@
  * With DSH_SMOKE_OLD_PROFILE=1, the run starts with the desktop profile of the web template before main.runtime, which
  * has no @deepwidgets/widget-main. The boot must add it in its template place and log the change. Run it with
  * DSH_SMOKE_MAIN=1, so the panel must also show the main widget.
- * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://w-sample.widget/widget/?slug=sample.
+ * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://w-sample.widget/widget/?slug=sample, and no
+ * floating window for main. The action hide of main hides the window of sample (main_widget.window_state). The check
+ * kills the host, and after the hello of the new host the window is still hidden. The action show shows it again.
  * It turns the sample row off through the host plugin manager and finds that window closed.
  * With DSH_SMOKE_HOST_RESTART=1, the check kills the host once. The sample widget page must be live again
  * (count readable, an add shows, its stream did not close), and the main window must load again for the new host.
@@ -883,10 +886,52 @@ async function setSample(enabled, deadline) {
   return result?.application === 'applied' ? undefined : `windows: the sample row did not turn ${enabled ? 'on' : 'off'}: ${JSON.stringify(result)}`
 }
 
+/** Call the action Show or Hide of main for `slug` in the host, as the row control of the page does. Gives the result. */
+async function mainWindowAction(action, slug, deadline) {
+  const out = await hostWidgets(deadline, `async (widgets, action, slug) => widgets.call('main', action, { slug }, { caller: 'smoke-windows' })`, [action, slug])
+  note(`windows main ${action} ${slug}=${JSON.stringify(out?.result)}`)
+  return out?.result
+}
+
+/**
+ * main_widget.window_state: the action Hide of main hides the window of sample. After a kill of the host, the hello of
+ * the new host keeps it hidden: the host stored the choice. Show brings it back.
+ */
+async function checkWindowState(deadline) {
+  const soon = () => Math.min(deadline, Date.now() + 15_000)
+  const hidden = await mainWindowAction('hide', 'sample', deadline)
+  if (hidden?.ok !== true || hidden.window !== 'hidden') return `windows: the action hide of main did not hide sample: ${JSON.stringify(hidden)}`
+  let shown = await waitWindowShown('sample', false, soon())
+  if (shown !== false) return `windows: after hide, the window of sample ${shown === null ? 'is gone' : 'still shows'}`
+  const hellos = await withWidgetWindows(deadline, countHellos())
+  const kill = await killHost('windows')
+  const until = Math.min(deadline, Date.now() + 60_000)
+  if (!await waitForNewHost(kill.pid, until)) return 'windows: no new host after the kill'
+  const failed = await waitHello(hellos, until)
+  if (failed !== undefined) return failed
+  // The hello of the new host gave the shown state. A host that did not store it says shown, and the window shows.
+  shown = await windowShown('sample', deadline)
+  await delay(1000)
+  const later = await windowShown('sample', deadline)
+  note(`windows after the host restart: new host=${String(hostPid)} sample shown=${String(shown)} 1 s later=${String(later)}`)
+  if (shown !== false || later !== false) return `windows: after a host restart, the window of sample is not hidden (${String(shown)}, then ${String(later)})`
+  const back = await mainWindowAction('show', 'sample', deadline)
+  if (back?.ok !== true || back.window !== 'shown') return `windows: the action show of main did not show sample: ${JSON.stringify(back)}`
+  shown = await waitWindowShown('sample', true, soon())
+  return shown === true ? undefined : `windows: after show, the window of sample does not show (${String(shown)})`
+}
+
 async function checkWindows(deadline) {
   const url = widgetUrl('sample')
   const soon = () => Math.min(deadline, Date.now() + 15_000)
   let failed = await waitPages(url, 1, deadline, 'first open')
+  if (failed !== undefined) return failed
+  // main_widget.widget: Electron main opens no floating window for main. The panel is its only window, at main.html.
+  const mainWindow = await withWidgetWindows(deadline, "function () { return this.windows.has('main') }")
+  const mainPages = [await countPages(widgetUrl('main')), await countPages(widgetUrl('main', 'page'))]
+  note(`windows main: window=${String(mainWindow)} pages=${JSON.stringify(mainPages)}`)
+  if (mainWindow !== false || mainPages[0] !== 0 || mainPages[1] !== 0) return `windows: Electron main opened a floating window for main: ${JSON.stringify({ mainWindow, mainPages })}`
+  failed = await checkWindowState(deadline)
   if (failed !== undefined) return failed
   // Turn the row off and on again quickly, twice. One window must stay.
   for (const enabled of [false, true, false, true]) {
@@ -1968,8 +2013,31 @@ function mainReadExpression() {
     turnOff: row.querySelector('[data-dw=turn-off]') !== null,
     turnOn: row.querySelector('[data-dw=turn-on]') !== null,
     remove: row.querySelector('[data-dw=remove]') !== null,
+    window: row.querySelector('[data-dw=window]')?.dataset.window ?? null,
+    windowText: row.querySelector('[data-dw=window]')?.textContent ?? null,
+    show: row.querySelector('[data-dw=show]') !== null,
+    hide: row.querySelector('[data-dw=hide]') !== null,
   })),
 })`
+}
+
+/** Whether the floating window of `slug` shows in Electron main, or null when it has no window. */
+function windowShown(slug, deadline) {
+  return withWidgetWindows(deadline, `function () {
+    const entry = this.windows.get(${JSON.stringify(slug)})
+    return entry === undefined || entry.window.isDestroyed() ? null : entry.window.isVisible()
+  }`)
+}
+
+/** Poll until the floating window of `slug` shows (`want` true) or is hidden (false). Gives the last value. */
+async function waitWindowShown(slug, want, until) {
+  let shown
+  while (Date.now() < until) {
+    shown = await windowShown(slug, until)
+    if (shown === want) return shown
+    await delay(200)
+  }
+  return shown
 }
 
 /** Poll the page of main until `accept` takes the read value. */
@@ -2558,6 +2626,20 @@ async function checkMainPage(target, closed, deadline) {
     const changed = await pollMain(target, soon(), (value) => sampleRow(value)?.status === status)
     note(`main ${button}=${JSON.stringify({ row: sampleRow(changed.value), problems: changed.value?.problems })}`)
     if (!changed.ok) return `main: after ${button}, the status of sample is not ${status}: ${JSON.stringify(changed.value)}`
+  }
+
+  // main_widget.window_state: Hide in the row of sample hides its floating window, and the row shows Hidden with Show.
+  // Show shows the window again, and the row shows Shown with Hide.
+  for (const [button, window, text, visible] of [['hide', 'hidden', 'Hidden', false], ['show', 'shown', 'Shown', true]]) {
+    if (await clickMain(target, `[data-dw=widget-row][data-slug=sample] [data-dw=${button}]`, deadline) !== true) {
+      return `main: no ${button} in the row of sample: ${JSON.stringify(sampleRow((await pollMain(target, Date.now() + 1000, () => true)).value))}`
+    }
+    const other = button === 'hide' ? 'show' : 'hide'
+    const changed = await pollMain(target, soon(), (value) => sampleRow(value)?.window === window && sampleRow(value)?.windowText === text && sampleRow(value)?.[other] === true)
+    const shown = await waitWindowShown('sample', visible, soon())
+    note(`main ${button}=${JSON.stringify({ row: sampleRow(changed.value), problems: changed.value?.problems, windowShown: shown })}`)
+    if (!changed.ok) return `main: after ${button}, the row of sample does not show ${text} with ${other}: ${JSON.stringify(sampleRow(changed.value) ?? changed.value)}`
+    if (shown !== visible) return `main: after ${button}, the window of sample ${visible ? 'does not show' : 'still shows'} (${String(shown)})`
   }
   return await checkMainWrites(target, closed, deadline) ?? await checkMainCatchUp(target, deadline)
 }
