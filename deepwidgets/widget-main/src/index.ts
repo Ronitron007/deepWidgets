@@ -143,8 +143,18 @@ type LoginItemAnswer = z.infer<typeof loginItemAnswerSchema> | { ok: false, code
 
 /** The IPC message of the login item between the host and Electron main, with the same `callId` in the answer. */
 const LOGIN_ITEM_MESSAGE = 'deepwidgets-login-item'
-/** Electron main answers at once; it reads the status with one synchronous call. */
-const LOGIN_ITEM_LIMIT_MS = 5_000
+/**
+ * The time limit of the actions `settings` and `setLoginItem`. It is the default action limit of the runtime, written
+ * here so that {@link LOGIN_ITEM_LIMIT_MS} stays below it.
+ */
+const SETTINGS_TIMEOUT_MS = 5_000
+/**
+ * Electron main answers at once; it reads the status with one synchronous call. The wait ends well before
+ * {@link SETTINGS_TIMEOUT_MS} (login_limit_equals_action_limit): when Electron main does not answer, the query
+ * `settings` still gives the modes and the port with the login item as unknown, and `setLoginItem` gives
+ * `login-item-failed`, not a `timeout` of the whole action.
+ */
+const LOGIN_ITEM_LIMIT_MS = 2_000
 
 /**
  * Ask Electron main for the login item: read it (`open` null), or set it and read it back. A host with no IPC channel,
@@ -438,9 +448,15 @@ export function apply(ctx: Context): void {
     initialState: {},
     actions: [
       { name: 'widgets', kind: 'query', handler: () => records.asHost(async () => ({ widgets: await describeAll() })) },
-      { name: 'settings', kind: 'query', handler: () => records.asHost(settingsAnswer) },
+      { name: 'settings', kind: 'query', timeoutMs: SETTINGS_TIMEOUT_MS, handler: () => records.asHost(settingsAnswer) },
       { name: 'setMode', kind: 'mutation', args: modeInput, handler: ({ mode, on }) => records.asHost(() => answer(() => setMode(mode, on))) },
-      { name: 'setLoginItem', kind: 'mutation', args: loginItemInput, handler: ({ open }) => records.asHost(() => answer(() => setLoginItem(open))) },
+      {
+        name: 'setLoginItem',
+        kind: 'mutation',
+        args: loginItemInput,
+        timeoutMs: SETTINGS_TIMEOUT_MS,
+        handler: ({ open }) => records.asHost(() => answer(() => setLoginItem(open))),
+      },
       {
         name: 'program',
         kind: 'query',
