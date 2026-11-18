@@ -1618,15 +1618,15 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   // ---- main_widget.window_state: the shown state of each widget window ----
+  // window_writes_skip_queued_write: each Show, Hide, and forget is one job on the domain write chain, with no check of
+  // the record in memory first. Memory changes only when a write is durable, so a check would miss a write in the queue.
+  // Thus the last request wins, and a forget after a queued Hide leaves no record (`delete` looks at its chain slot).
   async function setWindowShown(slug: string, shown: boolean): Promise<void> {
     if (!windowed(slug) || !widgets.has(slug)) throw new WidgetError('unknown-widget', `${JSON.stringify(slug)} has no widget window: it is not live`)
-    const table = (await ready).table('windows')
-    if (shownOf(slug) === shown) return
-    await table.put(slug, { shown, updatedAt: Date.now() })
+    await (await ready).table('windows').put(slug, { shown, updatedAt: Date.now() })
   }
   async function forgetWindow(slug: string): Promise<void> {
-    const table = (await ready).table('windows')
-    if (table.get(slug) !== undefined) await table.delete(slug)
+    await (await ready).table('windows').delete(slug)
   }
 
   // widget_phase2.isolation.blame: a quarantined widget row loads as one failed entry for each of its slugs.

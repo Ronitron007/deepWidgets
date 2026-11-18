@@ -21,7 +21,8 @@
  *   file that does not parse shows its error, and setMode refuses with settings-unreadable and keeps it. create on
  *   again: widget_install works. A third host start has an IPC parent that never answers: the query settings still
  *   gives the modes and the port, and the login item and setLoginItem give login-item-failed, not a timeout.
- * - main_widget.window_state: widget_call of show and hide of main gives unknown-widget. Hide of sample gives the row the
+ * - main_widget.window_state: widget_call of show and hide of main gives unknown-widget. A Hide and a Show sent together
+ *   end shown, and a queued Hide and then a forget leave no record (window_writes_skip_queued_write). Hide of sample gives the row the
  *   window hidden, a `window` frame on the events route, and the hidden state in its hello. Hide refuses main with
  *   unknown-widget and a slug with no window with no-window. A remove of the test widget forgets its hidden state: the
  *   next widget_install starts it as shown. Sample stays hidden across the next host start; then Show shows it.
@@ -394,6 +395,18 @@ async function windowPart(call, dir) {
     const hidden = await call('widget_call', { slug: 'main', action, args: { slug: 'sample' } })
     check(`widget_call of the action ${action} of main gives unknown-widget`, hidden.isError && hidden.body?.error?.code === 'unknown-widget', JSON.stringify(hidden.body))
   }
+  // window_writes_skip_queued_write: a Hide and a Show sent together end shown, because the last request wins. A Hide
+  // in the queue and then a forget leave no record, so the window shows. Each case starts with no record.
+  const race = await inHost(`
+    const records = loader.ctx.get('widgetRecords')
+    await records.forgetWindow('sample')
+    await Promise.all([records.setWindowShown('sample', false), records.setWindowShown('sample', true)])
+    const hideThenShow = records.windowShown('sample')
+    await records.forgetWindow('sample')
+    await Promise.all([records.setWindowShown('sample', false), records.forgetWindow('sample')])
+    return { hideThenShow, hideThenForget: records.windowShown('sample') }`)
+  check('a Hide and a Show sent together end shown, and a queued Hide and then a forget leave the window shown',
+    race?.hideThenShow === true && race.hideThenForget === true, JSON.stringify(race))
   const stream = await openEvents()
   const opened = await stream.next((frame) => frame.type === 'hello')
   const hide = await route('main', 'hide', { slug: 'sample' })
