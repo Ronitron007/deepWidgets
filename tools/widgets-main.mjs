@@ -15,6 +15,11 @@
  *   warning turned-off, and keeps its state; Turn on brings it back, and a reload after it gives a live widget. A later
  *   reload of the widget while it is off starts no code (the change feed of the runtime has no `added`). A Turn off
  *   that refuses stores nothing. An agent widget_remove keeps a Turn off: a later widget_install comes up off.
+ * - main_widget.settings: widget_call of settings, setMode, and setLoginItem of main gives unknown-widget. The query
+ *   settings gives the modes from the settings file, the port and the path of mcp.json (not the nonce), and no login item
+ *   in a CLI host. setMode of create writes the file and keeps each other key, and widget_install then gives mode-off. A
+ *   file that does not parse shows its error, and setMode refuses with settings-unreadable and keeps it. create on
+ *   again: widget_install works.
  * - main_widget.widgets in safe mode: a second host start with DEEPWIDGETS_SAFE_MODE=1. An agent widget keeps the status
  *   safe-mode, and the field turnedOff follows Turn off and Turn on.
  * The calls of main go through POST /api/widgets/main/call with the host cookie, as the page of main calls them.
@@ -338,6 +343,73 @@ async function agentRemoveKeepsTurnOff(call, dir) {
     JSON.stringify({ on: on.body?.result, status: onRow?.status, state: onRow?.state }))
 }
 
+/**
+ * main_widget.settings: the host half of the Settings tab. The MCP tools do not show its actions. The query `settings`
+ * gives the modes from the settings file, the port and the path of mcp.json, and no login item in a CLI host. A switch
+ * of create writes the file in the shape of modes.settings and keeps each other key; then widget_install gives mode-off.
+ * A file that does not parse shows its error, and a switch refuses with settings-unreadable and does not change it.
+ * create on again: the install works.
+ */
+async function settingsPart(call, dir) {
+  const settingsFile = join(home, 'deepwidgets', 'settings.json')
+  const portFile = join(home, 'deepwidgets', 'mcp.json')
+  for (const action of ['settings', 'setMode', 'setLoginItem']) {
+    const hidden = await call('widget_call', { slug: 'main', action, args: action === 'setMode' ? { mode: 'create', on: false } : action === 'setLoginItem' ? { open: true } : {} })
+    check(`widget_call of the action ${action} of main gives unknown-widget`, hidden.isError && hidden.body?.error?.code === 'unknown-widget', JSON.stringify(hidden.body))
+  }
+  const read = await route('main', 'settings')
+  const settings = read.body?.result
+  const mcpFile = JSON.parse(readFileSync(portFile, 'utf8'))
+  const names = settings?.modes?.modes?.map((mode) => `${mode.name}:${String(mode.setting)}:${String(mode.on)}`)
+  check('the query settings gives each mode from the settings file, with interact always on',
+    read.body?.ok === true && settings?.modes?.ok === true && settings.modes.file === settingsFile && settings.modes.error === undefined
+      && JSON.stringify(names) === '["interact:null:true","create:modes.create:true","library:modes.library:true"]',
+    JSON.stringify(settings?.modes))
+  check('the query settings gives the port and the path of mcp.json, and not its nonce',
+    settings?.port?.ok === true && settings.port.port === mcpFile.port && settings.port.file === portFile && !JSON.stringify(settings).includes(mcpFile.nonce),
+    JSON.stringify({ port: settings?.port, file: mcpFile.port }))
+  check('the query settings gives no login item in a CLI host', settings?.loginItem?.ok === false && settings.loginItem.code === 'unavailable', JSON.stringify(settings?.loginItem))
+  const login = await route('main', 'setLoginItem', { open: true })
+  check('setLoginItem refuses in a CLI host with unavailable', login.body?.ok === true && login.body.result?.ok === false && login.body.result.code === 'unavailable', JSON.stringify(login.body))
+  const unknown = await route('main', 'setMode', { mode: 'interact', on: false })
+  check('setMode refuses interact with unknown-mode', unknown.body?.ok === true && unknown.body.result?.ok === false && unknown.body.result.code === 'unknown-mode', JSON.stringify(unknown.body))
+
+  // The other keys of the file stay: a key at the top, and keys of other modes.
+  mkdirSync(dirname(settingsFile), { recursive: true })
+  writeFileSync(settingsFile, JSON.stringify({ note: 'kept', modes: { library: true, kit: false } }))
+  const off = await route('main', 'setMode', { mode: 'create', on: false })
+  const written = JSON.parse(readFileSync(settingsFile, 'utf8'))
+  check('setMode create false writes "create": false and keeps each other key',
+    off.body?.result?.ok === true && off.body.result.modes?.find((mode) => mode.name === 'create')?.on === false
+      && JSON.stringify(written) === JSON.stringify({ note: 'kept', modes: { library: true, kit: false, create: false } }),
+    JSON.stringify({ off: off.body, written }))
+  const refused = await call('widget_install', { dir })
+  const modes = await call('deepwidgets_modes')
+  check('with create off from the Settings tab, widget_install gives mode-off, and deepwidgets_modes shows create off',
+    refused.isError && refused.body?.error?.code === 'mode-off' && refused.body.error.mode === 'create' && modes.body?.modes?.find((mode) => mode.name === 'create')?.on === false,
+    JSON.stringify({ refused: refused.body?.error ?? refused.body?.application, modes: modes.body?.modes }))
+
+  // A file that does not parse: the tab shows its error, and a switch does not change it.
+  const broken = '{ "modes": { "create": false '
+  writeFileSync(settingsFile, broken)
+  const brokenRead = (await route('main', 'settings')).body?.result?.modes
+  const brokenSet = await route('main', 'setMode', { mode: 'create', on: true })
+  check('a settings file that does not parse shows its parse error, and setMode refuses with settings-unreadable and keeps the file',
+    typeof brokenRead?.error === 'string' && brokenRead.error.includes('not JSON') && brokenSet.body?.result?.ok === false && brokenSet.body.result.code === 'settings-unreadable'
+      && readFileSync(settingsFile, 'utf8') === broken,
+    JSON.stringify({ brokenRead, brokenSet: brokenSet.body?.result, file: readFileSync(settingsFile, 'utf8') }))
+
+  writeFileSync(settingsFile, JSON.stringify({ modes: { create: false } }))
+  const on = await route('main', 'setMode', { mode: 'create', on: true })
+  const back = JSON.parse(readFileSync(settingsFile, 'utf8'))
+  const installed = await call('widget_install', { dir })
+  check('setMode create true writes "create": true, and widget_install works again',
+    on.body?.result?.ok === true && back.modes?.create === true && !installed.isError && installed.body?.application === 'applied',
+    JSON.stringify({ on: on.body?.result, back, installed: installed.body?.error ?? installed.body?.application }))
+  const removed = await call('widget_remove', { slug: SLUG })
+  check('the test widget installed for the settings check is removed', !removed.isError, JSON.stringify(removed.body?.error ?? removed.body?.application))
+}
+
 async function hostPart() {
   const port = await freePort()
   inspectPort = await freePort()
@@ -462,6 +534,8 @@ async function hostPart() {
   check('widget_changes gives no change of main', JSON.stringify(restarted) === '["applied","applied"]' && back.body?.ok === true && raw.includes('main:removed') && raw.includes('main:added')
     && !changes.isError && Array.isArray(changes.body?.changes) && !changes.body.changes.some((change) => change.slug === 'main'),
     JSON.stringify({ restarted, raw, tool: changes.body?.changes?.map((change) => change.slug) }))
+
+  await settingsPart(call, dir)
 
   const log = readFileSync(logPath, 'utf8')
   check('the host log has no refusal of the install records', !log.includes('can not use the install records') && !log.includes('can not run host code'), '')

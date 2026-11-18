@@ -43,6 +43,13 @@
  * for each 250 ms of writes (fanout_query_blocks_writes). A switch to Settings and back keeps the row of sample open.
  * Then the page loads again with a wrapper of EventSource: the check cuts the stream of main, writes sample while it is
  * down, and opens it again. The row must show the new rev from the `data` frame after the `hello` of main.
+ * Then the Settings tab (main_widget.settings) shows the MCP modes with interact always on, the note of the approved
+ * agents, the port and the path of mcp.json with copy buttons, and the launch-at-login switch off and disabled with its
+ * note. A set of the login item through main refuses with dev-run, Electron main calls no setLoginItemSettings, and
+ * macOS has no login item for the dev app. The switch of create turns create off: widget_install gives mode-off, and
+ * settings.json has "create": false. On again, the install works. The check saves
+ * $TMPDIR/deepwidgets-main-settings/settings.png. Before the second launch, the hidden panel shows the Settings tab, and
+ * the second launch must open it on the Widgets tab.
  * During these page checks the panel does not hide on a loss of focus, so another app on the Mac can not close it.
  * With DSH_SMOKE_OLD_PROFILE=1, the run starts with the desktop profile of the web template before main.runtime, which
  * has no @deepwidgets/widget-main. The boot must add it in its template place and log the change. Run it with
@@ -209,6 +216,8 @@ const MAIN_PAGE_URL = 'dsh-app://w-main.widget/widget/main.html?slug=main'
 const MAIN_SHOTS = join(tmpdir(), 'deepwidgets-main-page')
 /** The folder of the screenshot of the open panel of DSH_SMOKE_MAIN (main_widget.panel). */
 const PANEL_SHOTS = join(tmpdir(), 'deepwidgets-app-menu-bar')
+/** The folder of the screenshot of the Settings tab of DSH_SMOKE_MAIN (main_widget.settings). */
+const SETTINGS_SHOTS = join(tmpdir(), 'deepwidgets-main-settings')
 await mkdir(home)
 await mkdir(userData)
 openSync(logPath, 'a')
@@ -2229,7 +2238,7 @@ async function checkMain(deadline) {
   const hideOnBlur = await withMenuBar(deadline, "function () { const value = this.menubar.getOption('hideOnBlur'); this.menubar.setOption('hideOnBlur', false); return value ?? null }")
   let page
   try {
-    page = await checkMainPage(target, closed, deadline)
+    page = await checkMainPage(target, closed, deadline) ?? await checkMainSettings(target, deadline)
   } finally {
     await withMenuBar(deadline, `function () { this.menubar.setOption('hideOnBlur', ${JSON.stringify(hideOnBlur)} ?? undefined); return true }`)
   }
@@ -2274,18 +2283,205 @@ async function checkMain(deadline) {
     await withMenuBar(deadline, 'function () { globalThis.__deepwidgetsSmokeFocus?.destroy(); delete globalThis.__deepwidgetsSmokeFocus; return true }').catch(() => undefined)
   }
 
-  // A second launch opens the panel (widget.relaunch).
+  // A second launch opens the panel (widget.relaunch), on the Widgets tab (main_widget.provisional,
+  // second_launch_keeps_tab). The hidden panel shows the Settings tab before it.
+  await pressMainTab(target, 1, deadline)
+  const tabBefore = await activeMainTab(target, deadline)
+  if (tabBefore !== 'Settings') return `main: the hidden panel did not switch to Settings before the second launch: ${String(tabBefore)}`
   const second = await launchAgain(atStart.execPath, Math.min(deadline, Date.now() + 60_000))
   if (second.code !== 0) return `main: the second launch did not exit by itself with 0: ${JSON.stringify(second)}`
   const relaunched = await pollMenuBar(soon(), (value) => value.panel?.visible === true)
   note(`main panel after second launch=${JSON.stringify(relaunched.value?.panel)}`)
   if (!relaunched.ok) return `main: a second launch did not open the panel: ${JSON.stringify(relaunched.value)}`
+  let tabAfter
+  for (const until = soon(); Date.now() < until; await delay(200)) {
+    tabAfter = await activeMainTab(target, deadline)
+    if (tabAfter === 'Widgets') break
+  }
+  note(`main tab after second launch=${String(tabAfter)}`)
+  if (tabAfter !== 'Widgets') return `main: a second launch opened the panel on the tab ${String(tabAfter)}, not on Widgets`
 
   const dockEnd = await checkNoDock(relaunched.value, 'after the panel opened')
   if (dockEnd !== undefined) return dockEnd
   await withMenuBar(deadline, clickIconDeclaration())
   const closedAtEnd = await pollMenuBar(soon(), (value) => value.panel?.visible === false)
   if (!closedAtEnd.ok) return `main: the panel did not close at the end: ${JSON.stringify(closedAtEnd.value)}`
+  return undefined
+}
+
+/** Press the tab `index` of the page of main. Radix activates a tab on mousedown. */
+function pressMainTab(target, index, deadline) {
+  return evaluate(target.webSocketDebuggerUrl, `(() => {
+    document.querySelectorAll('[data-dw=tab]')[${String(index)}]?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
+    return true
+  })()`, deadline)
+}
+
+/** The title of the active tab of the page of main. */
+function activeMainTab(target, deadline) {
+  return evaluate(target.webSocketDebuggerUrl, "document.querySelector('[data-dw=tab][data-state=active]')?.textContent ?? null", deadline)
+}
+
+/** Read the Settings tab of the page of main (main_widget.settings). */
+function settingsReadExpression() {
+  return `JSON.stringify({
+  active: document.querySelector('[data-dw=tab][data-state=active]')?.textContent ?? null,
+  modes: [...document.querySelectorAll('[data-dw=mode]')].map((row) => {
+    const control = row.querySelector('[data-dw=mode-switch]')
+    return { mode: row.dataset.mode, checked: control?.getAttribute('aria-checked') ?? null, disabled: control?.disabled ?? null, always: row.querySelector('[data-dw=mode-always-on]') !== null }
+  }),
+  modesDone: Number(document.querySelector('[data-dw=settings-modes]')?.dataset.done ?? 'NaN'),
+  modesBusy: document.querySelector('[data-dw=settings-modes]')?.dataset.busy ?? null,
+  settingsFile: document.querySelector('[data-dw=settings-file]')?.textContent ?? null,
+  settingsError: document.querySelector('[data-dw=settings-error]')?.textContent ?? null,
+  agents: document.querySelector('[data-dw=agents-note]')?.textContent ?? null,
+  port: document.querySelector('[data-dw=mcp-port]')?.textContent ?? null,
+  portFile: document.querySelector('[data-dw=mcp-port-file]')?.textContent ?? null,
+  copies: [...document.querySelectorAll('[data-dw=copy-port], [data-dw=copy-port-file]')].map((node) => node.dataset.dw),
+  login: (() => { const node = document.querySelector('[data-dw=login-switch]'); return node === null ? null : { checked: node.getAttribute('aria-checked'), disabled: node.disabled } })(),
+  loginNote: document.querySelector('[data-dw=login-note]')?.textContent ?? null,
+  loginStatus: document.querySelector('[data-dw=login-status]')?.textContent ?? null,
+  problems: [...document.querySelectorAll('[data-dw=main-problem], [data-dw=control-error], [data-dw=query-error], [data-dw=state-error]')].map((node) => node.textContent),
+})`
+}
+
+/** Poll the Settings tab until `accept` takes the read value. */
+async function pollSettings(target, until, accept) {
+  let last
+  while (Date.now() < until) {
+    try {
+      last = JSON.parse(String(await evaluate(target.webSocketDebuggerUrl, settingsReadExpression(), until)))
+      if (accept(last)) return { value: last, ok: true }
+    } catch (error) {
+      last = { error: error instanceof Error ? error.message : 'evaluate failed' }
+    }
+    await delay(250)
+  }
+  return { value: last, ok: false }
+}
+
+/** Run `declaration` with `this` set to the one DesktopLoginItem instance of Electron main. Its `app` is the Electron app. */
+function withLoginItem(deadline, declaration) {
+  return withMainInstance('DesktopLoginItem', 'answer', deadline, declaration)
+}
+
+/** The settings file of the run, parsed, or the reason that it could not be read. */
+function settingsFileValue() {
+  try {
+    return JSON.parse(readFileSync(join(home, 'deepwidgets', 'settings.json'), 'utf8'))
+  } catch (error) {
+    return { unreadable: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * The Settings tab of main in the open panel (main_widget.settings). It shows the MCP modes with interact always on, the
+ * note of the approved agents, the port and the path of mcp.json with copy buttons, and, in this dev run, the
+ * launch-at-login switch off and disabled with its note. A set of the login item through main refuses with dev-run,
+ * Electron main calls no setLoginItemSettings (a recorder stands in for it during the check), and macOS has no login
+ * item for the dev app. The switch of create turns create off: widget_install gives mode-off, and the settings file has
+ * "create": false. The switch turns create on again, and the install works.
+ */
+async function checkMainSettings(target, deadline) {
+  const soon = () => Math.min(deadline, Date.now() + 15_000)
+  const settingsFile = join(home, 'deepwidgets', 'settings.json')
+  const portFile = join(home, 'deepwidgets', 'mcp.json')
+  const create = (value) => value.modes?.find((mode) => mode.mode === 'create')
+  await pressMainTab(target, 1, deadline)
+  const shown = await pollSettings(target, soon(), (value) => value.active === 'Settings' && create(value)?.checked === 'true' && value.port !== null && value.login !== null)
+  note(`main settings first=${JSON.stringify(shown.value)}`)
+  if (!shown.ok) return `main settings: the Settings tab did not show the modes, the port, and the login item: ${JSON.stringify(shown.value)}`
+  const read = shown.value
+  const mcpFile = JSON.parse(readFileSync(portFile, 'utf8'))
+  if (read.problems.length > 0) return `main settings: the tab shows a problem: ${JSON.stringify(read.problems)}`
+  const modes = read.modes.map((mode) => `${mode.mode}:${mode.always ? 'always' : String(mode.checked)}`)
+  if (JSON.stringify(modes) !== '["interact:always","create:true","library:true"]') return `main settings: the modes are ${JSON.stringify(modes)}`
+  if (read.settingsFile !== settingsFile) return `main settings: the settings file is ${String(read.settingsFile)}, not ${settingsFile}`
+  if (read.agents === null || !read.agents.includes('not built yet')) return `main settings: no note of the approved agents: ${String(read.agents)}`
+  if (read.port !== String(mcpFile.port) || read.portFile !== portFile) return `main settings: the tab shows the port ${String(read.port)} at ${String(read.portFile)}, mcp.json has ${String(mcpFile.port)} at ${portFile}`
+  if (JSON.stringify(read.copies) !== '["copy-port","copy-port-file"]') return `main settings: the copy buttons are ${JSON.stringify(read.copies)}`
+  if (read.login.checked !== 'false' || read.login.disabled !== true || read.loginNote === null || !read.loginNote.includes('packaged app')) {
+    return `main settings: in a dev run, the launch-at-login switch must be off and disabled with its note: ${JSON.stringify({ login: read.login, note: read.loginNote })}`
+  }
+
+  // A dev run never registers a login item: a set through main refuses, and Electron main calls no setLoginItemSettings.
+  await withLoginItem(deadline, `function () {
+    const app = this.app
+    globalThis.__deepwidgetsSmokeLogin = { calls: [], own: Object.getOwnPropertyDescriptor(app, 'setLoginItemSettings') }
+    app.setLoginItemSettings = (...args) => { globalThis.__deepwidgetsSmokeLogin.calls.push(args) }
+    return true
+  }`)
+  let login
+  try {
+    await clickMain(target, '[data-dw=login-switch]', deadline)
+    const refused = JSON.parse(String(await evaluate(target.webSocketDebuggerUrl, `(async () => {
+      const answer = await fetch('/api/widgets/main/call', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'setLoginItem', args: { open: true } }) })
+      return JSON.stringify({ status: answer.status, body: await answer.json() })
+    })()`, deadline, true)))
+    await delay(300)
+    login = await withLoginItem(deadline, `function () {
+      const settings = this.app.getLoginItemSettings({ type: 'mainAppService' })
+      return { calls: globalThis.__deepwidgetsSmokeLogin.calls.length, openAtLogin: settings.openAtLogin, status: settings.status ?? null }
+    }`)
+    note(`main settings login refused=${JSON.stringify(refused)} electron=${JSON.stringify(login)} shown=${String(read.loginStatus)}`)
+    if (refused.body?.ok !== true || refused.body.result?.ok !== false || refused.body.result.code !== 'dev-run') return `main settings: a set of the login item in a dev run did not refuse with dev-run: ${JSON.stringify(refused)}`
+  } finally {
+    await withLoginItem(deadline, `function () {
+      const saved = globalThis.__deepwidgetsSmokeLogin
+      if (saved?.own === undefined) delete this.app.setLoginItemSettings
+      else Object.defineProperty(this.app, 'setLoginItemSettings', saved.own)
+      delete globalThis.__deepwidgetsSmokeLogin
+      return true
+    }`).catch(() => undefined)
+  }
+  if (login.calls !== 0) return `main settings: Electron main called setLoginItemSettings ${String(login.calls)} times in a dev run`
+  if (login.openAtLogin !== false || login.status === 'enabled' || login.status === 'requires-approval') return `main settings: macOS has a login item for the dev app: ${JSON.stringify(login)}`
+  if (read.loginStatus !== login.status) return `main settings: the tab shows the status ${String(read.loginStatus)}, macOS gives ${String(login.status)}`
+  await shootMain('settings.png', deadline, SETTINGS_SHOTS)
+
+  // The switch of create writes the settings file, and the next widget_install reads it.
+  const call = await mcpClient(deadline)
+  const tool = async (name, args) => {
+    const result = await call('tools/call', { name, arguments: args })
+    return { isError: result?.isError === true, body: result?.structuredContent ?? JSON.parse(result?.content?.[0]?.text ?? 'null') }
+  }
+  const template = await tool('widget_template', { slug: 'smoke-settings', title: 'Smoke Settings' })
+  const dir = join(temp, 'smoke-settings')
+  for (const file of template.body?.files ?? []) {
+    await mkdir(join(dir, file.path, '..'), { recursive: true })
+    writeFileSync(join(dir, file.path), file.text)
+  }
+  if (!existsSync(join(dir, 'src', 'index.ts'))) return `main settings: widget_template gave no src/index.ts: ${JSON.stringify(template.body).slice(0, 300)}`
+  const turn = async () => {
+    const before = (await pollSettings(target, soon(), () => true)).value?.modesDone
+    if (await clickMain(target, '[data-dw=mode-switch][data-mode=create]', deadline) !== true) return 'no switch of create'
+    const ended = await pollSettings(target, soon(), (value) => value.modesDone === before + 1 && value.modesBusy === 'false')
+    return ended.ok ? undefined : `the call of the switch did not end: ${JSON.stringify(ended.value)}`
+  }
+  const off = await turn()
+  if (off !== undefined) return `main settings: create off: ${off}`
+  const refused = await tool('widget_install', { dir })
+  const fileOff = settingsFileValue()
+  note(`main settings create off install=${JSON.stringify(refused.body?.error ?? refused.body?.application)} file=${JSON.stringify(fileOff)}`)
+  if (!refused.isError || refused.body?.error?.code !== 'mode-off') {
+    if (!refused.isError) await tool('widget_remove', { slug: 'smoke-settings' }).catch(() => undefined)
+    return `main settings: with create off in the Settings tab, widget_install still works: ${JSON.stringify(refused.body?.error ?? refused.body?.application)}`
+  }
+  if (fileOff?.modes?.create !== false) return `main settings: with create off, the settings file is ${JSON.stringify(fileOff)}`
+  const offShown = await pollSettings(target, soon(), (value) => create(value)?.checked === 'false')
+  if (!offShown.ok) return `main settings: the switch of create does not show off: ${JSON.stringify(offShown.value)}`
+  const on = await turn()
+  if (on !== undefined) return `main settings: create on: ${on}`
+  const fileOn = settingsFileValue()
+  const installed = await tool('widget_install', { dir })
+  note(`main settings create on install=${JSON.stringify(installed.body?.error ?? installed.body?.application)} file=${JSON.stringify(fileOn)}`)
+  if (fileOn?.modes?.create !== true) return `main settings: with create on, the settings file is ${JSON.stringify(fileOn)}`
+  if (installed.isError || installed.body?.application !== 'applied') return `main settings: with create on again, widget_install failed: ${JSON.stringify(installed.body?.error ?? installed.body)}`
+  const removed = await tool('widget_remove', { slug: 'smoke-settings' })
+  if (removed.isError) return `main settings: widget_remove of smoke-settings failed: ${JSON.stringify(removed.body?.error)}`
+  const onShown = await pollSettings(target, soon(), (value) => create(value)?.checked === 'true' && value.problems.length === 0)
+  if (!onShown.ok) return `main settings: the switch of create does not show on, or the tab shows a problem: ${JSON.stringify(onShown.value)}`
+  await pressMainTab(target, 0, deadline)
   return undefined
 }
 
