@@ -177,7 +177,7 @@ export function McpPortView({ port }: { port: unknown }) {
 /** What a status of macOS means for the operator. */
 const STATUS_HINT: Record<LoginStatus, string> = {
   'enabled': 'The app opens at login.',
-  'requires-approval': 'Approve deepWidgets in System Settings, General, Login Items. Until then, the app does not open at login.',
+  'requires-approval': 'macOS has the login item, but it waits for your approval. Approve deepWidgets in System Settings, under General, Login Items. Until then, the app does not open at login. Turn the switch off to remove the login item.',
   'not-registered': 'The app does not open at login.',
   'not-found': 'macOS can not find the app. A build with an ad-hoc signature can give this after each rebuild.',
 }
@@ -207,7 +207,9 @@ export function LaunchAtLoginView({ loginItem, refresh }: { loginItem: unknown, 
     if (item.success && item.data.ok) keep(item.data)
     refresh()
   }
-  const on = shown.settable && (pending ?? shown.openAtLogin)
+  // requires_approval_switch_off: a login item that waits for approval shows on, so that a click removes it.
+  const registered = shown.status === undefined ? shown.openAtLogin : shown.status === 'enabled' || shown.status === 'requires-approval'
+  const on = shown.settable && (pending ?? registered)
   return (
     <Section title="Launch at login" dw="settings-login" extra={extra}>
       <div className="dwm-setting-row">

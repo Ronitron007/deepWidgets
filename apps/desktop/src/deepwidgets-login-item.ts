@@ -21,6 +21,10 @@ export interface LoginItemSetting {
   readonly settable: boolean
   /** Why the switch is disabled. */
   readonly blocked?: 'dev-run' | 'platform'
+  /**
+   * The switch: true when macOS has the app as a login item, also while the registration waits for approval
+   * (`requires-approval`), so that a click unregisters it. Without a status, it is `openAtLogin` of Electron.
+   */
   readonly openAtLogin: boolean
   /** The status from macOS. Absent when macOS gives none. */
   readonly status?: LoginItemStatus
@@ -88,8 +92,11 @@ export class DesktopLoginItem {
   private read(blocked: 'dev-run' | 'platform' | undefined): LoginItemSetting {
     if (blocked === 'platform') return { settable: false, blocked, openAtLogin: false }
     const settings = this.app.getLoginItemSettings({ type: 'mainAppService' })
-    const status = STATUSES.includes(settings.status) ? { status: settings.status } : {}
+    const known = STATUSES.includes(settings.status)
+    const status = known ? { status: settings.status } : {}
     if (blocked === 'dev-run') return { settable: false, blocked, openAtLogin: false, ...status }
-    return { settable: true, openAtLogin: settings.openAtLogin, ...status }
+    // requires_approval_switch_off: the switch follows the registration that macOS gives, not only openAtLogin.
+    const registered = known ? settings.status === 'enabled' || settings.status === 'requires-approval' : settings.openAtLogin
+    return { settable: true, openAtLogin: registered, ...status }
   }
 }

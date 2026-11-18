@@ -31,11 +31,19 @@ describe('the login item (main_widget.settings)', () => {
   })
 
   it('shows the status that macOS gives, also when it is not the value of the switch', () => {
-    for (const status of ['requires-approval', 'not-found'] as const) {
-      const electron = stub(true, () => status)
-      expect(new DesktopLoginItem(electron.app, 'darwin').answer(true)).toEqual({ ok: true, item: { settable: true, openAtLogin: false, status } })
-      expect(electron.setLoginItemSettings).toHaveBeenCalledOnce()
-    }
+    const electron = stub(true, () => 'not-found')
+    expect(new DesktopLoginItem(electron.app, 'darwin').answer(true)).toEqual({ ok: true, item: { settable: true, openAtLogin: false, status: 'not-found' } })
+    expect(electron.setLoginItemSettings).toHaveBeenCalledOnce()
+  })
+
+  it('shows a login item that waits for approval as on, so that a click removes it (requires_approval_switch_off)', () => {
+    // The stub gives openAtLogin false for requires-approval: the switch follows the status, not openAtLogin.
+    const electron = stub(true, open => (open ? 'requires-approval' : 'not-registered'))
+    const item = new DesktopLoginItem(electron.app, 'darwin')
+    expect(item.answer(true)).toEqual({ ok: true, item: { settable: true, openAtLogin: true, status: 'requires-approval' } })
+    expect(item.answer(null)).toEqual({ ok: true, item: { settable: true, openAtLogin: true, status: 'requires-approval' } })
+    expect(item.answer(false)).toEqual({ ok: true, item: { settable: true, openAtLogin: false, status: 'not-registered' } })
+    expect(electron.setLoginItemSettings).toHaveBeenLastCalledWith({ openAtLogin: false, type: 'mainAppService' })
   })
 
   it('never sets a login item in a dev run, and shows the switch off with the status', () => {
