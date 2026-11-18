@@ -57,7 +57,8 @@
  * DSH_SMOKE_MAIN=1, so the panel must also show the main widget.
  * With DSH_SMOKE_WINDOWS=1, the check finds one window at dsh-app://w-sample.widget/widget/?slug=sample, and no
  * floating window for main. The action hide of main hides the window of sample (main_widget.window_state). The check
- * kills the host, and after the hello of the new host the window is still hidden. The action show shows it again.
+ * kills the host, and after the hello of the new host the window is still hidden. Turn off and Turn on give sample a
+ * new window, and it stays hidden. The action show shows it again.
  * It turns the sample row off through the host plugin manager and finds that window closed.
  * With DSH_SMOKE_HOST_RESTART=1, the check kills the host once. The sample widget page must be live again
  * (count readable, an add shows, its stream did not close), and the main window must load again for the new host.
@@ -915,6 +916,18 @@ async function checkWindowState(deadline) {
   const later = await windowShown('sample', deadline)
   note(`windows after the host restart: new host=${String(hostPid)} sample shown=${String(shown)} 1 s later=${String(later)}`)
   if (shown !== false || later !== false) return `windows: after a host restart, the window of sample is not hidden (${String(shown)}, then ${String(later)})`
+  // checks_miss_new_hidden_window: Turn off and Turn on give sample a new window. Its `added` frame says hidden, so the
+  // new window loads and does not show.
+  for (const enabled of [false, true]) {
+    const turned = await setSample(enabled, deadline)
+    if (turned !== undefined) return turned
+  }
+  let fresh = null
+  for (const until = soon(); Date.now() < until && fresh === null; await delay(200)) fresh = await windowShown('sample', deadline)
+  await delay(3000)
+  const freshLater = await windowShown('sample', deadline)
+  note(`windows after Turn off and Turn on: sample shown=${String(fresh)} 3 s later=${String(freshLater)}`)
+  if (fresh !== false || freshLater !== false) return `windows: after Turn off and Turn on, the new window of hidden sample is not hidden (${String(fresh)}, then ${String(freshLater)})`
   const back = await mainWindowAction('show', 'sample', deadline)
   if (back?.ok !== true || back.window !== 'shown') return `windows: the action show of main did not show sample: ${JSON.stringify(back)}`
   shown = await waitWindowShown('sample', true, soon())

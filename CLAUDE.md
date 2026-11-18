@@ -62,7 +62,7 @@ The smoke check `tools/smoke-desktop.mjs` boots the app. Each flag below adds a 
 
 - `DSH_SMOKE_OLD_PROFILE=1` starts the app with a desktop profile that has no `@deepwidgets/widget-main`, as a profile from before the unit `main.runtime`. The boot must add the bundle in its template place. Use it with `DSH_SMOKE_MAIN=1`.
 
-- `DSH_SMOKE_WINDOWS=1` checks that `sample` gets one window, and that `main` gets no floating window. The action Hide of `main` must hide the window of `sample`. After a kill of the host, the window must stay hidden. The action Show must show it again. The window must close when the `sample` row turns off.
+- `DSH_SMOKE_WINDOWS=1` checks that `sample` gets one window, and that `main` gets no floating window. The action Hide of `main` must hide the window of `sample`. After a kill of the host, the window must stay hidden. After Turn off and Turn on, the new window must stay hidden too. The action Show must show it again. The window must close when the `sample` row turns off.
 
 - `DSH_SMOKE_CREATE=<widget source folder>` installs that folder over MCP with `widget_install`. Then it finds the window and removes the widget. When the folder has `page/`, the render check must pass, and the built page must be in the profile. With `DSH_SMOKE_CREATE_CASES=<JSON file>`, the render cases in that file install first: each one must be refused with its code and next step, or install with its warnings, or install and show its text in its window. When the folder has `page/`, `DSH_SMOKE_CREATE_NEXT` and `DSH_SMOKE_CREATE_PLAIN` must name the same bundle with new page sources and with no `page/`. The check follows the window through these installs and two renderer crashes (`agent_library.serving`).
 
