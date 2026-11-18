@@ -317,6 +317,11 @@ const programSchema = z.object({
   updatedAt: z.number(),
   seed: z.string().optional(),
 }).strict()
+/**
+ * main_widget.window_state: the shown state of the widget window of a slug, as the operator chose it in the main widget.
+ * A slug with no record shows: a new widget starts as shown. A remove of the widget deletes the record.
+ */
+const windowSchema = z.object({ shown: z.boolean(), updatedAt: z.number() }).strict()
 const requestSchema = z.object({
   hash: z.string(),
   at: z.number(),
@@ -334,6 +339,7 @@ export const widgetsDomain = defineDomain({
     state: domainTable(stateSchema),
     program: domainTable(programSchema),
     requests: domainTable(requestSchema),
+    windows: domainTable(windowSchema),
   },
 })
 
@@ -342,6 +348,7 @@ type WidgetsDomain = Domain<typeof widgetsDomain>
 export type ProgramRecord = z.infer<typeof programSchema>
 type StoredRequest = z.infer<typeof requestSchema>
 type WriteMark = z.infer<typeof writeMarkSchema>
+type WindowRecord = z.infer<typeof windowSchema>
 
 /** A checked definition, as the runtime keeps it. */
 interface Registration {
@@ -404,6 +411,9 @@ interface Runtime {
   holdLift(slug: string): void
   settleLift(slug: string, ok: boolean): void
   rowsOf(slug: string): RegisteredRows
+  windowShown(slug: string): boolean
+  setWindowShown(slug: string, shown: boolean): Promise<void>
+  forgetWindow(slug: string): Promise<void>
   commit(slug: string, name: string | undefined): void
   committed(slug: string): string | undefined
   changes(since: string | undefined): { cursor: string, changes: WidgetChange[], reset?: true }
@@ -619,6 +629,30 @@ export class WidgetRecordsService extends Service {
   /** widget_fv.replace: the Loader rows that registered `slug`: of its live or failed entry, and of its standby. */
   rowsOf(slug: string): RegisteredRows {
     return guard(() => this.runtime.rowsOf(slug))
+  }
+
+  /**
+   * main_widget.window_state: whether the widget window of `slug` shows. A slug with no stored choice shows. The main
+   * widget reads it for the Window field of its Widgets tab.
+   */
+  windowShown(slug: string): boolean {
+    return guard(() => this.runtime.windowShown(slug))
+  }
+
+  /**
+   * main_widget.window_state: store the shown state of the widget window of `slug`, across Host starts. The events route
+   * sends it to Electron main in a `window` frame, and Electron main shows or hides the window. The Show and Hide
+   * actions of the main widget call it.
+   * @throws {WidgetError} `unknown-widget` when `slug` has no widget window: it has no live or failed entry, or it is
+   * the main widget.
+   */
+  setWindowShown(slug: string, shown: boolean): Promise<void> {
+    return guard(() => this.runtime.setWindowShown(slug, shown))
+  }
+
+  /** main_widget.window_state: forget the shown state of `slug`, so that a later install of it starts as shown. A remove calls it. */
+  forgetWindow(slug: string): Promise<void> {
+    return guard(() => this.runtime.forgetWindow(slug))
   }
 
   /**
@@ -875,13 +909,35 @@ export function apply(ctx: Context, config: Config): void {
   }
   /** main_widget.widget: the main widget has no widget window, so the events route does not name it. */
   const windowed = (slug: string): boolean => slug !== MAIN_SLUG
-  function pushEvent(message: { type: 'added' | 'removed', slug: string }): void {
-    if (!windowed(message.slug)) return
+  /**
+   * main_widget.window_state: the stored shown state of the widget window of `slug`. A slug with no record shows. The
+   * events route opens its streams after the storage domain, so each frame reads the stored value.
+   */
+  const shownOf = (slug: string): boolean => domain?.table('windows').get(slug)?.shown ?? true
+  function sendEvent(message: unknown): void {
     const frame = sseFrame(message)
     for (const open of [...events]) open.send(frame)
   }
+  /** One frame of the events route for `slug`. An `added` frame carries the shown state of its window. */
+  function pushEvent(message: { type: 'added' | 'removed', slug: string }): void {
+    if (!windowed(message.slug)) return
+    sendEvent(message.type === 'added' ? { ...message, shown: shownOf(message.slug) } : message)
+  }
+  /** The first frame of the events route: each slug with a widget window, and the shown state of each one. */
+  function eventsHello(): { type: 'hello', slugs: string[], shown: Record<string, boolean> } {
+    const slugs = [...widgets.keys()].filter(windowed)
+    return { type: 'hello', slugs, shown: Object.fromEntries(slugs.map((slug) => [slug, shownOf(slug)])) }
+  }
   ctx.on('domain/changed', (change) => {
-    if (change.domain !== 'widgets' || change.operation !== 'put') return
+    if (change.domain !== 'widgets') return
+    if (change.table === 'windows') {
+      // main_widget.window_state: the write is durable, so Electron main can obey it. A slug that is not live has no window.
+      if (!widgets.has(change.key) || !windowed(change.key)) return
+      sendEvent({ type: 'window', slug: change.key, shown: change.operation === 'put' ? (change.value as WindowRecord).shown : true })
+      signalMain()
+      return
+    }
+    if (change.operation !== 'put') return
     const rev = (change.value as { rev: number }).rev
     if (change.table === 'state') push(change.key, { type: 'data', rev })
     else if (change.table === 'program') push(change.key, { type: 'program', rev })
@@ -1553,8 +1609,25 @@ export function apply(ctx: Context, config: Config): void {
     path: '/api/widgets/events',
     methods: ['GET'],
     requestBody: 'buffered',
-    fetch: guarded((request) => Promise.resolve(eventStream(request, events, () => ({ type: 'hello', slugs: [...widgets.keys()].filter(windowed) })))),
+    fetch: guarded(async (request) => {
+      // main_widget.window_state: the hello frame gives the stored shown state, so the stream waits for the domain. A
+      // domain that did not open shows each window, as a widget with no stored choice.
+      await ready.catch(() => undefined)
+      return eventStream(request, events, eventsHello)
+    }),
   })
+
+  // ---- main_widget.window_state: the shown state of each widget window ----
+  async function setWindowShown(slug: string, shown: boolean): Promise<void> {
+    if (!windowed(slug) || !widgets.has(slug)) throw new WidgetError('unknown-widget', `${JSON.stringify(slug)} has no widget window: it is not live`)
+    const table = (await ready).table('windows')
+    if (shownOf(slug) === shown) return
+    await table.put(slug, { shown, updatedAt: Date.now() })
+  }
+  async function forgetWindow(slug: string): Promise<void> {
+    const table = (await ready).table('windows')
+    if (table.get(slug) !== undefined) await table.delete(slug)
+  }
 
   // widget_phase2.isolation.blame: a quarantined widget row loads as one failed entry for each of its slugs.
   const isolation = createIsolation(ctx, {
@@ -1605,6 +1678,9 @@ export function apply(ctx: Context, config: Config): void {
     holdLift: (slug) => { installing.add(slug); isolation.holdLift(slug) },
     settleLift: (slug, ok) => { installing.delete(slug); isolation.settleLift(slug, ok) },
     rowsOf,
+    windowShown: shownOf,
+    setWindowShown: (slug, shown) => admit(() => setWindowShown(slug, shown)),
+    forgetWindow: (slug) => admit(() => forgetWindow(slug)),
     changes,
     cursor,
   }

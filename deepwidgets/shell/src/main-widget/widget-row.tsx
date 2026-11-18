@@ -1,11 +1,11 @@
 /**
  * One row of the Widgets tab (`main_widget.widgets`). The head shows the title, the slug, the status, and the state
- * rev. A click opens the details: each other field of the row, and the controls Turn off, Turn on, and Remove.
- * Show and Hide come with `main.window_state`.
+ * rev. A click opens the details: each other field of the row, and the controls Show or Hide for a widget with a
+ * window (`main_widget.window_state`), Turn off or Turn on, and Remove.
  * @module @deepwidgets/shell/main-widget/widget-row
  */
 import { useEffect, useId, useState, type ReactNode } from 'react'
-import { ChevronRight, Power, PowerOff, Trash2 } from 'lucide-react'
+import { ChevronRight, Eye, EyeOff, Power, PowerOff, Trash2 } from 'lucide-react'
 import { Button } from '../ui/button.tsx'
 import { useCall } from './call.tsx'
 import { ActionListView, StateView, StatusPill } from './parts.tsx'
@@ -61,9 +61,9 @@ function ProgramField({ slug, rev }: { slug: string, rev: number }) {
   )
 }
 
-type Control = 'turnOff' | 'turnOn' | 'remove'
+type Control = 'show' | 'hide' | 'turnOff' | 'turnOn' | 'remove'
 
-const BUSY_TEXT: Record<Control, string> = { turnOff: 'Turning off…', turnOn: 'Turning on…', remove: 'Removing…' }
+const BUSY_TEXT: Record<Control, string> = { show: 'Showing…', hide: 'Hiding…', turnOff: 'Turning off…', turnOn: 'Turning on…', remove: 'Removing…' }
 
 /**
  * The wait and the refusal of the controls of one row. The row keeps them, not the details: a close of the row or a
@@ -92,7 +92,10 @@ function useRowControl(slug: string, onChanged: () => void): RowControl {
   return { busy, error, run, clearError: () => { setError(undefined) } }
 }
 
-/** Turn off or Turn on, and Remove for an agent widget. Remove asks first. A refusal shows under the buttons. */
+/**
+ * Show or Hide for a widget with a window, Turn off or Turn on, and Remove for an agent widget. Remove asks first. A
+ * refusal shows under the buttons.
+ */
 function Controls({ widget, control }: { widget: Widget, control: RowControl }) {
   const { busy, error } = control
   const [confirming, setConfirming] = useState(false)
@@ -121,6 +124,15 @@ function Controls({ widget, control }: { widget: Widget, control: RowControl }) 
         </div>
       ) : (
         <span className="flex items-center gap-2">
+          {widget.window === 'shown' ? (
+            <Button variant="outline" size="xs" onClick={() => { void run('hide') }} disabled={busy !== undefined} data-dw="hide">
+              <EyeOff />{busy === 'hide' ? BUSY_TEXT.hide : 'Hide'}
+            </Button>
+          ) : widget.window === 'hidden' ? (
+            <Button variant="outline" size="xs" onClick={() => { void run('show') }} disabled={busy !== undefined} data-dw="show">
+              <Eye />{busy === 'show' ? BUSY_TEXT.show : 'Show'}
+            </Button>
+          ) : null}
           {off ? (
             <Button size="xs" onClick={() => { void run('turnOn') }} disabled={busy !== undefined} data-dw="turn-on">
               <Power />{busy === 'turnOn' ? BUSY_TEXT.turnOn : 'Turn on'}
@@ -189,7 +201,10 @@ function Details({ id, widget, control }: { id: string, widget: Widget, control:
             </ul>
           )}
         </Field>
-        <Field label="Window">{widget.window === 'shown' ? 'Shown' : <Muted>No window</Muted>}</Field>
+        <Field label="Window">
+          {widget.window === undefined ? <Muted>No window</Muted>
+            : <span data-dw="window" data-window={widget.window}>{widget.window === 'shown' ? 'Shown' : 'Hidden'}</span>}
+        </Field>
       </dl>
       <Controls widget={widget} control={control} />
     </div>

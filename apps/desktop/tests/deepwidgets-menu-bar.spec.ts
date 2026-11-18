@@ -13,6 +13,7 @@ const fake = await vi.hoisted(async () => {
     visible = false
     destroyed = false
     readonly showInactive = vi.fn(() => { this.visible = true })
+    readonly focus = vi.fn(() => { fake.focused = this })
     readonly webContents = Object.assign(new EventEmitter(), {
       setWindowOpenHandler: vi.fn<(handler: () => { action: string }) => void>(),
       loadURL: vi.fn(async (_url: string) => {}),
@@ -30,7 +31,8 @@ const fake = await vi.hoisted(async () => {
   }
   const app = { hide: vi.fn(() => { for (const window of windows) window.visible = false }) }
   const windows: FakeWindow[] = []
-  return { FakeTray, FakeWindow, FakeMenubar, menubars, app, windows }
+  const fake = { FakeTray, FakeWindow, FakeMenubar, menubars, app, windows, focused: undefined as FakeWindow | undefined }
+  return fake
 })
 
 vi.mock('electron', () => ({
@@ -39,7 +41,7 @@ vi.mock('electron', () => ({
     createFromPath: (path: string) => ({ path, isEmpty: () => path === 'missing.png', setTemplateImage: vi.fn() }),
   },
   Menu: { buildFromTemplate: (template: unknown[]) => ({ items: template }) },
-  BrowserWindow: { getAllWindows: () => fake.windows },
+  BrowserWindow: { getAllWindows: () => fake.windows, getFocusedWindow: () => fake.focused ?? null },
 }))
 vi.mock('electron-menubar', () => ({ Menubar: fake.FakeMenubar }))
 
@@ -68,6 +70,7 @@ beforeEach(() => {
   fake.menubars.length = 0
   fake.windows.length = 0
   fake.app.hide.mockClear()
+  fake.focused = undefined
 })
 
 afterEach(() => {
@@ -147,6 +150,51 @@ describe('the panel (main_widget.panel)', () => {
     // A hide at a loss of focus leaves the focus where it went.
     menubar.emit('after-hide')
     expect(fake.app.hide).toHaveBeenCalledOnce()
+  })
+
+  it('gives the keys back to the widget window that had them when the panel opened (panel_close_takes_widget_focus)', () => {
+    const { bar, menubar } = make()
+    const panel = withPanel(menubar)
+    const widget = new fake.FakeWindow()
+    fake.windows.push(widget)
+    widget.visible = true
+    fake.focused = widget
+    menubar.emit('show')
+    panel.visible = true
+    fake.focused = panel
+    bar.tray.emit('click')
+    panel.visible = false
+    menubar.emit('after-hide')
+    expect(widget.focus).toHaveBeenCalledOnce()
+    expect(fake.app.hide).not.toHaveBeenCalled()
+    // The next close by a click with no window of the app in focus before it gives the keys to the app before it.
+    fake.focused = undefined
+    menubar.emit('show')
+    panel.visible = true
+    bar.tray.emit('click')
+    panel.visible = false
+    menubar.emit('after-hide')
+    expect(widget.focus).toHaveBeenCalledOnce()
+    expect(fake.app.hide).toHaveBeenCalledOnce()
+  })
+
+  it('gives the keys to the app before it when the widget window that had them is hidden now', () => {
+    const { bar, menubar } = make()
+    const panel = withPanel(menubar)
+    const widget = new fake.FakeWindow()
+    fake.windows.push(widget)
+    widget.visible = true
+    fake.focused = widget
+    menubar.emit('show')
+    panel.visible = true
+    // The operator hides the widget window in the panel (main_widget.window_state).
+    widget.visible = false
+    bar.tray.emit('click')
+    panel.visible = false
+    menubar.emit('after-hide')
+    expect(widget.focus).not.toHaveBeenCalled()
+    expect(fake.app.hide).toHaveBeenCalledOnce()
+    expect(widget.showInactive).not.toHaveBeenCalled()
   })
 
   it('does not take the keys when a click opens it', () => {

@@ -887,7 +887,7 @@ export class WidgetInstaller {
   }
 
   /**
-   * Remove the bundle of `slug`. Its state stays in storage. With `operator`, the Remove of the main widget, it also ends
+   * Remove the bundle of `slug`. Its state stays in storage, and the shown state of its window goes. With `operator`, the Remove of the main widget, it also ends
    * a Turn off of the slug (main_widget.widgets). An agent `widget_remove` keeps it.
    */
   remove(slug: string, options: { operator?: boolean } = {}): Promise<{ slug: string, application: ChangeResult['application'] }> {
@@ -910,6 +910,8 @@ export class WidgetInstaller {
       await rm(this.folderOfName(slug, secondBundleName(slug)), { recursive: true, force: true })
       this.services.records.clearOff(slug)
       this.services.records.commit(slug, undefined)
+      // main_widget.window_state: a later install of the slug is a new widget, so its window starts as shown.
+      await this.services.records.forgetWindow(slug)
       // main_widget.widgets: only the operator ends a Turn off: Turn on, or Remove in the main widget. After an agent
       // `widget_remove`, a later `widget_install` of the slug installs it off.
       if (options.operator === true) await this.writeTurnedOff(slug, false)

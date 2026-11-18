@@ -3,6 +3,8 @@
  * The spec is `widget_mvp.windows` in `docs/specs/widget-mvp.md`. Each window loads its page from the widget origin
  * of its slug (`agent_library.serving` in `docs/specs/agent-library.md`): the built page of the slug when the Host
  * lists a page link for it, else the shared shell. This module also answers the requests of a widget origin.
+ * The Host decides whether each window shows (`main_widget.window_state`, decision `widget.window_manager`): each frame
+ * of the events stream carries the shown state, and this module shows or hides the window to match it.
  * @module deepwidgets-windows
  */
 import { join } from 'node:path'
@@ -11,10 +13,11 @@ import { EventSourceParserStream } from 'eventsource-parser/stream'
 import { isWidgetSlug, widgetRoute, widgetUrl, type WidgetPageMode, type WidgetPages } from './deepwidgets-origin.ts'
 import { servePageFile } from './deepwidgets-page-path.ts'
 
-/** One frame of `GET /api/widgets/events` (`widget_mvp.runtime.routes`). */
+/** One frame of `GET /api/widgets/events` (`widget_mvp.runtime.routes`, `main_widget.window_state`). */
 type WidgetEvent =
-  | { readonly type: 'hello'; readonly slugs: readonly string[] }
-  | { readonly type: 'added' | 'removed'; readonly slug: string }
+  | { readonly type: 'hello'; readonly slugs: readonly { readonly slug: string; readonly shown: boolean }[] }
+  | { readonly type: 'added' | 'window'; readonly slug: string; readonly shown: boolean }
+  | { readonly type: 'removed'; readonly slug: string }
 
 /** The ready Host that serves the events. */
 interface WidgetHostTarget {
@@ -42,6 +45,9 @@ function validSlug(slug: unknown): slug is string {
   return false
 }
 
+/** A window shows unless the Host says `false`: a new widget starts as shown (`main_widget.window_state`). */
+const shownValue = (value: unknown): boolean => value !== false
+
 /**
  * Parse one frame at the boundary. An unknown frame gives `undefined`. Invalid slugs are dropped.
  * @param data - the `data` field of one server-sent event.
@@ -50,13 +56,15 @@ function parseWidgetEvent(data: string): WidgetEvent | undefined {
   let value: unknown
   try { value = JSON.parse(data) } catch { return undefined }
   if (typeof value !== 'object' || value === null) return undefined
-  const frame = value as { type?: unknown; slug?: unknown; slugs?: unknown }
+  const frame = value as { type?: unknown; slug?: unknown; slugs?: unknown; shown?: unknown }
   if (frame.type === 'hello' && Array.isArray(frame.slugs)) {
-    return { type: 'hello', slugs: frame.slugs.filter(validSlug) }
+    const shown = typeof frame.shown === 'object' && frame.shown !== null ? frame.shown as Record<string, unknown> : {}
+    return { type: 'hello', slugs: frame.slugs.filter(validSlug).map(slug => ({ slug, shown: shownValue(shown[slug]) })) }
   }
-  if ((frame.type === 'added' || frame.type === 'removed') && validSlug(frame.slug)) {
-    return { type: frame.type, slug: frame.slug }
+  if ((frame.type === 'added' || frame.type === 'window') && validSlug(frame.slug)) {
+    return { type: frame.type, slug: frame.slug, shown: shownValue(frame.shown) }
   }
+  if (frame.type === 'removed' && validSlug(frame.slug)) return { type: 'removed', slug: frame.slug }
   return undefined
 }
 
@@ -73,6 +81,10 @@ interface WidgetWindow {
   counted: number
   /** The times of the recent failures of the agent page. */
   failures: number[]
+  /** The shown state that the Host gave (`main_widget.window_state`). A hidden window loads, but it does not show. */
+  shown: boolean
+  /** True after a load of the window ended: a Show can show it at once. */
+  loaded?: true
 }
 
 /** How the widget origin reaches the shared shell and the Host. Electron main gives these. */
@@ -84,9 +96,9 @@ export interface WidgetOriginServers {
 }
 
 /**
- * Keep one panel window open for each slug that the Host lists.
+ * Keep one panel window open for each slug that the Host lists, shown or hidden as the Host says.
  * A Host that becomes ready gets a new stream. The windows stay open while the Host is down;
- * the `hello` frame of the next stream syncs them.
+ * the `hello` frame of the next stream syncs them and their shown state.
  */
 export class DesktopWidgetWindows {
   private readonly windows = new Map<string, WidgetWindow>()
@@ -203,25 +215,30 @@ export class DesktopWidgetWindows {
         this.failures = 0
         this.sync(frame.slugs)
       }
-      else if (frame.type === 'added') this.open(frame.slug)
+      else if (frame.type === 'added' || frame.type === 'window') this.open(frame.slug, frame.shown)
       else this.close(frame.slug)
     }
   }
 
-  private sync(slugs: readonly string[]): void {
-    const listed = new Set(slugs)
+  private sync(slugs: readonly { readonly slug: string; readonly shown: boolean }[]): void {
+    const listed = new Set(slugs.map(item => item.slug))
     for (const slug of [...this.windows.keys()]) if (!listed.has(slug)) this.close(slug)
-    for (const slug of slugs) this.open(slug)
+    for (const { slug, shown } of slugs) this.open(slug, shown)
   }
 
   /**
    * Open the panel window of one slug once: no frame, always on top, on all Spaces,
    * and shown without focus, as the trace window. Each window has its own renderer.
+   * A window that is open already takes the shown state.
+   * @param shown - false keeps the window hidden (`main_widget.window_state`).
    */
-  private open(slug: string): void {
+  private open(slug: string, shown: boolean): void {
     if (this.stopped) return
     const existing = this.windows.get(slug)
-    if (existing !== undefined && !existing.window.isDestroyed()) return
+    if (existing !== undefined && !existing.window.isDestroyed()) {
+      this.show(existing, shown)
+      return
+    }
     const area = screen.getPrimaryDisplay().workArea
     const row = this.windows.size
     const window = new BrowserWindow({
@@ -237,7 +254,7 @@ export class DesktopWidgetWindows {
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
     })
     const stamp = this.pages?.pages.get(slug)
-    const entry: WidgetWindow = { window, mode: stamp === undefined ? 'shell' : 'page', stamp, loads: 0, counted: 0, failures: [] }
+    const entry: WidgetWindow = { window, mode: stamp === undefined ? 'shell' : 'page', stamp, loads: 0, counted: 0, failures: [], shown }
     this.windows.set(slug, entry)
     window.once('closed', () => { if (this.windows.get(slug) === entry) this.windows.delete(slug) })
     window.setVisibleOnAllWorkspaces(true, { skipTransformProcessType: true })
@@ -250,6 +267,18 @@ export class DesktopWidgetWindows {
   }
 
   /**
+   * Obey the shown state of the Host. A shown window shows with no focus, so it does not take the keys of the operator.
+   * A window whose page did not load yet shows when its load ends.
+   */
+  private show(entry: WidgetWindow, shown: boolean): void {
+    entry.shown = shown
+    const { window } = entry
+    if (window.isDestroyed()) return
+    if (!shown) window.hide()
+    else if (entry.loaded === true && !window.isVisible()) window.showInactive()
+  }
+
+  /**
    * Load the URL of the mode of the window. A failed load of the shared shell destroys the window, as before.
    * A failed load of an agent page follows the failure policy.
    */
@@ -259,7 +288,9 @@ export class DesktopWidgetWindows {
     const load = ++entry.loads
     const url = widgetUrl(slug, mode)
     void window.loadURL(url).then(() => {
-      if (!window.isDestroyed() && !this.stopped && load === entry.loads) window.showInactive()
+      if (window.isDestroyed() || this.stopped || load !== entry.loads) return
+      entry.loaded = true
+      if (entry.shown) window.showInactive()
     }, (error: unknown) => {
       // A newer load stopped this one.
       if (window.isDestroyed() || load !== entry.loads) return
