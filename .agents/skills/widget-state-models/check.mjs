@@ -32,6 +32,8 @@ const ACTION_HOLDS = ['TypeOK', 'AtMostOnce', 'ReplaySameResult', 'ReplayFlag', 
   'QueryNoQueue', 'BusyNeverRuns', 'NoAdmitAfterStop', 'DrainBeforeClose', 'RevCountsWrites', 'NoDeadlock']
 const INSTALL_HOLDS = ['TypeOK', 'GatesGuardHost', 'FailedReplaceKeepsOld', 'NeverRemoveLastGood', 'CommittedNotStandby', 'StateKept', 'BuiltInUntouched', 'OneBundlePerSlug', 'NewSeedSetsProgram',
   'SameSeedKeepsProgram', 'SlugTakenOnlyForBuiltIn', 'QuarantineHolds', 'RollbackKeepsRecord', 'BuiltInSlugReserved', 'NoDeadlock']
+// main.seed_refresh (main_widget.seed): the seed rule of a built-in row.
+const SEED_HOLDS = ['TypeOK', 'BuiltInSeedHash', 'BuiltInSeedText', 'BuiltInSameSeedKeepsProgram', 'NoDeadlock']
 
 const actionMutants = {
   any_turn: 'FIFO', dup_no_flag: 'ReplayFlag', no_cancel: 'BusyNeverRuns', no_drain: 'DrainBeforeClose',
@@ -55,6 +57,12 @@ const installMutants = {
   'M-oneName-QuarantineHolds': 'QuarantineHolds', 'M-offAllowed-BuiltInSlugReserved': 'BuiltInSlugReserved',
   'M-removeFirst-FailedReplaceKeepsOld': 'FailedReplaceKeepsOld', 'M-noLiveCheck-NeverRemoveLastGood': 'NeverRemoveLastGood',
   'M-noDefer-CommittedNotStandby': 'CommittedNotStandby',
+}
+// main.seed_refresh: builtinSkip is the code before that unit, textOnly keeps the old hash, and builtinAlways writes the
+// seed at each start.
+const seedMutants = {
+  'M-builtinSkip-BuiltInSeedText': 'BuiltInSeedText', 'M-textOnly-BuiltInSeedHash': 'BuiltInSeedHash',
+  'M-builtinAlways-BuiltInSameSeedKeepsProgram': 'BuiltInSameSeedKeepsProgram',
 }
 
 // For each run: the config, the rules that must break, and the rules that must hold.
@@ -96,6 +104,16 @@ const MODELS = {
       'two-slugs': { config: 'cfg/TwoSlugs.cfg', breaks: [], holds: INSTALL_HOLDS, slow: true },
     },
     mutants: Object.fromEntries(Object.entries(installMutants).map(([m, rule]) => [
+      `mut-${m}`, { config: `cfg/mut/${m}.cfg`, breaks: [rule], holds: [] },
+    ])),
+  },
+  // The seed rule of a built-in row, apart from the install job: no install step changes the record of a built-in slug.
+  builtin_seed: {
+    spec: 'BuiltInSeed.tla',
+    runs: {
+      all: { config: 'cfg/BuiltInSeed.cfg', breaks: [], holds: SEED_HOLDS },
+    },
+    mutants: Object.fromEntries(Object.entries(seedMutants).map(([m, rule]) => [
       `mut-${m}`, { config: `cfg/mut/${m}.cfg`, breaks: [rule], holds: [] },
     ])),
   },

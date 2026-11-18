@@ -18,13 +18,31 @@ const atApplyStart = (code) => (text) => {
   if (!text.includes(applyLine)) throw new Error('template changed')
   return text.replace(applyLine, `${applyLine}\n  ${code}`)
 }
-/** The 0-based line of the removal of the old bundle in loadNew, after the commit, in the built @deepwidgets/mcp. */
+/**
+ * The 0-based line of the removal of the old bundle in loadNew, after the commit, in the built @deepwidgets/mcp. Since
+ * main.runtime (be22dbbcaa), loadNew removes it through removeBundleOf. The fault fires at the call, so no step of
+ * removeBundleOf runs: not its Turn off of the row, and not removeBundle.
+ */
 function removalLine() {
   const lines = readFileSync(join(ROOT, 'deepwidgets/mcp/lib/index.js'), 'utf8').split('\n')
-  const found = lines.flatMap((line, index) => line.includes('const removal = await this.services.pluginManager.removeBundle(old)') ? [index] : [])
+  const found = lines.flatMap((line, index) => line.includes('const removal = await this.removeBundleOf(slug, old)') ? [index] : [])
   if (found.length !== 1) throw new Error(`the removal of the old bundle is on ${String(found.length)} lines of the built file`)
   return found[0]
 }
+/**
+ * The row state that the bundle patch of each name of slug a gives: `off` with `disabled: true`, else `on`, or `missing`
+ * when the folder has no patch. removeBundleOf turns a row off before removeBundle only when its
+ * bundle patch has `disabled: true`: the installer writes it only for a slug that the operator turned off. This replay
+ * turns no slug off, so each removal of the replay must be removeBundle alone, as before main.runtime.
+ */
+const patches = () => Object.fromEntries(['a', 'a.b'].map((folder) => {
+  try {
+    const text = readFileSync(join(host.home, 'profiles/web/deepwidgets-widgets', folder, 'cordis.patch.yml'), 'utf8')
+    return [folder, /^\s+disabled: true$/m.test(text) ? 'off' : 'on']
+  } catch {
+    return [folder, 'missing']
+  }
+}))
 const rowsOf = async (ins) => {
   const rows = await ins.run("return wc.ctx.get('widgetRecords').rowsOf('a')")
   return Object.fromEntries(Object.entries(rows ?? {}).map(([kind, row]) => [kind, String(row).slice(String(row).lastIndexOf(':') + 1)]))
@@ -55,6 +73,8 @@ try {
   const listed = (await host.list()).find((w) => w.slug === 'a')
   check('v3 throws at the start, and v2 takes the slug with its state (the fallback)', rows?.live === B && rows?.fallback === A && listed?.failed === undefined && await count() === 5, short({ rows, listed }))
   check('committed.json still names v3', committed() === A, String(committed()))
+  check('the bundle patches of v3 and v2 do not turn their rows off, so the removal of v3 is removeBundle alone',
+    JSON.stringify(patches()) === JSON.stringify({ a: 'on', 'a.b': 'on' }), short(patches()))
   const bad = writeWidget(work, 'a-bad', tpl, compose(program('SEED-BAD'), afterRegister("if ('setProgram' in ctx.widgets) throw new Error('host only failure after register')")))
   const r4 = await host.call('widget_install', { dir: bad })
   const after = (await host.list()).find((w) => w.slug === 'a')

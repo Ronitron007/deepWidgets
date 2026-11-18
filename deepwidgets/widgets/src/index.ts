@@ -220,7 +220,10 @@ export interface WidgetAction<S, A = unknown> {
 export interface WidgetDef<S, T extends readonly unknown[] = readonly unknown[]> {
   slug: string
   title: string
-  /** The seed OpenUI Lang text. A stored program wins over it. */
+  /**
+   * The seed OpenUI Lang text. A stored program wins over it until the seed changes: the seed hash in the program record
+   * then differs (`widget_fv.install` for an agent row, `main_widget.seed` for a built-in row).
+   */
   program: string
   /**
    * The id of the component set that the program uses (`main_widget.catalog`). Defaults to {@link DEFAULT_CATALOG}.
@@ -358,6 +361,8 @@ interface Registration {
    * `deepwidgets-widget-<slug>` that is not built in. Set by `add`.
    */
   replaceable?: boolean
+  /** main_widget.seed: true when the code of the row is a built-in bundle, as safe mode checks it. Set by `add`. */
+  builtIn?: boolean
 }
 
 /** The hash of a seed program, as the program record keeps it. */
@@ -1271,19 +1276,25 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   /**
-   * Write the seed records of a slug when storage has none. Stored records win, with one exception
-   * (`widget_fv.install`): the load of an agent bundle whose seed hash differs from the hash in the program record
-   * sets the new seed. The text and its hash land in one write, so a crash can not leave the program of an older seed
-   * under the hash of the new seed. A record without a hash stays: `widget_install` gives it one. Only an agent row
-   * writes the hash, so the record of a built-in widget has none.
+   * Write the seed records of a slug when storage has none. Stored records win, with two exceptions. The text and its
+   * hash land in one write, so a crash can not leave the program of an older seed under the hash of the new seed.
+   * - `widget_fv.install`: the load of an agent bundle whose seed hash differs from the hash in the program record sets
+   *   the new seed. A record without a hash stays: `widget_install` gives it one.
+   * - `main_widget.seed`: the registration of a built-in widget sets its seed when the hash in the program record
+   *   differs, also when the record has no hash. An app update brings a new seed program, and no install runs for it.
+   * An edit keeps the hash (`setProgram`), so it stays until the seed changes. Only these rows write the hash.
    */
   async function seed(registration: Registration): Promise<void> {
     const store = await ready
     const program = store.table('program').get(registration.slug)
     const hash = seedHash(registration.program)
+    const hashed = registration.agent === true || registration.builtIn === true
+    const stale = registration.builtIn === true
+      ? program?.seed !== hash
+      : registration.agent === true && program?.seed !== undefined && program.seed !== hash
     if (program === undefined) {
-      await store.table('program').put(registration.slug, { rev: 1, text: registration.program, updatedAt: Date.now(), ...(registration.agent === true ? { seed: hash } : {}) })
-    } else if (registration.agent === true && program.seed !== undefined && program.seed !== hash) {
+      await store.table('program').put(registration.slug, { rev: 1, text: registration.program, updatedAt: Date.now(), ...(hashed ? { seed: hash } : {}) })
+    } else if (stale) {
       const rev = program.rev + 1
       await store.table('program').put(registration.slug, { rev, text: registration.program, updatedAt: Date.now(), seed: hash })
       logChange({ slug: registration.slug, kind: 'program', by: 'seed', rev })
@@ -1309,8 +1320,10 @@ export function apply(ctx: Context, config: Config): void {
       ctx.logger.warn(`widgets: ${message}`)
       throw new WidgetError('safe-mode', message)
     }
+    // An agent row keeps the seed rule of an agent row, so its registration skips the scan of the Loader cache.
+    registration.builtIn = registration.agent !== true && builtIn()
     registration.replaceable = registration.agent === true
-      || (registration.row !== undefined && rowId(registration.row) === `deepwidgets-widget-${slug}` && !builtIn())
+      || (registration.row !== undefined && rowId(registration.row) === `deepwidgets-widget-${slug}` && !registration.builtIn)
     // widget_fv.replace: when the row of the committed version of the slug is in the Loader config and on, a row of
     // another version of the slug never takes the slug first. It waits as the standby, and a held row of it shows nothing.
     const owner = committedRow(slug)

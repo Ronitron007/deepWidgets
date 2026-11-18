@@ -111,7 +111,8 @@ Init ==
   /\ sbyCode = [s \in Slugs |-> None]
   /\ offMap = [s \in Slugs |-> FALSE]
   /\ sampleOn = TRUE
-  \* The built-in sample is live and seeded at start.
+  \* The built-in sample is live and seeded at start. Its program record stays fixed here: the seed rule of a built-in
+  \* row (main_widget.seed) is in the model builtin_seed, because no install step changes that record.
   /\ prog = [s \in Slugs |-> IF s = BuiltIn THEN "p0" ELSE None]
   /\ state = [s \in Slugs |-> IF s = BuiltIn THEN "init" ELSE "none"]
   /\ everUsed = [s \in Slugs |-> FALSE]
