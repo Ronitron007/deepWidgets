@@ -12,13 +12,19 @@
  * The plugin manager, the installer, and the install records are host code. The actions run them through
  * `widgetRecords.asHost`, so they run outside the store of this row: a crash in them is not blamed on this widget.
  *
+ * The query `settings` and the mutations `setMode` and `setLoginItem` are the host half of the Settings tab
+ * (`main_widget.settings`). The modes and the port come from the service `mcpSettings` of `@deepwidgets/mcp`, which
+ * reads the files that the MCP tools read. The launch-at-login switch goes to Electron main over the IPC channel of the
+ * host (the message `deepwidgets-login-item`), because the page talks only to the host. Electron main sets the login
+ * item and reads its status back; a dev run sets nothing.
+ *
  * An action that refuses gives a {@link MainRefusal} as its result, with a code, so the page routes by the code. Only a
  * defect throws: the call then gives `handler-error`.
  * @module @deepwidgets/widget-main
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { ChangeResult, PluginInfo } from '@deepseek-ai/dsh-plugin-manager'
-import type { CreationErrorCode } from '@deepwidgets/mcp'
+import type { CreationErrorCode, ModeSettings, PortSetting, SetModeRefusal } from '@deepwidgets/mcp'
 import type { WidgetActionDescription, WidgetDescription } from '@deepwidgets/widgets'
 import { z } from 'zod'
 
@@ -35,15 +41,18 @@ export const widgetSlugs = ['main'] as const
 export const CATALOG = 'deepwidgets-main@1'
 
 /**
- * The program of the panel page (`main_widget.widgets`), in the component set {@link CATALOG} of the shell entry
- * `main.html`. The query `widgets` feeds the Widgets tab; its default is null, so the page shows a loading state, not an
- * empty list. The row controls of `WidgetTable` call `turnOff`, `turnOn`, `remove`, and `program` with the slug of the
- * row, then run `refresh`. The runtime also sends a `data` frame to the page of main on each change of another widget.
+ * The program of the panel page (`main_widget.widgets`, `main_widget.settings`), in the component set {@link CATALOG}
+ * of the shell entry `main.html`. The query `widgets` feeds the Widgets tab, and the query `settings` feeds the
+ * Settings tab. Their defaults are null, so the page shows a loading state, not an empty list. The row controls of
+ * `WidgetTable` call `turnOff`, `turnOn`, `remove`, and `program` with the slug of the row, then run `refresh`. The
+ * switches of `ModeSwitches` and `LaunchAtLogin` call `setMode` and `setLoginItem`, then run `refresh`. The runtime
+ * also sends a `data` frame to the page of main on each change of another widget, and the page then runs each query.
  */
 export const PROGRAM = `root = Panel("deepWidgets", [widgetsTab, settingsTab])
 widgetsTab = Tab("Widgets", [WidgetTable(w.widgets, Action([@Run(w)]))])
-settingsTab = Tab("Settings", [Note("Settings come in a later unit.")])
+settingsTab = Tab("Settings", [ModeSwitches(s.modes, Action([@Run(s)])), ApprovedAgents(), McpPort(s.port), LaunchAtLogin(s.loginItem, Action([@Run(s)]))])
 w = Query("widgets", {}, {widgets: null})
+s = Query("settings", {}, {modes: null, port: null, loginItem: null})
 `
 
 /** The time limit of an action that changes a plugin row. A remove runs pnpm in the profile. */
@@ -103,9 +112,95 @@ export interface MainWidget {
 }
 
 const slugInput = z.object({ slug: z.string() })
+const modeInput = z.object({ mode: z.string(), on: z.boolean() })
+const loginItemInput = z.object({ open: z.boolean() })
+
+/** The status of the login item that macOS gives (`main_widget.settings`). Same values as `apps/desktop/src/deepwidgets-login-item.ts`. */
+export type LoginItemStatus = 'enabled' | 'requires-approval' | 'not-registered' | 'not-found'
+
+/**
+ * The launch-at-login switch as Electron main reads it back. Same shape as `apps/desktop/src/deepwidgets-login-item.ts`.
+ * `settable` is false in a dev run and on a platform with no login item: the switch is then off and disabled, and
+ * `blocked` tells why. `status` is absent when macOS gives none.
+ */
+const loginItemSchema = z.object({
+  settable: z.boolean(),
+  blocked: z.enum(['dev-run', 'platform']).optional(),
+  openAtLogin: z.boolean(),
+  status: z.enum(['enabled', 'requires-approval', 'not-registered', 'not-found']).optional(),
+})
+export type LoginItemSetting = z.infer<typeof loginItemSchema>
+
+/** The code of a refusal of Electron main for the login item. */
+type LoginItemRefusal = 'dev-run' | 'platform' | 'login-item-failed'
+
+/** The answer of Electron main, parsed at this boundary. */
+const loginItemAnswerSchema = z.union([
+  z.object({ ok: z.literal(true), item: loginItemSchema }),
+  z.object({ ok: z.literal(false), code: z.enum(['dev-run', 'platform', 'login-item-failed']), message: z.string() }),
+])
+type LoginItemAnswer = z.infer<typeof loginItemAnswerSchema> | { ok: false, code: 'unavailable', message: string }
+
+/** The IPC message of the login item between the host and Electron main, with the same `callId` in the answer. */
+const LOGIN_ITEM_MESSAGE = 'deepwidgets-login-item'
+/**
+ * The time limit of the actions `settings` and `setLoginItem`. It is the default action limit of the runtime, written
+ * here so that {@link LOGIN_ITEM_LIMIT_MS} stays below it.
+ */
+const SETTINGS_TIMEOUT_MS = 5_000
+/**
+ * Electron main answers at once; it reads the status with one synchronous call. The wait ends well before
+ * {@link SETTINGS_TIMEOUT_MS} (login_limit_equals_action_limit): when Electron main does not answer, the query
+ * `settings` still gives the modes and the port with the login item as unknown, and `setLoginItem` gives
+ * `login-item-failed`, not a `timeout` of the whole action.
+ */
+const LOGIN_ITEM_LIMIT_MS = 2_000
+
+/**
+ * Ask Electron main for the login item: read it (`open` null), or set it and read it back. A host with no IPC channel,
+ * such as a CLI host, has no Electron main and no login item.
+ */
+function askLoginItem(next: { id: number }, open: boolean | null): Promise<LoginItemAnswer> {
+  return new Promise((resolve) => {
+    if (!process.connected || process.send === undefined) {
+      resolve({ ok: false, code: 'unavailable', message: 'this host has no Electron main, so it has no login item' })
+      return
+    }
+    const callId = next.id++
+    const listen = (message: unknown): void => {
+      const value = message as { type?: unknown, callId?: unknown, answer?: unknown } | null
+      if (typeof value !== 'object' || value === null || value.type !== LOGIN_ITEM_MESSAGE || value.callId !== callId) return
+      done()
+      const parsed = loginItemAnswerSchema.safeParse(value.answer)
+      resolve(parsed.success ? parsed.data : { ok: false, code: 'login-item-failed', message: `Electron main gave an answer in a shape that the host can not read: ${z.prettifyError(parsed.error)}` })
+    }
+    const timer = setTimeout(() => {
+      done()
+      resolve({ ok: false, code: 'login-item-failed', message: `Electron main did not answer in ${String(LOGIN_ITEM_LIMIT_MS)} ms; the login item is unknown` })
+    }, LOGIN_ITEM_LIMIT_MS)
+    function done(): void {
+      clearTimeout(timer)
+      process.off('message', listen)
+    }
+    process.on('message', listen)
+    process.send({ type: LOGIN_ITEM_MESSAGE, callId, open }, (error: Error | null) => {
+      if (error === null) return
+      done()
+      resolve({ ok: false, code: 'login-item-failed', message: `the host could not ask Electron main: ${error.message}` })
+    })
+  })
+}
+
+/** The answer of the query `settings`: one part for each section of the Settings tab that the host fills. */
+export interface MainSettings {
+  modes: MainAnswer<ModeSettings>
+  port: MainAnswer<PortSetting>
+  loginItem: MainAnswer<LoginItemSetting>
+}
 
 /** The code of a refusal of an action of `main`. The codes of the installer come from the remove path of `widget_remove`. */
 export type MainRefusalCode = 'unknown-widget' | 'built-in' | 'no-row' | 'unavailable' | 'change-failed' | CreationErrorCode
+  | SetModeRefusal | LoginItemRefusal
 
 /** A refusal of an action of `main`: the result of the action, so that the page routes by `code`, not by the message. */
 export interface MainRefusal {
@@ -307,6 +402,44 @@ export function apply(ctx: Context): void {
     }
   }
 
+  /** The ids of the login-item calls to Electron main. */
+  const loginCalls = { id: 1 }
+
+  /** A refusal for a section of the Settings tab, for a host with no MCP row. */
+  const noMcp = (): MainRefusal => ({ ok: false, code: 'unavailable', message: 'this host has no MCP server, so it has no MCP settings' })
+
+  /** The answer of Electron main as a result: a refusal keeps its code. */
+  function loginItemResult(reply: LoginItemAnswer): MainAnswer<LoginItemSetting> {
+    return reply.ok ? { ok: true, ...reply.item } : { ok: false, code: reply.code, message: reply.message }
+  }
+
+  /** Each section of the Settings tab that the host fills. A section that fails gives its refusal; the others still show. */
+  async function settingsAnswer(): Promise<MainSettings> {
+    const mcp = ctx.get('mcpSettings')
+    const [modes, port, loginItem] = await Promise.all([
+      mcp === undefined ? noMcp() : mcp.modes().then((value): MainAnswer<ModeSettings> => ({ ok: true, ...value })),
+      mcp === undefined ? noMcp() : mcp.port().then((value): MainAnswer<PortSetting> => ({ ok: true, ...value })),
+      askLoginItem(loginCalls, null).then(loginItemResult),
+    ])
+    return { modes, port, loginItem }
+  }
+
+  /** Turn a gated mode on or off in the settings file. The next MCP tool call reads it. */
+  async function setMode(mode: string, on: boolean): Promise<ModeSettings> {
+    const mcp = ctx.get('mcpSettings')
+    if (mcp === undefined) return refuse('unavailable', noMcp().message)
+    const result = await mcp.setMode(mode, on)
+    if (!result.ok) return refuse(result.code, result.message)
+    return result.settings
+  }
+
+  /** Set the login item through Electron main, which reads its status back. A dev run refuses with `dev-run`. */
+  async function setLoginItem(open: boolean): Promise<LoginItemSetting> {
+    const reply = await askLoginItem(loginCalls, open)
+    if (!reply.ok) return refuse(reply.code, reply.message)
+    return reply.item
+  }
+
   ctx.widgets.register({
     slug: widgetSlugs[0],
     title: 'deepWidgets',
@@ -315,6 +448,15 @@ export function apply(ctx: Context): void {
     initialState: {},
     actions: [
       { name: 'widgets', kind: 'query', handler: () => records.asHost(async () => ({ widgets: await describeAll() })) },
+      { name: 'settings', kind: 'query', timeoutMs: SETTINGS_TIMEOUT_MS, handler: () => records.asHost(settingsAnswer) },
+      { name: 'setMode', kind: 'mutation', args: modeInput, handler: ({ mode, on }) => records.asHost(() => answer(() => setMode(mode, on))) },
+      {
+        name: 'setLoginItem',
+        kind: 'mutation',
+        args: loginItemInput,
+        timeoutMs: SETTINGS_TIMEOUT_MS,
+        handler: ({ open }) => records.asHost(() => answer(() => setLoginItem(open))),
+      },
       {
         name: 'program',
         kind: 'query',

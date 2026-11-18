@@ -22,6 +22,11 @@ const PANEL_HEIGHT = 600
 export const READY_DEADLINE_MS = 30_000
 /** A second end of the renderer of the panel in this time counts as a failure of the menu bar. */
 export const PANEL_CRASH_WINDOW_MS = 60_000
+/**
+ * The DOM event that makes the page of main show its first tab, the Widgets tab (`main_widget.provisional`). Same name
+ * as `deepwidgets/shell/src/main-widget/library.tsx`.
+ */
+export const PANEL_FIRST_TAB_EVENT = 'deepwidgets-panel-first-tab'
 
 /** What Electron main gives the menu bar. */
 export interface DesktopMenuBarOptions {
@@ -132,8 +137,16 @@ export class DesktopMenuBar {
   /**
    * Show the panel under the icon with key focus. A second launch, a `dsh://open` link, and the menu item call this.
    * `show()` of menubar activates the app, so the panel takes keyboard focus.
+   * @param options - `firstTab`: the page shows its first tab, the Widgets tab, as a second launch asks
+   *   (`main_widget.provisional`). The page only switches its tab; it loads nothing again.
    */
-  open(): void {
+  open(options: { readonly firstTab?: boolean } = {}): void {
+    const panel = this.panel
+    if (options.firstTab === true && panel !== undefined && !panel.isDestroyed()) {
+      // A page that still loads gets the event after its load. It then shows its first tab anyway.
+      void panel.webContents.executeJavaScript(`window.dispatchEvent(new Event(${JSON.stringify(PANEL_FIRST_TAB_EVENT)})); true`)
+        .catch((error: unknown) => { console.warn('deepwidgets-menu-bar: the panel did not show its first tab', error) })
+    }
     void this.menubar.showWindow().catch((error: unknown) => { console.warn('deepwidgets-menu-bar: the panel did not open', error) })
   }
 

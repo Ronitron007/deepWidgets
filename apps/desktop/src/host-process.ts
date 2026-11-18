@@ -12,6 +12,8 @@ import { isHostMcp, type HostMcp } from './deepwidgets-mcp-port.ts'
 import { parseRenderCheckJob, type RenderCheckJob, type RenderCheckResult } from './deepwidgets-render-check.ts'
 // deepwidgets-trim: added import; agent_library.serving. The Host sends the page state of the widgets.
 import { parseWidgetPages, type WidgetPages } from './deepwidgets-origin.ts'
+// deepwidgets-trim: added import; main_widget.settings. The Host asks Electron main for the login item.
+import { LOGIN_ITEM_MESSAGE, parseLoginItemRequest, type LoginItemAnswer } from './deepwidgets-login-item.ts'
 import { parsePluginOperationRecord, type PluginOperationRecord, type PluginOperationRunId } from '@deepseek-ai/dsh-plugin-manager/diagnostic'
 
 interface ReadyEvent {
@@ -41,9 +43,14 @@ interface PlatformSessionEvent {
 // deepwidgets-trim: agent_library.serving. The page state of the widgets is one more event.
 // type DeepwidgetsHostEvent = { readonly type: 'deepwidgets-mcp'; readonly mcp: HostMcp | null }
 //   | { readonly type: 'deepwidgets-render-check'; readonly checkId: number; readonly check: RenderCheckJob }
+// deepwidgets-trim: main_widget.settings. The request of the login item is one more event.
+// type DeepwidgetsHostEvent = { readonly type: 'deepwidgets-mcp'; readonly mcp: HostMcp | null }
+//   | { readonly type: 'deepwidgets-render-check'; readonly checkId: number; readonly check: RenderCheckJob }
+//   | { readonly type: 'deepwidgets-pages'; readonly root: string; readonly pages: Readonly<Record<string, string>> }
 type DeepwidgetsHostEvent = { readonly type: 'deepwidgets-mcp'; readonly mcp: HostMcp | null }
   | { readonly type: 'deepwidgets-render-check'; readonly checkId: number; readonly check: RenderCheckJob }
   | { readonly type: 'deepwidgets-pages'; readonly root: string; readonly pages: Readonly<Record<string, string>> }
+  | { readonly type: 'deepwidgets-login-item'; readonly callId: number; readonly open: boolean | null }
 
 // deepwidgets-trim: agent_library.build_gate.render. The deepWidgets events are one type, with the render check.
 // type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent
@@ -101,6 +108,9 @@ function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
     // deepwidgets-trim: added case; agent_library.serving.
     case 'deepwidgets-pages':
       return parseWidgetPages(candidate) !== undefined
+    // deepwidgets-trim: added case; main_widget.settings.
+    case LOGIN_ITEM_MESSAGE:
+      return parseLoginItemRequest(candidate) !== undefined
     case 'ready':
       return typeof candidate.url === 'string'
     case 'platform-session': {
@@ -222,6 +232,7 @@ export class DesktopHostProcess {
    * @param onMcp - deepWidgets `safe_host.port`: the MCP row state of this Host, and null when the Host exits.
    * @param onRenderCheck - deepWidgets `agent_library.build_gate.render`: runs the render check of a built page.
    * @param onPages - deepWidgets `agent_library.serving.changes`: the page state of the widgets, at each change.
+   * @param onLoginItem - deepWidgets `main_widget.settings`: reads or sets the login item that the Host asks for.
    */
   constructor(
     private readonly node: string,
@@ -241,6 +252,8 @@ export class DesktopHostProcess {
     private readonly onRenderCheck?: (check: RenderCheckJob) => Promise<RenderCheckResult>,
     // deepwidgets-trim: added parameter; agent_library.serving. Receives the page state of the widgets.
     private readonly onPages?: (pages: WidgetPages) => void,
+    // deepwidgets-trim: added parameter; main_widget.settings. Reads or sets the login item that the Host asks for.
+    private readonly onLoginItem?: (open: boolean | null) => LoginItemAnswer,
   ) {}
 
   /**
@@ -299,6 +312,8 @@ export class DesktopHostProcess {
         const pages = parseWidgetPages(message)
         if (pages !== undefined) this.onPages?.(pages)
       }
+      // deepwidgets-trim: added branch; main_widget.settings.
+      else if (message.type === 'deepwidgets-login-item') this.loginItem(child, message.callId, message.open)
       else if (message.type === 'shutdown-complete') {
         if (this.stopping) this.shutdownCompleted = true
         else this.fail(new Error('dsh desktop host acknowledged an unrequested shutdown'))
@@ -347,6 +362,19 @@ export class DesktopHostProcess {
       // A Host that exited during the check gets no answer.
       if (child.connected) child.send({ type: 'deepwidgets-render-check', checkId, result }, (_error) => {})
     })
+  }
+
+  /**
+   * deepWidgets `main_widget.settings`: read or set the login item and send the answer to the Host. A Host with no
+   * handler here gets a refusal, so its Settings tab shows that the login item is not there.
+   * @param child - the Host process that asked.
+   * @param callId - the id of the request, echoed in the answer.
+   * @param open - null to read, or the value to set.
+   */
+  private loginItem(child: ChildProcess, callId: number, open: boolean | null): void {
+    const answer: LoginItemAnswer = this.onLoginItem?.(open) ?? { ok: false, code: 'login-item-failed', message: 'Electron main has no login item' }
+    // A Host that exited during the call gets no answer.
+    if (child.connected) child.send({ type: LOGIN_ITEM_MESSAGE, callId, answer }, (_error) => {})
   }
 
   /**

@@ -2,14 +2,18 @@
  * The component set `deepwidgets-main@1` (`main_widget.catalog`): the parts of the page of the main widget. The root
  * `Panel` holds the tabs Widgets and Settings. `WidgetTable` is the Widgets tab (`main_widget.widgets`). The status
  * badge, the state viewer, and the actions list are parts of each row, and a program can also use each one alone.
+ * `ModeSwitches`, `ApprovedAgents`, `McpPort`, and `LaunchAtLogin` are the sections of the Settings tab
+ * (`main_widget.settings`).
  * @module @deepwidgets/shell/main-widget/library
  */
+import { useEffect, useState, type ReactNode } from 'react'
 import { LayoutGrid } from 'lucide-react'
 import { z } from 'zod'
 import { action, createLibrary, defineComponent, useRendererQuery, useTriggerAction } from '@openuidev/react-lang'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs.tsx'
 import { ActionListView, StateView, StatusPill } from './parts.tsx'
 import { ActionSchema, StateSchema, StatusSchema, WidgetSchema, type Widget } from './schema.ts'
+import { ApprovedAgentsView, LaunchAtLoginView, McpPortView, ModeSwitchesView } from './settings.tsx'
 import { WidgetRow } from './widget-row.tsx'
 
 // action() gives a wider type than useTriggerAction takes under exactOptionalPropertyTypes; the values are the same.
@@ -124,7 +128,49 @@ const WidgetTable = defineComponent({
   component: ({ props }) => <WidgetTableView widgets={props.widgets} refresh={props.refresh as TriggerPlan | undefined} />,
 })
 
-const tabChildren = [WidgetTable.ref, Note.ref, StatusBadge.ref, StateViewer.ref, ActionList.ref]
+/** Run the action plan `refresh` of a component, when the program gives one. */
+function useRefresh(refresh: TriggerPlan | undefined): () => void {
+  const trigger = useTriggerAction()
+  return () => { if (refresh !== undefined) void trigger('', undefined, refresh) }
+}
+
+function ModeSwitchesPart({ modes, refresh }: { modes: unknown, refresh: TriggerPlan | undefined }) {
+  return <ModeSwitchesView modes={modes} refresh={useRefresh(refresh)} />
+}
+
+const ModeSwitches = defineComponent({
+  name: 'ModeSwitches',
+  description: 'The MCP modes of the Settings tab: one switch for each gated mode, and interact as always on. modes is null while the query loads. refresh runs after a switch.',
+  props: z.object({ modes: z.unknown(), refresh: action().optional() }),
+  component: ({ props }) => <ModeSwitchesPart modes={props.modes} refresh={props.refresh as TriggerPlan | undefined} />,
+})
+
+const ApprovedAgents = defineComponent({
+  name: 'ApprovedAgents',
+  description: 'The approved agents of the Settings tab. It says that the consent server is not built yet.',
+  props: z.object({}),
+  component: () => <ApprovedAgentsView />,
+})
+
+const McpPort = defineComponent({
+  name: 'McpPort',
+  description: 'The MCP port of the Settings tab: the port and the path of mcp.json, read only, each with a copy button. port is null while the query loads.',
+  props: z.object({ port: z.unknown() }),
+  component: ({ props }) => <McpPortView port={props.port} />,
+})
+
+function LaunchAtLoginPart({ loginItem, refresh }: { loginItem: unknown, refresh: TriggerPlan | undefined }) {
+  return <LaunchAtLoginView loginItem={loginItem} refresh={useRefresh(refresh)} />
+}
+
+const LaunchAtLogin = defineComponent({
+  name: 'LaunchAtLogin',
+  description: 'Launch at login in the Settings tab: one switch and the status from macOS. loginItem is null while the query loads. refresh runs after the switch.',
+  props: z.object({ loginItem: z.unknown(), refresh: action().optional() }),
+  component: ({ props }) => <LaunchAtLoginPart loginItem={props.loginItem} refresh={props.refresh as TriggerPlan | undefined} />,
+})
+
+const tabChildren = [WidgetTable.ref, Note.ref, StatusBadge.ref, StateViewer.ref, ActionList.ref, ModeSwitches.ref, ApprovedAgents.ref, McpPort.ref, LaunchAtLogin.ref]
 
 const Tab = defineComponent({
   name: 'Tab',
@@ -132,6 +178,37 @@ const Tab = defineComponent({
   props: z.object({ title: z.string(), children: z.array(z.union(tabChildren)) }),
   component: () => null,
 })
+
+/**
+ * The DOM event of Electron main that makes the panel show its first tab: a second launch opens the panel on the
+ * Widgets tab (`main_widget.provisional`). Same name as `PANEL_FIRST_TAB_EVENT` of `apps/desktop/src/deepwidgets-menu-bar.ts`.
+ */
+const FIRST_TAB_EVENT = 'deepwidgets-panel-first-tab'
+
+/** The tabs of the Panel. The first tab opens first, and again at the event {@link FIRST_TAB_EVENT}. */
+function PanelTabs({ title, tabs, render }: { title: string, tabs: { value: string, title: string, children: unknown }[], render: (children: unknown) => ReactNode }) {
+  const [active, setActive] = useState('0')
+  useEffect(() => {
+    const first = (): void => { setActive('0') }
+    window.addEventListener(FIRST_TAB_EVENT, first)
+    return () => { window.removeEventListener(FIRST_TAB_EVENT, first) }
+  }, [])
+  return (
+    <Tabs value={active} onValueChange={setActive} data-dw="main-panel">
+      <div className="dwm-panel-head">
+        <span className="flex items-center gap-2">
+          <LayoutGrid className="size-4 text-muted-foreground" aria-hidden="true" />
+          <strong className="text-sm font-semibold text-foreground">{title}</strong>
+        </span>
+        <TabsList className="dwm-tabs-list" aria-label={title}>
+          {tabs.map((tab) => <TabsTrigger key={tab.value} value={tab.value} data-dw="tab">{tab.title}</TabsTrigger>)}
+        </TabsList>
+      </div>
+      {/* Each tab stays mounted, so a switch of the tab keeps the open rows and a call that waits (main.css hides it). */}
+      {tabs.map((tab) => <TabsContent key={tab.value} value={tab.value} forceMount className="dwm-tab-panel" data-dw="tab-panel">{render(tab.children)}</TabsContent>)}
+    </Tabs>
+  )
+}
 
 const Panel = defineComponent({
   name: 'Panel',
@@ -143,26 +220,12 @@ const Panel = defineComponent({
       const tab = (node as { props?: { title?: unknown, children?: unknown } } | null)?.props
       return { value: String(index), title: typeof tab?.title === 'string' ? tab.title : `Tab ${String(index + 1)}`, children: tab?.children }
     })
-    return (
-      <Tabs defaultValue="0" data-dw="main-panel">
-        <div className="dwm-panel-head">
-          <span className="flex items-center gap-2">
-            <LayoutGrid className="size-4 text-muted-foreground" aria-hidden="true" />
-            <strong className="text-sm font-semibold text-foreground">{props.title}</strong>
-          </span>
-          <TabsList className="dwm-tabs-list" aria-label={props.title}>
-            {tabs.map((tab) => <TabsTrigger key={tab.value} value={tab.value} data-dw="tab">{tab.title}</TabsTrigger>)}
-          </TabsList>
-        </div>
-        {/* Each tab stays mounted, so a switch of the tab keeps the open rows and a call that waits (main.css hides it). */}
-        {tabs.map((tab) => <TabsContent key={tab.value} value={tab.value} forceMount className="dwm-tab-panel" data-dw="tab-panel">{renderNode(tab.children)}</TabsContent>)}
-      </Tabs>
-    )
+    return <PanelTabs title={props.title} tabs={tabs} render={renderNode} />
   },
 })
 
 /** The library of `deepwidgets-main@1`. The root is `Panel`. */
 export const mainLibrary = createLibrary({
   root: 'Panel',
-  components: [Panel, Tab, WidgetTable, Note, StatusBadge, StateViewer, ActionList],
+  components: [Panel, Tab, WidgetTable, Note, StatusBadge, StateViewer, ActionList, ModeSwitches, ApprovedAgents, McpPort, LaunchAtLogin],
 })
