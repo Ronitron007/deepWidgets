@@ -16,6 +16,7 @@ const fake = await vi.hoisted(async () => {
     readonly webContents = Object.assign(new EventEmitter(), {
       setWindowOpenHandler: vi.fn<(handler: () => { action: string }) => void>(),
       loadURL: vi.fn(async (_url: string) => {}),
+      executeJavaScript: vi.fn(async (_code: string) => true),
     })
     isVisible() { return this.visible }
     isDestroyed() { return this.destroyed }
@@ -42,7 +43,7 @@ vi.mock('electron', () => ({
 }))
 vi.mock('electron-menubar', () => ({ Menubar: fake.FakeMenubar }))
 
-const { DesktopMenuBar, PANEL_CRASH_WINDOW_MS, PANEL_URL, READY_DEADLINE_MS } = await import('../src/deepwidgets-menu-bar.ts')
+const { DesktopMenuBar, PANEL_CRASH_WINDOW_MS, PANEL_FIRST_TAB_EVENT, PANEL_URL, READY_DEADLINE_MS } = await import('../src/deepwidgets-menu-bar.ts')
 
 type Item = { label?: string; type?: string; click?: () => void }
 
@@ -155,6 +156,18 @@ describe('the panel (main_widget.panel)', () => {
     menubar.emit('after-show')
     menubar.emit('after-hide')
     expect(fake.app.hide).not.toHaveBeenCalled()
+  })
+
+  it('shows its first tab when a second launch opens it, and keeps the tab at another open (second_launch_keeps_tab)', () => {
+    const { bar, menubar } = make()
+    const panel = withPanel(menubar)
+    bar.open()
+    expect(panel.webContents.executeJavaScript).not.toHaveBeenCalled()
+    bar.open({ firstTab: true })
+    expect(PANEL_FIRST_TAB_EVENT).toBe('deepwidgets-panel-first-tab')
+    expect(panel.webContents.executeJavaScript).toHaveBeenCalledOnce()
+    expect(panel.webContents.executeJavaScript.mock.calls[0]![0]).toContain(`new Event(${JSON.stringify(PANEL_FIRST_TAB_EVENT)})`)
+    expect(menubar.showWindow).toHaveBeenCalledTimes(2)
   })
 
   it('tells Electron main that the operator looks at the app (session_end_never_resets_on_macos)', () => {
