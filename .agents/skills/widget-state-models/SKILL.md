@@ -241,7 +241,7 @@ On an idle Mac, the main runs take about 2 minutes for `crash_lifecycle` and 5 m
 
 - The default set has one crash and one agent slug, and the run `all` has no `DeselectFails`. It checks each `widget_install` rule. With `--mutants`, it took 477 seconds on 2026-11-18 on a loaded machine, and the run `all` took 142 seconds (666,152 distinct states).
 
-- The full set adds the runs `holds`, `quarantine`, and `same-seed` with two crashes and `DeselectFails`, and `two-slugs` with two agent slugs and two calls. It takes more than 30 minutes. In TLC alone, `holds` takes about 5 minutes and `two-slugs` about 1 minute.
+- The full set adds the runs `holds`, `quarantine`, and `same-seed` with two crashes and `DeselectFails`, and `two-slugs` with two agent slugs and two calls. It takes more than 30 minutes. On 2026-11-18 on a loaded machine, it took 3468 seconds. `holds`, `quarantine`, and `same-seed` each took about 1030 seconds (2,620,432 distinct states), and `two-slugs` took 224 seconds (479,652 distinct states).
 
 To use the full set, add `--full` to a `check.mjs` command. Run the full set when you change the model.
 
