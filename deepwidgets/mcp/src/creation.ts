@@ -910,11 +910,24 @@ export class WidgetInstaller {
       await rm(this.folderOfName(slug, secondBundleName(slug)), { recursive: true, force: true })
       this.services.records.clearOff(slug)
       this.services.records.commit(slug, undefined)
-      // main_widget.window_state: a later install of the slug is a new widget, so its window starts as shown.
-      await this.services.records.forgetWindow(slug)
       // main_widget.widgets: only the operator ends a Turn off: Turn on, or Remove in the main widget. After an agent
       // `widget_remove`, a later `widget_install` of the slug installs it off.
-      if (options.operator === true) await this.writeTurnedOff(slug, false)
+      // main_widget.window_state: a later install of the slug is a new widget, so its window starts as shown.
+      // window_read_breaks_core_paths: the two run apart, so a failure of one, such as a `busy` of the forget while the
+      // runtime stops, does not skip the other. The bundles are gone already, so the error tells what stays.
+      const [turnOn, forget] = await Promise.allSettled([
+        options.operator === true ? this.writeTurnedOff(slug, false) : Promise.resolve(),
+        this.services.records.forgetWindow(slug),
+      ])
+      const kept = [
+        ...(turnOn.status === 'rejected' ? [`its Turn off stays (${errorText(turnOn.reason)})`] : []),
+        ...(forget.status === 'rejected' ? [`the hidden state of its window stays (${errorText(forget.reason)})`] : []),
+      ]
+      if (kept.length > 0) {
+        throw new CreationError('install-failed', `the bundles of ${slug} were removed, but ${kept.join(', and ')}`, {
+          nextStep: 'The next widget_install of this slug can come up off or hidden. Turn it on or Show it in the main window.',
+        })
+      }
       return { slug, application }
     })
   }

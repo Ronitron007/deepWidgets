@@ -909,11 +909,24 @@ export function apply(ctx: Context, config: Config): void {
   }
   /** main_widget.widget: the main widget has no widget window, so the events route does not name it. */
   const windowed = (slug: string): boolean => slug !== MAIN_SLUG
+  /** window_read_breaks_core_paths: true after the first read of a window record failed, so the log has one line. */
+  let windowReadFailed = false
   /**
    * main_widget.window_state: the stored shown state of the widget window of `slug`. A slug with no record shows. The
    * events route opens its streams after the storage domain, so each frame reads the stored value.
+   * window_read_breaks_core_paths: `start()` and the `hello` of the events route read it, so a read never throws. After
+   * an `unknown-state` failure or the close of the domain, `get` throws: the window then shows, as when the domain did
+   * not open, and the log gets one line.
    */
-  const shownOf = (slug: string): boolean => domain?.table('windows').get(slug)?.shown ?? true
+  function shownOf(slug: string): boolean {
+    try {
+      return domain?.table('windows').get(slug)?.shown ?? true
+    } catch (error) {
+      if (!windowReadFailed) ctx.logger.warn(`widgets: the shown state of the widget windows can not be read; each window shows: ${errorText(error)}`)
+      windowReadFailed = true
+      return true
+    }
+  }
   function sendEvent(message: unknown): void {
     const frame = sseFrame(message)
     for (const open of [...events]) open.send(frame)
