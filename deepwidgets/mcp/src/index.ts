@@ -19,7 +19,7 @@
  *
  * The main widget is for the operator only (`main_widget.widget`): the tools treat the slug `main` as a slug that
  * does not exist. The row also provides the service `widgetInstaller`, the remove path of `widget_remove` for the main
- * widget.
+ * widget, and the service `mcpSettings`, the modes and the port for its Settings tab (`main_widget.settings`).
  * @module @deepwidgets/mcp
  */
 import { execFile } from 'node:child_process'
@@ -53,6 +53,8 @@ declare module '@deepseek-ai/cordis' {
   interface Context {
     /** The remove path and the source lookup of the widget installer, for the main widget. It is there while the installer is. */
     widgetInstaller: WidgetInstallerService
+    /** The settings of the MCP server for the Settings tab of the main widget. It is there while the MCP row is. */
+    mcpSettings: McpSettingsService
   }
 }
 
@@ -168,27 +170,43 @@ interface Settings {
 }
 
 /**
- * Read the settings file. A missing file or key means that each mode is on. A file that can not be read or parsed
- * also turns no mode off, so a broken file never locks the agent out; `deepwidgets_modes` reports its error.
+ * The settings file as it is now: the parsed JSON with each key that it has, or the reason that it can not be used.
+ * A missing file is an empty object.
  */
-async function readSettings(file: string): Promise<Settings> {
-  const allOn: Settings['on'] = { create: true, library: true }
+type SettingsFile = { raw: Record<string, unknown>, settings: z.infer<typeof settingsSchema> } | { error: string }
+
+/**
+ * Read and check the settings file. The MCP tools and the Settings tab of the main widget read it here, so they can
+ * not disagree about a file.
+ */
+async function loadSettingsFile(file: string): Promise<SettingsFile> {
   let text: string
   try {
     text = await readFile(file, 'utf8')
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { on: allOn }
-    return { on: allOn, error: `the settings file could not be read: ${error instanceof Error ? error.message : String(error)}` }
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { raw: {}, settings: {} }
+    return { error: `the settings file could not be read: ${error instanceof Error ? error.message : String(error)}` }
   }
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
   } catch (error) {
-    return { on: allOn, error: `the settings file is not JSON: ${error instanceof Error ? error.message : String(error)}` }
+    return { error: `the settings file is not JSON: ${error instanceof Error ? error.message : String(error)}` }
   }
   const checked = settingsSchema.safeParse(parsed)
-  if (!checked.success) return { on: allOn, error: `the settings file does not match { "modes": { "create": true, "library": true } }: ${z.prettifyError(checked.error)}` }
-  return { on: { create: checked.data.modes?.create ?? true, library: checked.data.modes?.library ?? true } }
+  if (!checked.success) return { error: `the settings file does not match { "modes": { "create": true, "library": true } }: ${z.prettifyError(checked.error)}` }
+  return { raw: parsed as Record<string, unknown>, settings: checked.data }
+}
+
+/**
+ * Read the settings file. A missing file or key means that each mode is on. A file that can not be read or parsed
+ * also turns no mode off, so a broken file never locks the agent out; `deepwidgets_modes` reports its error.
+ */
+async function readSettings(file: string): Promise<Settings> {
+  const allOn: Settings['on'] = { create: true, library: true }
+  const loaded = await loadSettingsFile(file)
+  if ('error' in loaded) return { on: allOn, error: loaded.error }
+  return { on: { create: loaded.settings.modes?.create ?? true, library: loaded.settings.modes?.library ?? true } }
 }
 
 /** A call that a mode that is off refuses after it started, such as an install that found `page/` (`agent_library.guide.mode`). */
@@ -575,6 +593,107 @@ export class WidgetInstallerService extends Service {
   }
 }
 
+/** One mode in the Settings tab of the main widget (`main_widget.settings`), as the MCP tools read it now. */
+export interface ModeSetting {
+  name: string
+  goal: string
+  /** The dotted key that turns the mode off, or null for `interact`, which is always on. */
+  setting: string | null
+  on: boolean
+}
+
+/** The MCP modes of the Settings tab: each mode, and the settings file (`modes.settings`). */
+export interface ModeSettings {
+  file: string
+  modes: ModeSetting[]
+  /** The file exists and can not be read, is not JSON, or does not match. Each mode is then on, and no switch writes the file. */
+  error?: string
+}
+
+/** The MCP port of the Settings tab: the port in `mcp.json` and the path of the file. The nonce never leaves the host. */
+export interface PortSetting {
+  file: string
+  /** Absent when the file is missing or does not hold a port; `error` then tells why. */
+  port?: number
+  error?: string
+}
+
+/** The code of a switch of a mode that did not write the settings file. */
+export type SetModeRefusal = 'unknown-mode' | 'settings-unreadable' | 'write-failed'
+
+/** The answer of {@link McpSettingsService.setMode}. A refusal leaves the settings file as it was. */
+export type SetModeResult = { ok: true, settings: ModeSettings } | { ok: false, code: SetModeRefusal, message: string }
+
+/**
+ * The service `mcpSettings` (`main_widget.settings`): the settings of the MCP server for the Settings tab of the main
+ * widget. It reads the settings file with the parse of the tools, so the tab shows what the next tool call uses. A switch
+ * writes the file in one rename and keeps each other key. It never writes a file that does not parse: the operator fixes
+ * that file by hand. Only the operator calls it, through the main widget, which the MCP tools do not show.
+ */
+export class McpSettingsService extends Service {
+  // A private field (#) does not work: the caller context reads the service through a proxy.
+  private readonly settingsFile: string
+  private readonly portFile: string
+  /** One write at a time, so two switches do not lose a key: each write reads the file that the last one wrote. */
+  private writes: Promise<unknown> = Promise.resolve()
+
+  constructor(ctx: Context, settingsFile: string, portFile: string) {
+    super(ctx, 'mcpSettings')
+    this.settingsFile = settingsFile
+    this.portFile = portFile
+  }
+
+  /** Each mode with its state at this moment, as `deepwidgets_modes` gives it. */
+  async modes(): Promise<ModeSettings> {
+    const settings = await readSettings(this.settingsFile)
+    const modes = MODES.map((mode) => ({ name: mode.name, goal: mode.goal, setting: mode.setting, on: mode.setting === null ? true : settings.on[mode.name] }))
+    return settings.error === undefined ? { file: this.settingsFile, modes } : { file: this.settingsFile, modes, error: settings.error }
+  }
+
+  /**
+   * Turn the gated mode `mode` on or off. The next tool call reads the new value, with no restart.
+   * @returns the modes after the write, or a refusal: `unknown-mode` for a mode that no setting gates,
+   *   `settings-unreadable` for a file that does not parse, or `write-failed`. A refusal writes nothing.
+   */
+  setMode(mode: string, on: boolean): Promise<SetModeResult> {
+    const run = async (): Promise<SetModeResult> => {
+      if (!Object.hasOwn(SETTING_OF, mode)) return { ok: false, code: 'unknown-mode', message: `no setting turns the mode ${JSON.stringify(mode)} off; the gated modes are ${Object.keys(SETTING_OF).join(', ')}` }
+      const loaded = await loadSettingsFile(this.settingsFile)
+      if ('error' in loaded) return { ok: false, code: 'settings-unreadable', message: `${loaded.error}. The switch did not change the file. Fix or remove ${this.settingsFile}.` }
+      const modes = (loaded.raw.modes ?? {}) as Record<string, unknown>
+      const next = { ...loaded.raw, modes: { ...modes, [mode]: on } }
+      try {
+        await writeFileAtomic(this.settingsFile, `${JSON.stringify(next, null, 2)}\n`)
+      } catch (error) {
+        return { ok: false, code: 'write-failed', message: `the settings file ${this.settingsFile} was not written, so it is as it was: ${error instanceof Error ? error.message : String(error)}` }
+      }
+      return { ok: true, settings: await this.modes() }
+    }
+    const result = this.writes.then(run)
+    this.writes = result.catch(() => undefined)
+    return result
+  }
+
+  /** The port in `mcp.json`, which Electron main writes in the desktop app (`safe_host.port`) and a CLI host writes itself. */
+  async port(): Promise<PortSetting> {
+    let text: string
+    try {
+      text = await readFile(this.portFile, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { file: this.portFile, error: 'the port file does not exist yet: the MCP port is not open' }
+      return { file: this.portFile, error: `the port file could not be read: ${error instanceof Error ? error.message : String(error)}` }
+    }
+    let port: unknown
+    try {
+      port = (JSON.parse(text) as Partial<PortFile> | null)?.port
+    } catch (error) {
+      return { file: this.portFile, error: `the port file is not JSON: ${error instanceof Error ? error.message : String(error)}` }
+    }
+    if (typeof port !== 'number' || !Number.isSafeInteger(port) || port <= 0 || port > 65535) return { file: this.portFile, error: 'the port file holds no port' }
+    return { file: this.portFile, port }
+  }
+}
+
 export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const tokenFile = config.tokenFile ?? dshHomePath('deepwidgets', 'mcp-tokens.json')
   const portFile = config.portFile ?? dshHomePath('deepwidgets', 'mcp.json')
@@ -801,6 +920,9 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     }
     return outcome
   }
+
+  // main_widget.settings: the Settings tab reads and writes the settings file and reads the port file of this row.
+  new McpSettingsService(ctx, settingsFile, portFile)
 
   /** The installer, while the plugin manager and the profile are there (`widget_phase2.creation`). */
   let installer: WidgetInstaller | undefined

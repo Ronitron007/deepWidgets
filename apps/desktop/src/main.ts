@@ -80,6 +80,8 @@ import { DesktopRenderCheck, RENDER_CHECK_HOST } from './deepwidgets-render-chec
 import { slugOfHost, withWidgetCsp } from './deepwidgets-origin.ts'
 // deepwidgets-trim: main_widget.menu_bar. On macOS the app lives in the menu bar, and its panel shows the main widget.
 import { DesktopMenuBar } from './deepwidgets-menu-bar.ts'
+// deepwidgets-trim: main_widget.settings. The Settings tab of the main widget sets the login item through Electron main.
+import { DesktopLoginItem } from './deepwidgets-login-item.ts'
 
 /** deepWidgets trace: the start-up steps for `POST /api/trace` (`floating_widget.sources`). */
 const traceSteps = new DesktopTraceSteps()
@@ -468,6 +470,8 @@ async function main(): Promise<void> {
   let tray: DesktopTray | undefined
   // deepwidgets-trim: main_widget.menu_bar. The menu bar icon and the panel on macOS; added line.
   let menuBar: DesktopMenuBar | undefined
+  // deepwidgets-trim: main_widget.settings. The login item of the Settings tab; a dev run sets none. Added line.
+  const loginItem = new DesktopLoginItem(app, process.platform)
   /**
    * The operating system is ending the session: the quit skips its confirmation. Windows sets it
    * on the definitive session-end message. macOS sets it on the power-off notification, which
@@ -581,7 +585,10 @@ async function main(): Promise<void> {
       // }, (mcp) => { mcpLink?.update(mcp) })
       // deepwidgets-trim: agent_library.serving. The Host sends the page state of the widgets.
       // }, (mcp) => { mcpLink?.update(mcp) }, check => renderChecks.run(check))
-      }, (mcp) => { mcpLink?.update(mcp) }, check => renderChecks.run(check), (pages) => { widgetWindows.setPages(pages) })
+      // deepwidgets-trim: main_widget.settings. The Host asks for the login item of the Settings tab.
+      // }, (mcp) => { mcpLink?.update(mcp) }, check => renderChecks.run(check), (pages) => { widgetWindows.setPages(pages) })
+      }, (mcp) => { mcpLink?.update(mcp) }, check => renderChecks.run(check), (pages) => { widgetWindows.setPages(pages) },
+      open => loginItem.answer(open))
     return {
       start: async () => {
         traceSteps.step('host-started')
@@ -1468,7 +1475,9 @@ async function main(): Promise<void> {
     if (quitting) return
     if (isMandatory()) { mandatoryUI?.focus(); return }
     // deepwidgets-trim: main_widget.menu_bar. On macOS a second launch and dsh://open open the panel (widget.relaunch).
-    if (menuBar !== undefined) { menuBar.open(); return }
+    // deepwidgets-trim: main_widget.provisional. A second launch opens the panel on the Widgets tab, its first tab.
+    // if (menuBar !== undefined) { menuBar.open(); return }
+    if (menuBar !== undefined) { menuBar.open({ firstTab: true }); return }
     const window = welcomeWindow ?? mainWindow
     if (window === undefined || window.isDestroyed()) {
       try { createMainWindow() } catch (error) { reportFatal(error, 'main'); return }
