@@ -7,7 +7,8 @@
  * rows of a widget through the DSH plugin manager, in the queue of the installer (the service `widgetInstaller` of
  * `@deepwidgets/mcp`). The installer keeps a Turn off, so a later `widget_install` or `widget_reload` of the slug installs
  * the new row off. The mutation `remove` removes an agent widget through the remove path of `widget_remove`. The state of
- * a widget stays in each case.
+ * a widget stays in each case. The mutations `show` and `hide` store the shown state of the widget window of a slug
+ * (`main_widget.window_state`). The runtime keeps it across Host starts, and Electron main obeys it.
  *
  * The plugin manager, the installer, and the install records are host code. The actions run them through
  * `widgetRecords.asHost`, so they run outside the store of this row: a crash in them is not blamed on this widget.
@@ -44,7 +45,7 @@ export const CATALOG = 'deepwidgets-main@1'
  * The program of the panel page (`main_widget.widgets`, `main_widget.settings`), in the component set {@link CATALOG}
  * of the shell entry `main.html`. The query `widgets` feeds the Widgets tab, and the query `settings` feeds the
  * Settings tab. Their defaults are null, so the page shows a loading state, not an empty list. The row controls of
- * `WidgetTable` call `turnOff`, `turnOn`, `remove`, and `program` with the slug of the row, then run `refresh`. The
+ * `WidgetTable` call `show`, `hide`, `turnOff`, `turnOn`, `remove`, and `program` with the slug of the row, then run `refresh`. The
  * switches of `ModeSwitches` and `LaunchAtLogin` call `setMode` and `setLoginItem`, then run `refresh`. The runtime
  * also sends a `data` frame to the page of main on each change of another widget, and the page then runs each query.
  */
@@ -107,8 +108,11 @@ export interface MainWidget {
    * status of an agent widget stays `safe-mode`, and this field shows the Turn off.
    */
   turnedOff?: true
-  /** A live or failed widget has a widget window. `main.window_state` adds the hidden state. */
-  window?: 'shown'
+  /**
+   * A live or failed widget has a widget window, which shows or is hidden (`main_widget.window_state`). Absent for a
+   * widget with no window: it is turned off, or safe mode keeps it off.
+   */
+  window?: 'shown' | 'hidden'
 }
 
 const slugInput = z.object({ slug: z.string() })
@@ -199,7 +203,7 @@ export interface MainSettings {
 }
 
 /** The code of a refusal of an action of `main`. The codes of the installer come from the remove path of `widget_remove`. */
-export type MainRefusalCode = 'unknown-widget' | 'built-in' | 'no-row' | 'unavailable' | 'change-failed' | CreationErrorCode
+export type MainRefusalCode = 'unknown-widget' | 'built-in' | 'no-row' | 'no-window' | 'unavailable' | 'change-failed' | CreationErrorCode
   | SetModeRefusal | LoginItemRefusal
 
 /** A refusal of an action of `main`: the result of the action, so that the page routes by `code`, not by the message. */
@@ -350,8 +354,9 @@ export function apply(ctx: Context): void {
         ...(source === undefined ? {} : { source }),
         rows: own.map(rowOf),
         ...(turnedOff ? { turnedOff: true as const } : {}),
-        // The events route lists each entry of the runtime, also a failed one, so Electron main shows its window.
-        ...(summary !== undefined && summary.off === undefined ? { window: 'shown' as const } : {}),
+        // The events route lists each entry of the runtime, also a failed one, so Electron main has its window. The runtime
+        // reads the shown state from memory at each query, so no cache can keep an old value.
+        ...(summary !== undefined && summary.off === undefined ? { window: records.windowShown(slug) ? 'shown' as const : 'hidden' as const } : {}),
       })
     }
     return out
@@ -400,6 +405,21 @@ export function apply(ctx: Context): void {
       if (failed === undefined) throw error
       return refuse(failed.code, failed.message, { diagnostics: failed.diagnostics, ...(failed.nextStep === undefined ? {} : { nextStep: failed.nextStep }) })
     }
+  }
+
+  /**
+   * main_widget.window_state: Show or Hide the widget window of `slug`. The runtime stores the choice, and Electron main
+   * obeys the frame of the events route. The page of main gets a `data` frame, so the Window field changes at once.
+   */
+  async function setShown(slug: string, shown: boolean): Promise<{ slug: string, window: 'shown' | 'hidden' }> {
+    if (slug === widgetSlugs[0]) refuse('unknown-widget', 'the main widget has no widget window; the panel is its only window')
+    try {
+      await records.setWindowShown(slug, shown)
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== 'unknown-widget') throw error
+      refuse('no-window', `${slug} has no widget window: it is not live, it is turned off, or safe mode keeps it off`)
+    }
+    return { slug, window: shown ? 'shown' : 'hidden' }
   }
 
   /** The ids of the login-item calls to Electron main. */
@@ -467,6 +487,8 @@ export function apply(ctx: Context): void {
           return { slug, rev: program.rev, text: program.text }
         })),
       },
+      { name: 'show', kind: 'mutation', args: slugInput, handler: ({ slug }) => records.asHost(() => answer(() => setShown(slug, true))) },
+      { name: 'hide', kind: 'mutation', args: slugInput, handler: ({ slug }) => records.asHost(() => answer(() => setShown(slug, false))) },
       { name: 'turnOff', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => answer(() => setEnabled(slug, false))) },
       { name: 'turnOn', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => answer(() => setEnabled(slug, true))) },
       { name: 'remove', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => answer(() => remove(slug))) },
