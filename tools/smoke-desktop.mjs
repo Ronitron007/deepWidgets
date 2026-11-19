@@ -224,7 +224,7 @@ openSync(logPath, 'a')
 /** The web template before main.runtime: a desktop profile of that time has no @deepwidgets/widget-main. */
 const OLD_PROFILE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@deepwidgets/probe', '@deepwidgets/trace', '@deepwidgets/widgets', '@deepwidgets/widget-sample', '@deepwidgets/mcp', '@deepwidgets/trim']
 /** The web template of today, in its order (packages/util/official-bundles/src/bundles.ts). */
-const PROFILE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@deepwidgets/probe', '@deepwidgets/trace', '@deepwidgets/widgets', '@deepwidgets/widget-sample', '@deepwidgets/widget-main', '@deepwidgets/mcp', '@deepwidgets/trim']
+const PROFILE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@deepwidgets/probe', '@deepwidgets/trace', '@deepwidgets/widgets', '@deepwidgets/widget-sample', '@deepwidgets/widget-main', '@deepwidgets/kit', '@deepwidgets/mcp', '@deepwidgets/trim']
 const desktopProfile = join(home, 'profiles', 'desktop')
 if (process.env.DSH_SMOKE_OLD_PROFILE === '1') {
   // The manifest that createPluginProfile wrote for a profile made before main.runtime.

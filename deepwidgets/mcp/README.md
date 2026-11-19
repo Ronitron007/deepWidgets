@@ -120,6 +120,8 @@ The settings file is `$DSH_HOME/deepwidgets/settings.json`. This is the content:
 
 - If the file does not parse, each mode is on. `deepwidgets_modes` gives the error in `settingsError`.
 
+- The file also holds the key `kit` of the widget kit (spec `kit.settings`). A switch of a mode keeps this key.
+
 When a mode is off, its tools stay in the tool list. A call of `widget_install`, `widget_reload`, or `widget_remove` then does nothing. It gives the error code `mode-off`, with the fields `mode`, `setting`, and `settingsFile`. `widget_template` and `widget_guide` still answer, because they only read.
 
 When the mode `library` is off, `library_template` gives `mode-off` (spec `agent_library.guide.mode`). `widget_install` and `widget_reload` also give `mode-off`, with the mode `library`, for a widget folder that has `page/`. A widget folder with no `page/` installs as before. A page that is installed keeps its window.
@@ -141,6 +143,14 @@ A widget folder with `page/` also runs the page gates (`src/page-gate.ts`). The 
 - The import fence finds each import of a page file that is not on the allowed list.
 
 - The output fence finds each file that went into the page from outside `page/` and outside the allowed packages.
+
+The page gates use the widget kit (spec `kit`, package `@deepwidgets/kit`):
+
+- The staging `node_modules` folder has links to the core and to each extra of the current kit version. The installer gets their folders from `folders()` of the service `kit`. A page build uses no network.
+
+- Each extra is an allowed import, with its subpaths, such as `date-fns` and `date-fns/addDays`.
+
+- When the kit is unavailable, `widget_install` and `widget_reload` of a folder with `page/` give the error code `kit-unavailable`. A folder with no `page/` installs as before.
 
 The render check gets the catalog of the widget definition. When the `CATALOG_ID` of `page/child.tsx` is another id, the gate `page-render` refuses the page with the diagnostic code `wrong-catalog` (spec `agent_library.guide.catalog`).
 
