@@ -41,9 +41,9 @@ $DSH_HOME/deepwidgets/kit/
 
 - Each kit version is a full pnpm project in `versions/<n>`. The link `current` points to the newest version.
 
-- `package.json` names each core package as `link:./core/<name>`. It also names each one in `overrides`, with the same link. Without the overrides, pnpm can put a copy of React from npm in place of the core (`kit.checked.core_link`).
+- `package.json` names each core package as `link:./core/<name>`. `pnpm-workspace.yaml` of the version names each one in `overrides`, with the same link, because pnpm 11 ignores `overrides` in `package.json`. Without the overrides, pnpm can put a copy of React from npm in place of the core (`kit.checked.core_link`).
 
-- `package.json` names each extra with an exact version.
+- `package.json` names each extra with an exact version. `pnpm add --save-exact` with a range still writes a range, so the service writes the exact version that pnpm resolved.
 
 - Each link in `core/` points to the real folder of the core package in the app. The host points each link again at each start. Thus an app update changes the core, and the lockfile does not change, because it holds only the relative links.
 
@@ -81,7 +81,7 @@ A new package, `@deepwidgets/kit`, in `deepwidgets/kit/`, gives the Cordis servi
 
 2. The service points each link in `core/` at the folder of the core package in the app.
 
-3. If `node_modules` of the current version is missing, the service installs it offline from the store, with the frozen lockfile.
+3. If `node_modules` of the current version is missing, the service installs it offline from the store, with the frozen lockfile and `trust-lockfile`. The wait of 24 hours ran when the change wrote the lockfile, so this step does not check it again (`kit.checked.offline`).
 
 4. If that install fails, the kit is unavailable. The service does not stop the host. Each page install then fails with `kit-unavailable`, and a bundle with no `page/` installs as before.
 
@@ -134,7 +134,7 @@ The spike of 2026-11-19 ran pnpm 11.28.5 with node 24.8.0. Each row is verified 
 | `kit.checked.build_scripts` | `dangerouslyAllowAllBuilds` ignores the `false` entries of `allowBuilds`. `neverBuiltDependencies` is gone in pnpm 11. A `readPackage` hook that throws for a refused name fails the install and names the package, also for a package that another package needs. A frozen install with a changed pnpmfile fails with `LOCKFILE_CONFIG_MISMATCH`. |
 | `kit.checked.release_hold` | With a range, pnpm picks the newest version that is old enough. An exact version that is too new fails with `ERR_PNPM_NO_MATURE_MATCHING_VERSION`. `minimumReleaseAgeExclude` lifts the wait for one package. |
 | `kit.checked.core_link` | With `link:` only, `pnpm add recharts` put React 19.3.1 from npm in place of the linked React 18.3.1. With the same links in `overrides`, the kit kept one React, the copy of the app, with no peer warning. |
-| `kit.checked.offline` | An offline frozen install of a copy at the same depth took 1.85 s. A copy 2 levels deeper failed with `ERR_PNPM_OUTDATED_LOCKFILE`. With no store, the install failed in 0.43 s with `ERR_PNPM_NO_OFFLINE_TARBALL`. With the metadata cache in the kit, the install needs no `trust-lockfile` setting. |
+| `kit.checked.offline` | An offline frozen install of a copy at the same depth took 1.85 s. A copy 2 levels deeper failed with `ERR_PNPM_OUTDATED_LOCKFILE`. With no store, the install failed in 0.43 s with `ERR_PNPM_NO_OFFLINE_TARBALL`. Without `trust-lockfile`, an offline install passes only when pnpm listed the lockfile in `cache/lockfile-verified.jsonl`. `pnpm add` lists its lockfile, but `pnpm remove` did not, and the next offline install failed with `ERR_PNPM_NO_OFFLINE_META` with the store present. With `trust-lockfile`, it passed in 1.7 s (the run of the implementer, 2026-11-19). |
 
 ## Open points `kit.open`
 
