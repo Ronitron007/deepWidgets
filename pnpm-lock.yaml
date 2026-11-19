@@ -540,6 +540,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: link:../../vendor/schemastery
         version: link:../../vendor/schemastery
+      '@deepwidgets/kit':
+        specifier: workspace:*
+        version: link:../../deepwidgets/kit
       '@deepwidgets/mcp':
         specifier: workspace:*
         version: link:../../deepwidgets/mcp
@@ -1260,6 +1263,34 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
 
+  deepwidgets/kit:
+    dependencies:
+      '@deepseek-ai/dsh-home-paths':
+        specifier: workspace:*
+        version: link:../../packages/util/home-paths
+      '@deepwidgets/shell':
+        specifier: workspace:*
+        version: link:../shell
+      '@deepwidgets/widget-kit':
+        specifier: workspace:*
+        version: link:../widget-kit
+      execa:
+        specifier: ^10.0.1
+        version: 10.0.1
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:~
+        version: link:../../vendor/cordis
+      '@deepseek-ai/dsh-app-boot':
+        specifier: workspace:*
+        version: link:../../packages/boot/app-boot
+      '@deepseek-ai/dsh-subprocess':
+        specifier: workspace:*
+        version: link:../../packages/subprocess/subprocess
+
   deepwidgets/mcp:
     dependencies:
       '@deepseek-ai/cordis-plugin-timer':
@@ -1320,6 +1351,9 @@ importers:
       '@deepseek-ai/dsh-plugin-manager':
         specifier: workspace:*
         version: link:../../packages/boot/plugin-manager
+      '@deepwidgets/kit':
+        specifier: workspace:*
+        version: link:../kit
       '@deepwidgets/widgets':
         specifier: workspace:*
         version: link:../widgets

@@ -28,6 +28,7 @@ import type { BundleInfo, ChangeResult, PluginEntryId, PluginInfo } from '@deeps
 import type { ProgramRecord } from '@deepwidgets/widgets'
 import { endlessLoops } from './loop-check.ts'
 import { hasPage, PAGE_BUILD, PAGE_BUILD_TMP, pageNextStep, runPageGates } from './page-gate.ts'
+import type { PageKit } from './page-gate.ts'
 import type { PageGateName, RenderAnswer, RenderCheck } from './page-gate.ts'
 import type { TestRunReport, TestRunWidget } from './testrun-child.ts'
 
@@ -103,6 +104,7 @@ export type CreationErrorCode =
   | 'install-failed'
   | 'not-installed'
   | 'creation-unavailable'
+  | 'kit-unavailable'
 
 /** A creation failure. `gate` names the gate that refused the code. */
 export class CreationError extends Error {
@@ -177,6 +179,17 @@ export interface CreationServices {
    * both, so a `page/` that comes during the host gates can not pass a switch that is off. It throws to refuse the page.
    */
   readonly checkPageMode?: (() => Promise<void>) | undefined
+  /**
+   * kit.gates: the service `kit` of `@deepwidgets/kit`, or undefined while its row is not there. The page gates get the
+   * real folders of the core and of the extras from it.
+   */
+  readonly kit?: (() => PageKitSource | undefined) | undefined
+}
+
+/** What the page gates use of the service `kit` (`kit.gates`). */
+export interface PageKitSource {
+  /** The folders of the current kit version. It rejects with the code `kit-unavailable` when the kit is unavailable. */
+  folders(): Promise<PageKit>
 }
 
 /** Where the tools of the gates are. They resolve from this package, not from a working folder. */
@@ -449,6 +462,22 @@ async function testGate(staging: string): Promise<{ report: GateReport, widget: 
   return { report: { gate: 'test', ok, ms: elapsed(started), diagnostics: diagnostics.slice(0, MAX_DIAGNOSTICS), warnings }, widget, answers }
 }
 
+/**
+ * kit.gates: the folders of the widget kit for the page gates.
+ * @throws {CreationError} `kit-unavailable` when the host has no service `kit`, or when the kit is unavailable.
+ */
+async function pageKit(source: (() => PageKitSource | undefined) | undefined): Promise<PageKit> {
+  const kit = source?.()
+  if (kit === undefined) throw new CreationError('kit-unavailable', 'the host has no widget kit, so a widget with page/ can not install; nothing was installed')
+  try {
+    return await kit.folders()
+  } catch (error) {
+    // The check is structural: the class KitError of @deepwidgets/kit is not imported as a value.
+    if ((error as { code?: unknown } | null)?.code === 'kit-unavailable') throw new CreationError('kit-unavailable', `${errorText(error)}; nothing was installed`)
+    throw error
+  }
+}
+
 /** Write the paths of the diagnostics relative to the source folder of the agent. */
 function relativize(report: GateReport, staging: string): GateReport {
   const strip = (line: string): string => line.replaceAll(`${staging}/`, '')
@@ -473,10 +502,12 @@ export interface PageRoots {
 /**
  * Run the three gates on `dir/src/index.ts`, then the page gates when `dir` has `page/`. The first failed gate stops
  * the run. `renderCheck` runs the render check of the page; without it, that check is skipped with a warning.
- * `checkPageMode` runs when `dir` has `page/`, before the page gates, and its error stops the run.
- * @throws {CreationError} `bad-source` when the folder has no `src/index.ts`.
+ * `checkPageMode` runs when `dir` has `page/`, before the page gates, and its error stops the run. Then `kit` gives the
+ * packages of the page gates (`kit.gates`).
+ * @throws {CreationError} `bad-source` when the folder has no `src/index.ts`, or `kit-unavailable` when `dir` has
+ * `page/` and the widget kit is unavailable.
  */
-export async function runGates(dir: string, pages: PageRoots, renderCheck?: RenderCheck, checkPageMode?: () => Promise<void>): Promise<GatesOutcome> {
+export async function runGates(dir: string, pages: PageRoots, renderCheck?: RenderCheck, checkPageMode?: () => Promise<void>, kit?: () => PageKitSource | undefined): Promise<GatesOutcome> {
   const staging = await stage(dir)
   try {
     const configs = await writeConfigs(staging)
@@ -495,9 +526,10 @@ export async function runGates(dir: string, pages: PageRoots, renderCheck?: Rend
     if (!await hasPage(dir)) return { gates, code, widget }
     // agent_library.guide.mode: the look above decides the switch and the page gates.
     await checkPageMode?.()
+    const packages = await pageKit(kit)
     const t = tools()
     const page = await runPageGates(dir, { slug: widget.slug, program: widget.program, catalog: widget.catalog, answers }, { oxlint: t.oxlint, tsgolint: t.tsgolint }, renderCheck,
-      { slugDir: pages.slugDir(widget.slug), stagingRoot: pages.stagingRoot })
+      { slugDir: pages.slugDir(widget.slug), stagingRoot: pages.stagingRoot }, packages)
     gates.push(...page.gates)
     if (page.build === undefined) return { gates }
     return { gates, code, widget, page: page.build }
@@ -929,7 +961,7 @@ export class WidgetInstaller {
 
   private async installNow(dir: string, expected: string | undefined): Promise<InstallOutcome> {
     const pages: PageRoots = { slugDir: (slug) => this.folderOf(slug), stagingRoot: join(this.root, PAGE_STAGING) }
-    const outcome = await runGates(dir, pages, this.services.renderCheck, this.services.checkPageMode)
+    const outcome = await runGates(dir, pages, this.services.renderCheck, this.services.checkPageMode, this.services.kit)
     try {
       return await this.installGated(dir, expected, outcome)
     } catch (error) {

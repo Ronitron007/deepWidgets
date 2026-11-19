@@ -35,6 +35,7 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type {} from '@deepseek-ai/dsh-app-boot'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-plugin-manager'
+import type {} from '@deepwidgets/kit'
 import type { WidgetErrorCode } from '@deepwidgets/widgets'
 import { localhostHostValidation, toNodeHandler } from '@modelcontextprotocol/node'
 import type { NodeIncomingMessageLike } from '@modelcontextprotocol/node'
@@ -115,6 +116,7 @@ const NEXT_STEP: Record<ToolErrorCode, string> = {
   'install-failed': 'Read the diagnostics. Fix the code and call widget_install again. If the diagnostics name the plugin manager or pnpm, tell the user.',
   'not-installed': 'Call widget_list. Only a widget that widget_install installed can be reloaded or removed.',
   'creation-unavailable': 'This host has no plugin manager, so it cannot install widgets. Tell the user.',
+  'kit-unavailable': 'The widget kit is unavailable, so a widget with page/ does not install now. Nothing was installed. A widget folder with no page/ still installs. Tell the user the message: the host log names the reason.',
   'mode-off': 'This mode is off, and the call did nothing. Ask the user to turn the mode on: set the setting to true in the settings file. Do not change the file yourself. The next call reads the file again, with no restart.',
 }
 
@@ -949,6 +951,8 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       checkPageMode: async () => {
         if (!(await readSettings(settingsFile)).on.library) throw new ModeOffError('library')
       },
+      // kit.gates: the kit row is not a dependency of this row, so a widget with no page/ installs without it.
+      kit: () => ctx.get('kit'),
     })
     new WidgetInstallerService(inner, installer)
     inner.effect(() => () => { installer = undefined }, 'mcp: the widget installer')
