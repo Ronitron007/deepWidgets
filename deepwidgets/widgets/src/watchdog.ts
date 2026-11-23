@@ -75,12 +75,9 @@ export function inSlot<T>(row: string, fn: () => T): T {
   const watch = active
   if (watch === undefined) return fn()
   const previous = Atomics.exchange(watch.slots, RUNNING_SLOT, watch.index(row))
-  const probeStart = performance.now()
   try {
     return fn()
   } finally {
-    const probeMs = performance.now() - probeStart
-    if (probeMs >= 50) process.stdout.write(`[slot-probe] sync region in the slot of ${row}: ${String(Math.round(probeMs))} ms, from ${String(new Error().stack?.split('\n').slice(4, 9).map((line) => line.trim()).join(' < '))}\n`)
     Atomics.store(watch.slots, RUNNING_SLOT, previous)
     // The order matters: the watchdog thread reads the calls count before the slot, and again after it wrote a
     // record. So either this exchange sees its flag, or the watchdog thread sees the new count and removes the record.
@@ -170,10 +167,6 @@ export function startWatchdog(ctx: Context, store: AsyncLocalStorage<string>, fi
     return item
   }
   const watch: Active = { slots, provisionalFile: files.provisionalFile, index: (row) => rowOf(row).index }
-  ;(globalThis as unknown as { __dwSlotRow?: () => string }).__dwSlotRow = () => {
-    const index = Atomics.load(slots, RUNNING_SLOT)
-    return index === 0 ? 'host (slot 0)' : [...rows.values()].find((item) => item.index === index)?.row ?? `index ${String(index)}`
-  }
   const crashed = (): boolean => Atomics.load(slots, CRASH_SLOT) !== 0
 
   ctx.effect(() => {
