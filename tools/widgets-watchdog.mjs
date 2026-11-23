@@ -21,6 +21,10 @@
  *   dies after about 10 s with no blame. A read that counts as a suspend would keep the host alive.
  * - host-await: a widget awaits host work that holds the event loop for 3 s. That work has the store of the widget,
  *   but its frames are host code. The host lives, and no record blames the widget.
+ * - as-host (host_work_counts_against_main_slot): an action of the built-in widget `main` runs host work through
+ *   `widgetRecords.asHost`, and that host work holds the event loop for 3 s (the test hook
+ *   DEEPWIDGETS_TEST_AS_HOST_STALL_MS). The host work is outside the running slot of `main`, so the host lives, the
+ *   action answers, and no record blames or quarantines `main`.
  * - oom: a stall, then fast allocation. The out-of-memory abort (provisional record) and the stall kill (crash record)
  *   both blame the widget. The case checks the result: the host died, a record blames the widget, and the next host
  *   has the widget quarantined.
@@ -57,7 +61,7 @@ const isRow = (row, id) => typeof row === 'string' && (row === id || row.endsWit
 /** The cases to run. All cases when WIDGETS_WATCHDOG_CASES is not set. */
 const CASES = process.env.WIDGETS_WATCHDOG_CASES?.split(',').map((name) => name.trim()).filter((name) => name !== '')
 const runs = (name) => CASES === undefined || CASES.length === 0 || CASES.includes(name)
-const CASE_NAMES = ['parse', 'suspend', 'stall', 'spin', 'idle', 'native', 'native-off', 'native-slow', 'host-await', 'oom']
+const CASE_NAMES = ['parse', 'suspend', 'stall', 'spin', 'idle', 'native', 'native-off', 'native-slow', 'host-await', 'as-host', 'oom']
 /** native-slow: the reads add up to 6 s over the 10 s limit at most, so the kill comes in this window. */
 const SLOW_KILL_MAX_MS = 16_000
 /** safe_host.watchdog: a widget stall that the native stack finds kills the host in this time after the call. */
@@ -446,6 +450,29 @@ async function main() {
       const crash = readState('crash.json')
       check('host-await: 3 s of host work that the widget awaits does not kill the host', answer.status === 200 && alive(host) && crash?.pid !== pid,
         JSON.stringify({ status: answer.status, alive: alive(host), crash: crash === undefined ? null : { row: crash.row, method: crash.method, message: crash.error?.message } }))
+    } finally {
+      await host.stop()
+    }
+  }
+
+  // as-host (host_work_counts_against_main_slot): host work that `main` starts with asHost has the limit of the host.
+  if (runs('as-host')) {
+    clearState()
+    host = await startHost(port, inspectPort, [], { DEEPWIDGETS_TEST_AS_HOST_STALL_MS: '3000' })
+    try {
+      await live(host)
+      const pid = host.child.pid
+      const started = Date.now()
+      const answer = await host.post('/api/widgets/main/call', { action: 'widgets', args: {} })
+      const ms = Date.now() - started
+      await sleep(500)
+      const crash = readState('crash.json')
+      const quarantine = readState('quarantine.json')
+      const detail = JSON.stringify({ status: answer.status, ok: answer.body?.ok, ms, alive: alive(host), crash: crash === undefined ? null : { row: crash.row, method: crash.method, message: crash.error?.message }, quarantine })
+      check('as-host: 3 s of host work inside asHost of main does not kill the host, and the action answers',
+        answer.status === 200 && answer.body?.ok === true && Array.isArray(answer.body.result?.widgets) && ms >= 3_000 && alive(host), detail)
+      check('as-host: no record blames main, and main is not in the quarantine',
+        crash?.pid !== pid && !(Array.isArray(quarantine) && quarantine.some((item) => isRow(item?.row, 'deepwidgets-widget-main'))), detail)
     } finally {
       await host.stop()
     }

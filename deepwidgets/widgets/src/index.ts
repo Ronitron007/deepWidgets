@@ -33,6 +33,11 @@ const ACTION = /^[A-Za-z][A-Za-z0-9_]{0,62}$/
 const DEFAULT_TIMEOUT_MS = 5_000
 const CHANGE_LOG_SIZE = 1_000
 const DEFAULT_REQUEST_TTL_MS = 10 * 60_000
+/**
+ * A test hook of `tools/widgets-watchdog.mjs` (the case `as-host`, host_work_counts_against_main_slot): each
+ * `widgetRecords.asHost` holds the event loop for this many milliseconds of host work before its function.
+ */
+const TEST_AS_HOST_STALL_ENV = 'DEEPWIDGETS_TEST_AS_HOST_STALL_MS'
 
 /**
  * The Host environment key of safe mode (`widget_phase2.isolation.supervisor`). Electron main sets it
@@ -810,6 +815,13 @@ export const Config: Schema<Config> = Schema.object({
 
 export function apply(ctx: Context, config: Config): void {
   const requestTtlMs = config.requestTtlMs
+  const testStallMs = Math.max(0, Number(process.env[TEST_AS_HOST_STALL_ENV] ?? 0) || 0)
+  /** The test hook {@link TEST_AS_HOST_STALL_ENV}: host code that holds the event loop. It does nothing when it is not set. */
+  function testHostStall(): void {
+    for (const end = Date.now() + testStallMs; Date.now() < end;) {
+      // A busy loop: the watchdog sees no heartbeat for this time.
+    }
+  }
   const widgets = new Map<string, Entry>()
   const safeMode = process.env[SAFE_MODE_ENV] === '1'
   /** The widgets that safe mode refused in this Host start, by slug. `agent`: the row is an agent bundle. */
@@ -1684,8 +1696,12 @@ export function apply(ctx: Context, config: Config): void {
     programRecord,
     stateRecord,
     // A call runs in the async context of its queue slot (`slot`) and of its widget row (the blame store). Host work
-    // leaves both, so it is not a write of that call and not code of that row.
-    asHost: (fn) => slot.exit(() => outsideRow(fn)),
+    // leaves both, so it is not a write of that call and not code of that row. It also leaves the running-widget slot of
+    // the watchdog (host_work_counts_against_main_slot).
+    asHost: (fn) => slot.exit(() => outsideRow(() => {
+      testHostStall()
+      return fn()
+    })),
     restoreProgram: (slug, record, by) => admit(() => restoreProgram(slug, record, by)),
     adoptSeed: (slug, seed) => admit(() => adoptSeed(slug, seed)),
     clearOff: (slug) => { if (off.get(slug)?.agent === true) off.delete(slug) },
