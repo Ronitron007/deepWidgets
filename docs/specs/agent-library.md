@@ -278,4 +278,4 @@ The page guide does not repeat the guide of the program language. It tells the a
 
 These units follow, in this order. Each one waits for the operator's direction.
 
-1. The kit units: `kit.service`, `kit.host_extras`, `kit.tools`, `kit.pins`, `kit.pane`, and `kit.model`.
+1. The kit units: `kit.service`, `kit.host_extras`, `kit.tools`, `kit.pins`, `kit.pane`, and `kit.model`. Their spec is `docs/specs/kit.md` (`kit`), and their plan is `docs/plans/kit.md`.
