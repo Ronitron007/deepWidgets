@@ -593,8 +593,15 @@ export class WidgetRecordsService extends Service {
    */
   asHost<T>(fn: () => T): T {
     const row = runningRow()
+    const probeSlot = (globalThis as unknown as { __dwSlotRow?: () => string }).__dwSlotRow?.() ?? 'no watchdog'
+    const probeA = performance.now()
     if (row !== undefined && !isBuiltInRow(this.ctx, this.ctx.fiber)) throw new Error(`widgets: the widget row ${row} is not built in, so it can not run host code`)
-    return this.runtime.asHost(fn)
+    const probeB = performance.now()
+    try {
+      return this.runtime.asHost(fn)
+    } finally {
+      process.stdout.write(`[slot-probe] asHost runs with the slot ${probeSlot}: isBuiltInRow ${String(Math.round(probeB - probeA))} ms, sync part of fn ${String(Math.round(performance.now() - probeB))} ms\n`)
+    }
   }
 
   /** Put back the program record that `programRecord` gave before an install, or delete it when that gave undefined. */

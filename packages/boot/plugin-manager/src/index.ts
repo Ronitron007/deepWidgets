@@ -463,7 +463,10 @@ export class PluginManager extends TypertRemoteService {
    */
   @Remote
   async listPlugins(): Promise<PluginInfo[]> {
+    const probeSlot = (globalThis as unknown as { __dwSlotRow?: () => string }).__dwSlotRow?.() ?? 'no watchdog'
+    const probeStart = performance.now()
     const rows = flatten(composeEntries([readProfilePatches('dsh', this.profile)]))
+    process.stdout.write(`[slot-probe] listPlugins starts with the slot ${probeSlot}; its sync part took ${String(Math.round(performance.now() - probeStart))} ms\n`)
     const snapshot = await readPluginInventory(this.ctx)
     return snapshot.entries.map((entry) => {
       const actual = [...this.ctx.loader.entries()].find(row => row.id === entry.entryId)
@@ -831,6 +834,7 @@ export class PluginManager extends TypertRemoteService {
    */
   @Remote
   setPluginEnabled(id: PluginEntryId, enabled: boolean): Promise<ChangeResult> {
+    process.stdout.write(`[slot-probe] setPluginEnabled ${String(id)} ${String(enabled)} starts with the slot ${(globalThis as unknown as { __dwSlotRow?: () => string }).__dwSlotRow?.() ?? 'no watchdog'}\n`)
     return this.change(result => this.configure(async () => {
       const row = (await this.listPlugins()).find(item => item.entryId === id)
       if (row === undefined) throw new ManagementFailure('unknown-plugin')
