@@ -12,11 +12,19 @@ deepWidgets starts from the DSH Electron desktop app. DSH already has three part
 
 What the app does today:
 
-- **Widgets.** A widget is a Cordis plugin that calls `ctx.widgets.register`. It has a slug, a state, and named actions (queries and mutations). The runtime is `deepwidgets/widgets`. The one built-in widget is `sample`, a counter (`deepwidgets/widget-sample`).
-- **Floating windows.** Electron main opens one frameless, always-on-top window for each widget. The window shows on all workspaces. A widget draws its UI in one of two ways: the shared shell (`deepwidgets/shell`) renders an OpenUI Lang program, or an agent-written React page replaces the shell for that widget.
-- **MCP server for agents.** The host runs an MCP server (`deepwidgets/mcp`) on a fixed local port, 47615 by default. An agent can list widgets, read their state, and call their actions. In create mode, it can also install, reload, and remove widgets. The tools are `deepwidgets_modes`, `widget_list`, `widget_describe`, `widget_call`, `widget_changes`, `widget_guide`, `widget_template`, `widget_install`, `widget_reload`, and `widget_remove`. A settings file can turn create mode off. See [deepwidgets/mcp/README.md](deepwidgets/mcp/README.md) for the port, the port file, and the token handshake.
+- **Widgets.** A widget is a Cordis plugin that calls `ctx.widgets.register`. It has a slug, a state, and named actions (queries and mutations). The runtime is `deepwidgets/widgets`. There are two built-in widgets: `sample`, a counter (`deepwidgets/widget-sample`), and `main`, the main widget (`deepwidgets/widget-main`).
+
+- **Floating windows.** Electron main opens one frameless, always-on-top window for each widget, except `main`. The window shows on all workspaces. A widget draws its UI in one of two ways: the shared shell (`deepwidgets/shell`) renders an OpenUI Lang program, or an agent-written React page replaces the shell for that widget.
+
+- **MCP server for agents.** The host runs an MCP server (`deepwidgets/mcp`). In the desktop app, Electron main binds a fixed local port, 47615 by default. It forwards each request to the host. An agent can list widgets, read their state, and call their actions. The server does not show `main` to agents. See [deepwidgets/mcp/README.md](deepwidgets/mcp/README.md) for the port, the port file, and the token handshake.
+
+- **MCP modes.** The server groups its tools in three modes. The mode `interact` is always on. In the mode `create`, an agent can also install, reload, and remove widgets. In the mode `library`, an agent can write the page of a widget with components of the agent. The settings file `$DSH_HOME/deepwidgets/settings.json`, or the Settings tab of `main`, can turn `create` and `library` off. The tools are `deepwidgets_modes`, `widget_list`, `widget_describe`, `widget_call`, `widget_changes`, `widget_guide`, `widget_template`, `widget_install`, `widget_reload`, `widget_remove`, and `library_template`.
+
 - **Crash handling.** The host restarts after a crash. A crash watchdog stops a widget that loops, and a widget that crashes the host is quarantined until its files change.
-- **Main window.** The main window shows only a `hello` text and the `probe` text. A menu bar app with a main widget is specified in [docs/specs/main-widget.md](docs/specs/main-widget.md). The code does not build it yet.
+
+- **Menu bar app.** On macOS, deepWidgets is a menu bar app with no Dock icon. A click on the menu bar icon opens a panel with the page of `main`. The Widgets tab lists the other widgets, with Turn off, Turn on, and Remove for each one. The Settings tab has the switches of the modes `create` and `library`, the MCP port, and the launch-at-login switch. A second click on the icon, or a loss of focus, closes the panel. The spec is [docs/specs/main-widget.md](docs/specs/main-widget.md).
+
+- **DSH window.** The app also opens the DSH window, which shows only a `hello` text and the `probe` text. On macOS, the app keeps this window hidden. On Windows and Linux, the app shows it.
 
 Most of the DSH code stays in the tree and does not run. It is turned off with `disabled: true` rows in [deepwidgets/trim/cordis.patch.yml](deepwidgets/trim/cordis.patch.yml), and the code is kept on purpose as a reference for writing Cordis plugins. `git grep deepwidgets-trim` lists the DSH files that were edited. The method is in [docs/specs/fork-trim.md](docs/specs/fork-trim.md).
 
@@ -44,7 +52,7 @@ pnpm run start:desktop
 
 Before an install that pulls `@openuidev` packages, set `OPENUI_TELEMETRY_DISABLED=1`.
 
-The launcher uses its own state folder, `apps/desktop/.desktop-build/development/home`, so it does not touch your normal DSH home. Set `DSH_HOME` to use a different folder. It also opens DevTools and listens for debuggers on ports 9229, 9222, and 9230. [apps/desktop/README.md](apps/desktop/README.md#develop) lists the environment variables that change these.
+The launcher uses its own state folder, `apps/desktop/.desktop-build/development/home`, so it does not touch your normal DSH home. Set `DSH_HOME` to use a different folder. The launcher listens for debuggers on ports 9229, 9222, and 9230. On Windows and Linux, it also opens DevTools. On macOS, it does not, because the DSH window stays hidden. The file [apps/desktop/README.md](apps/desktop/README.md#develop) lists the environment variables that change these.
 
 ### macOS
 
@@ -93,8 +101,8 @@ node tools/widgets-mcp.mjs                           # MCP server, with a host
 
 | Path | Content |
 |---|---|
-| `deepwidgets/` | The `@deepwidgets/*` packages: `widgets` (runtime), `widget-sample`, `shell` (widget page, built with Vite), `widget-kit` (core of the widget page), `mcp` (MCP server), `trim` (the row patch that turns DSH plugins off), `probe` and `trace` (diagnostic widgets) |
-| `apps/desktop` | Electron main: windows, widget windows, the spawn of the host |
+| `deepwidgets/` | The `@deepwidgets/*` packages: `widgets` (runtime), `widget-sample`, `widget-main` (main widget), `shell` (widget page, built with Vite), `widget-kit` (core of the widget page), `mcp` (MCP server), `trim` (the row patch that turns DSH plugins off), `probe` and `trace` (diagnostic plugins) |
+| `apps/desktop` | Electron main: windows, widget windows, the menu bar app, the spawn of the host |
 | `apps/desktop-host` | The Node host process that runs the Cordis plugins |
 | `apps/cli`, `apps/web` | DSH CLI and Web app, inherited |
 | `packages/` | DSH packages, inherited. Most of them are turned off |
