@@ -177,6 +177,25 @@ The operator did not decide these items. A later decision can change each one.
 
 - The page of another widget must not call the routes of `main`. `agent_library.serving.routes` covers this: each widget page has its own origin, and Electron main gives 403 for the path of another slug.
 
+## Decisions of the reviews `main_widget.reviews`
+
+The fresh reviews of the units found these points. The operator, or the lead session with the operator's rules, decided each one.
+
+| Decision | Unit |
+|---|---|
+| A Turn off of the operator stays through a reinstall, a reload, and an agent `widget_remove`. Only Turn on and the Remove of `main` clear it. A reinstall of a turned-off slug installs the widget off, with the warning `turned-off`. | `main.runtime` |
+| The same rule holds for Hide. Only Show and the Remove of `main` clear it. | `main.window_state` |
+| `main` puts only its host calls in `widgetRecords.asHost`: the plugin manager, the installer, and the MCP settings. These calls get the 10 s limit of the host. The rest of each action of `main` keeps the 2 s limit of a widget (`widget.watchdog_rule`). Only a built-in row can call `asHost`. | `main.window_state` |
+| The core of the widget page waits on `NoAnswerError` until the first `hello`, because the panel loads its page before the host is ready. The core shows each other error. | `app.menu_bar` |
+| The host sends a change frame to `main` at most one time in 250 ms. The `widgets` query keeps the plugin rows until a plugin changes. | `main.page` |
+| The Settings tab has one switch for each gated mode: `create` and `library`. | `main.settings` |
+
+These limits are known, and nobody fixes them now:
+
+- `as_host_split_hides_stall`: a loop that calls `asHost` in each turn never runs 2 s in one segment. The watchdog stops it only at 10 s, with no blame. Only built-in code can call `asHost`. The fix needs a change in the watchdog thread, which the model `crash_lifecycle` covers.
+
+- `meta_hand_edit_stale_source`: a hand edit of the file `deepwidgets-widget.json` of a widget folder leaves the field `source` of the `widgets` query old. No operator or agent edits that file by hand.
+
 ## Research `main_widget.research`
 
 The Look Before You Build record and the notes of the research agent are in the session scratchpad of 2026-11-11, `/private/tmp/claude-501/-Users-rohanmalik-deepWidgets/88230fd3-8317-47a0-ac44-7a6181fd4633/scratchpad/`. The files are `look-before-you-build.md` and `research-menubar/NOTES.md`.
@@ -189,4 +208,10 @@ The Look Before You Build record and the notes of the research agent are in the 
 
 - The window manager rule for all desktops or only the main desktop (`standing.waiting.main_desktop_only`)
 
-- The removal of the DSH window and its checks
+- The removal of the DSH window and its checks. That unit also gives the DSH dialogs another parent window (`dsh_dialogs_on_hidden_window`).
+
+- A restart state in the core of the widget page (`panel_restart_no_loading_state`). During a host restart, each window keeps its last view.
+
+- A Turn off step in the model `widget_install` of the skill `widget-state-models`.
+
+- The window manager plugin `@deepwidgets/windows`. Its session can move the shown state of `main_widget.window_state` into that plugin.

@@ -7,10 +7,13 @@
  * rows of a widget through the DSH plugin manager, in the queue of the installer (the service `widgetInstaller` of
  * `@deepwidgets/mcp`). The installer keeps a Turn off, so a later `widget_install` or `widget_reload` of the slug installs
  * the new row off. The mutation `remove` removes an agent widget through the remove path of `widget_remove`. The state of
- * a widget stays in each case.
+ * a widget stays in each case. The mutations `show` and `hide` store the shown state of the widget window of a slug
+ * (`main_widget.window_state`). The runtime keeps it across Host starts, and Electron main obeys it.
  *
- * The plugin manager, the installer, and the install records are host code. The actions run them through
- * `widgetRecords.asHost`, so they run outside the store of this row: a crash in them is not blamed on this widget.
+ * The plugin manager, the installer, the install records, and the MCP settings are host code. The actions call them
+ * through `widgetRecords.asHost`, so those calls run outside the store and the watchdog slot of this row: a crash or a
+ * stall in them is not blamed on this widget. The other code of each action runs in its call, so a loop there is blamed
+ * on this widget within 2 s (as_host_covers_main_handlers, decision `widget.watchdog_rule`).
  *
  * The query `settings` and the mutations `setMode` and `setLoginItem` are the host half of the Settings tab
  * (`main_widget.settings`). The modes and the port come from the service `mcpSettings` of `@deepwidgets/mcp`, which
@@ -44,7 +47,7 @@ export const CATALOG = 'deepwidgets-main@1'
  * The program of the panel page (`main_widget.widgets`, `main_widget.settings`), in the component set {@link CATALOG}
  * of the shell entry `main.html`. The query `widgets` feeds the Widgets tab, and the query `settings` feeds the
  * Settings tab. Their defaults are null, so the page shows a loading state, not an empty list. The row controls of
- * `WidgetTable` call `turnOff`, `turnOn`, `remove`, and `program` with the slug of the row, then run `refresh`. The
+ * `WidgetTable` call `show`, `hide`, `turnOff`, `turnOn`, `remove`, and `program` with the slug of the row, then run `refresh`. The
  * switches of `ModeSwitches` and `LaunchAtLogin` call `setMode` and `setLoginItem`, then run `refresh`. The runtime
  * also sends a `data` frame to the page of main on each change of another widget, and the page then runs each query.
  */
@@ -107,8 +110,11 @@ export interface MainWidget {
    * status of an agent widget stays `safe-mode`, and this field shows the Turn off.
    */
   turnedOff?: true
-  /** A live or failed widget has a widget window. `main.window_state` adds the hidden state. */
-  window?: 'shown'
+  /**
+   * A live or failed widget has a widget window, which shows or is hidden (`main_widget.window_state`). Absent for a
+   * widget with no window: it is turned off, or safe mode keeps it off.
+   */
+  window?: 'shown' | 'hidden'
 }
 
 const slugInput = z.object({ slug: z.string() })
@@ -199,7 +205,7 @@ export interface MainSettings {
 }
 
 /** The code of a refusal of an action of `main`. The codes of the installer come from the remove path of `widget_remove`. */
-export type MainRefusalCode = 'unknown-widget' | 'built-in' | 'no-row' | 'unavailable' | 'change-failed' | CreationErrorCode
+export type MainRefusalCode = 'unknown-widget' | 'built-in' | 'no-row' | 'no-window' | 'unavailable' | 'change-failed' | CreationErrorCode
   | SetModeRefusal | LoginItemRefusal
 
 /** A refusal of an action of `main`: the result of the action, so that the page routes by `code`, not by the message. */
@@ -260,19 +266,34 @@ function rowOf(info: PluginInfo): MainWidgetRow {
   return { id: info.entryId.slice(info.entryId.lastIndexOf(':') + 1), entryId: info.entryId, name: info.moduleName, enabled: info.enabled }
 }
 
+/** A test hook of `tools/widgets-watchdog.mjs` (the case `main-loop`): the query `widgets` holds the event loop this long in its own code. */
+const TEST_MAIN_STALL_ENV = 'DEEPWIDGETS_TEST_MAIN_STALL_MS'
+
 export function apply(ctx: Context): void {
   const records = ctx.widgetRecords
+  /**
+   * as_host_covers_main_handlers: a call to a service of the host (the plugin manager, the installer, the install
+   * records, the MCP settings) runs as host code, outside the watchdog slot of this widget. Each other line of an action
+   * runs in its call, so a loop there is blamed on `main` within 2 s (decision `widget.watchdog_rule`).
+   */
+  const host = <T>(fn: () => T): T => records.asHost(fn)
+  const testStallMs = Math.max(0, Number(process.env[TEST_MAIN_STALL_ENV] ?? 0) || 0)
+  function testStall(): void {
+    for (const end = Date.now() + testStallMs; Date.now() < end;) {
+      // A busy loop in the code of main: the watchdog sees no heartbeat for this time.
+    }
+  }
 
   /** The plugin rows of widget code, or none when the host has no plugin manager. */
   async function widgetRows(): Promise<PluginInfo[]> {
     const manager = ctx.get('pluginManager')
     if (manager === undefined) return []
-    return (await manager.listPlugins()).filter((info) => slugOfEntry(info.entryId) !== undefined)
+    return (await host(() => manager.listPlugins())).filter((info) => slugOfEntry(info.entryId) !== undefined)
   }
 
   /** The rows of `slug`: the rows that registered it, and the rows whose row id names it. */
   function rowsOfSlug(slug: string, rows: PluginInfo[]): PluginInfo[] {
-    const registered = new Set(Object.values(records.rowsOf(slug)))
+    const registered = new Set(Object.values(host(() => records.rowsOf(slug))))
     return rows.filter((info) => registered.has(info.entryId) || slugOfEntry(info.entryId) === slug)
   }
 
@@ -305,7 +326,7 @@ export function apply(ctx: Context): void {
       const slugs = new Set([...listed, ...rows.flatMap((info) => slugOfEntry(info.entryId) ?? [])])
       const installer = ctx.get('widgetInstaller')
       // widgets_query_cost: one read of the bundle list for each snapshot, not one for each slug.
-      const sources = installer === undefined ? new Map<string, string>() : await installer.sources([...slugs])
+      const sources = installer === undefined ? new Map<string, string>() : await host(() => installer.sources([...slugs]))
       return { rows, sources }
     })()
     const entry = { key, value }
@@ -337,7 +358,7 @@ export function apply(ctx: Context): void {
       }
       const live = status.kind === 'live' ? describeLive(slug) : undefined
       const source = sources.get(slug)
-      const [state, program] = await Promise.all([records.stateRecord(slug), records.programRecord(slug)])
+      const [state, program] = await host(() => Promise.all([records.stateRecord(slug), records.programRecord(slug)]))
       out.push({
         slug,
         ...(summary === undefined ? {} : { title: summary.title }),
@@ -350,8 +371,9 @@ export function apply(ctx: Context): void {
         ...(source === undefined ? {} : { source }),
         rows: own.map(rowOf),
         ...(turnedOff ? { turnedOff: true as const } : {}),
-        // The events route lists each entry of the runtime, also a failed one, so Electron main shows its window.
-        ...(summary !== undefined && summary.off === undefined ? { window: 'shown' as const } : {}),
+        // The events route lists each entry of the runtime, also a failed one, so Electron main has its window. The runtime
+        // reads the shown state from memory at each query, so no cache can keep an old value.
+        ...(summary !== undefined && summary.off === undefined ? { window: host(() => records.windowShown(slug)) ? 'shown' as const : 'hidden' as const } : {}),
       })
     }
     return out
@@ -372,7 +394,7 @@ export function apply(ctx: Context): void {
       if (targets.length === 0) refuse('no-row', `no plugin row of ${slug} is ${enabled ? 'off' : 'on'}`)
       const changed: { id: string, application: ChangeResult['application'] }[] = []
       for (const info of targets) {
-        const result = await manager.setPluginEnabled(info.entryId, enabled)
+        const result = await host(() => manager.setPluginEnabled(info.entryId, enabled))
         if (result.application !== 'applied') {
           const done = changed.length === 0 ? '' : `; ${changed.map((item) => item.id).join(', ')} changed`
           refuse('change-failed', `the plugin manager did not turn ${rowOf(info).id} ${enabled ? 'on' : 'off'}: ${result.application}${done}`, {
@@ -384,22 +406,37 @@ export function apply(ctx: Context): void {
       return changed
     }
     const installer = ctx.get('widgetInstaller')
-    const changed = installer === undefined ? await change() : await installer.turn(slug, !enabled, change)
+    const changed = installer === undefined ? await change() : await host(() => installer.turn(slug, !enabled, change))
     return { slug, rows: changed }
   }
 
   async function remove(slug: string): Promise<{ slug: string, application: ChangeResult['application'] }> {
-    if (slug === widgetSlugs[0] || await records.builtInSlug(slug)) refuse('built-in', `${slug} is a built-in widget; only an agent widget can be removed`)
+    if (slug === widgetSlugs[0] || await host(() => records.builtInSlug(slug))) refuse('built-in', `${slug} is a built-in widget; only an agent widget can be removed`)
     const installer = ctx.get('widgetInstaller')
     if (installer === undefined) refuse('unavailable', 'this host has no widget installer')
     try {
-      return await installer.remove(slug)
+      return await host(() => installer.remove(slug))
     } catch (error) {
       // An expected failure of the installer keeps its code, diagnostics, and next step (`widget_remove` gives the same).
       const failed = creationError(error)
       if (failed === undefined) throw error
       return refuse(failed.code, failed.message, { diagnostics: failed.diagnostics, ...(failed.nextStep === undefined ? {} : { nextStep: failed.nextStep }) })
     }
+  }
+
+  /**
+   * main_widget.window_state: Show or Hide the widget window of `slug`. The runtime stores the choice, and Electron main
+   * obeys the frame of the events route. The page of main gets a `data` frame, so the Window field changes at once.
+   */
+  async function setShown(slug: string, shown: boolean): Promise<{ slug: string, window: 'shown' | 'hidden' }> {
+    if (slug === widgetSlugs[0]) refuse('unknown-widget', 'the main widget has no widget window; the panel is its only window')
+    try {
+      await host(() => records.setWindowShown(slug, shown))
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== 'unknown-widget') throw error
+      refuse('no-window', `${slug} has no widget window: it is not live, it is turned off, or safe mode keeps it off`)
+    }
+    return { slug, window: shown ? 'shown' : 'hidden' }
   }
 
   /** The ids of the login-item calls to Electron main. */
@@ -417,8 +454,8 @@ export function apply(ctx: Context): void {
   async function settingsAnswer(): Promise<MainSettings> {
     const mcp = ctx.get('mcpSettings')
     const [modes, port, loginItem] = await Promise.all([
-      mcp === undefined ? noMcp() : mcp.modes().then((value): MainAnswer<ModeSettings> => ({ ok: true, ...value })),
-      mcp === undefined ? noMcp() : mcp.port().then((value): MainAnswer<PortSetting> => ({ ok: true, ...value })),
+      mcp === undefined ? noMcp() : host(() => mcp.modes()).then((value): MainAnswer<ModeSettings> => ({ ok: true, ...value })),
+      mcp === undefined ? noMcp() : host(() => mcp.port()).then((value): MainAnswer<PortSetting> => ({ ok: true, ...value })),
       askLoginItem(loginCalls, null).then(loginItemResult),
     ])
     return { modes, port, loginItem }
@@ -428,7 +465,7 @@ export function apply(ctx: Context): void {
   async function setMode(mode: string, on: boolean): Promise<ModeSettings> {
     const mcp = ctx.get('mcpSettings')
     if (mcp === undefined) return refuse('unavailable', noMcp().message)
-    const result = await mcp.setMode(mode, on)
+    const result = await host(() => mcp.setMode(mode, on))
     if (!result.ok) return refuse(result.code, result.message)
     return result.settings
   }
@@ -447,29 +484,38 @@ export function apply(ctx: Context): void {
     catalog: CATALOG,
     initialState: {},
     actions: [
-      { name: 'widgets', kind: 'query', handler: () => records.asHost(async () => ({ widgets: await describeAll() })) },
-      { name: 'settings', kind: 'query', timeoutMs: SETTINGS_TIMEOUT_MS, handler: () => records.asHost(settingsAnswer) },
-      { name: 'setMode', kind: 'mutation', args: modeInput, handler: ({ mode, on }) => records.asHost(() => answer(() => setMode(mode, on))) },
+      {
+        name: 'widgets',
+        kind: 'query',
+        handler: async () => {
+          testStall()
+          return { widgets: await describeAll() }
+        },
+      },
+      { name: 'settings', kind: 'query', timeoutMs: SETTINGS_TIMEOUT_MS, handler: settingsAnswer },
+      { name: 'setMode', kind: 'mutation', args: modeInput, handler: ({ mode, on }) => answer(() => setMode(mode, on)) },
       {
         name: 'setLoginItem',
         kind: 'mutation',
         args: loginItemInput,
         timeoutMs: SETTINGS_TIMEOUT_MS,
-        handler: ({ open }) => records.asHost(() => answer(() => setLoginItem(open))),
+        handler: ({ open }) => answer(() => setLoginItem(open)),
       },
       {
         name: 'program',
         kind: 'query',
         args: slugInput,
-        handler: ({ slug }) => records.asHost(() => answer(async () => {
-          const program = slug === widgetSlugs[0] ? undefined : await records.programRecord(slug)
+        handler: ({ slug }) => answer(async () => {
+          const program = slug === widgetSlugs[0] ? undefined : await host(() => records.programRecord(slug))
           if (program === undefined) return refuse('unknown-widget', `no stored program for ${JSON.stringify(slug)}`)
           return { slug, rev: program.rev, text: program.text }
-        })),
+        }),
       },
-      { name: 'turnOff', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => answer(() => setEnabled(slug, false))) },
-      { name: 'turnOn', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => answer(() => setEnabled(slug, true))) },
-      { name: 'remove', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => records.asHost(() => answer(() => remove(slug))) },
+      { name: 'show', kind: 'mutation', args: slugInput, handler: ({ slug }) => answer(() => setShown(slug, true)) },
+      { name: 'hide', kind: 'mutation', args: slugInput, handler: ({ slug }) => answer(() => setShown(slug, false)) },
+      { name: 'turnOff', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => answer(() => setEnabled(slug, false)) },
+      { name: 'turnOn', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => answer(() => setEnabled(slug, true)) },
+      { name: 'remove', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => answer(() => remove(slug)) },
     ],
   })
 }

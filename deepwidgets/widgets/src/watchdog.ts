@@ -86,6 +86,28 @@ export function inSlot<T>(row: string, fn: () => T): T {
   }
 }
 
+/**
+ * host_work_counts_against_main_slot: run `fn` with no widget in the running-widget slot, so a stall in it has the limit
+ * of host code (`IDLE_THRESHOLD_MS`), not of a widget call. `widgetRecords.asHost` uses it for the host work that a
+ * built-in widget starts, such as a read of the plugin manager. The widget code before `fn` ends as at the return of a
+ * call: its provisional record goes, in the order of {@link inSlot}. The slot of the caller comes back after `fn`, so
+ * the widget code after it is in its call again.
+ */
+export function outsideSlot<T>(fn: () => T): T {
+  const watch = active
+  if (watch === undefined) return fn()
+  const previous = Atomics.exchange(watch.slots, RUNNING_SLOT, 0)
+  if (previous !== 0) {
+    Atomics.add(watch.slots, CALLS_SLOT, 1)
+    if (Atomics.exchange(watch.slots, PROVISIONAL_SLOT, 0) !== 0) removeOwnProvisional(watch.provisionalFile)
+  }
+  try {
+    return fn()
+  } finally {
+    Atomics.store(watch.slots, RUNNING_SLOT, previous)
+  }
+}
+
 /** The part of `@sentry/node-native-stacktrace` that the main thread uses. */
 interface NativeRegister {
   registerThread(storage: { asyncLocalStorage: AsyncLocalStorage<unknown> }, threadName: string): void

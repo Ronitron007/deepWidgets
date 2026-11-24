@@ -37,7 +37,7 @@ import type { Context, Fiber } from '@deepseek-ai/cordis'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { packageHash, readJson, writeJsonSync, type CrashRecord } from './records.ts'
 import { isGateStub, openAgentGate, type GateEntry } from './gate.ts'
-import { CRASH_DISPOSE_LIMIT_MS, DISPOSER_LIMIT_MS, inSlot, startWatchdog } from './watchdog.ts'
+import { CRASH_DISPOSE_LIMIT_MS, DISPOSER_LIMIT_MS, inSlot, outsideSlot, startWatchdog } from './watchdog.ts'
 
 export { packageHash, type BlameMethod, type CrashRecord } from './records.ts'
 
@@ -185,9 +185,11 @@ export function runAs<T>(row: string | undefined, fn: () => T): T {
 /**
  * main_widget.widgets: run `fn` outside the store of any widget row. The work that `fn` starts is host code: a crash
  * in it is not blamed on a row, and it can use the install records. The runtime checks who may call it.
+ * host_work_counts_against_main_slot: `fn` also runs outside the running-widget slot of the watchdog, so a stall in
+ * that host work has the limit of the host, not of a widget call. Widget code outside `fn` keeps its slot.
  */
 export function outsideRow<T>(fn: () => T): T {
-  return blameStore.exit(fn)
+  return blameStore.exit(() => outsideSlot(fn))
 }
 
 const stateDir = (): string => join(resolveDshHome(), 'deepwidgets')

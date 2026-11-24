@@ -80,7 +80,7 @@ The runtime registers each route with `ctx.connection.fetch.register`, so each r
 | Route | Answer |
 |---|---|
 | `GET /api/widgets` | `{ widgets: list() }` |
-| `GET /api/widgets/events` | Server-sent events: `{ type: 'added' \| 'removed', slug }`. The first frame is `{ type: 'hello', slugs }`. |
+| `GET /api/widgets/events` | Server-sent events: `{ type: 'added', slug, shown }`, `{ type: 'removed', slug }`, and `{ type: 'window', slug, shown }`. The first frame is `{ type: 'hello', slugs, shown }`, and its `shown` maps each slug to its shown state. A missing value means shown (`main_widget.window_state`). The route leaves out the slug `main` (`main_widget.widget`). |
 | `GET /api/widgets/<slug>/program` | `{ rev, text }` |
 | `POST /api/widgets/<slug>/call` | Body `{ action, args, requestId? }`. Answer `{ ok: true, result, rev }` or `{ ok: false, error: { code, message } }`. |
 | `GET /api/widgets/<slug>/stream` | Server-sent events: `hello { rev, programRev }`, then `data { rev }`, `program { rev }`, and `removed`. A ping every 15 s. |
@@ -115,7 +115,7 @@ The row `deepwidgets-widget-sample` registers the slug `sample`, a counter:
 
 - For each slug, it opens one panel window: no frame, always on top, on all Spaces, and shown without focus, as the trace window does. The window loads `dsh-app://app/widget/?slug=<slug>`.
 
-- On `removed`, it closes the window of that slug. When the stream ends, it opens the stream again and syncs the windows with `hello`.
+- On `removed`, it closes the window of that slug. On `window`, it shows or hides the window of that slug. When the stream ends, it opens the stream again and syncs the windows with `hello`.
 
 - Each window has its own renderer (`standing.waiting.renderer`, the recommended choice).
 

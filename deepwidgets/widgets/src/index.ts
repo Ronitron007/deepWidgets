@@ -33,6 +33,11 @@ const ACTION = /^[A-Za-z][A-Za-z0-9_]{0,62}$/
 const DEFAULT_TIMEOUT_MS = 5_000
 const CHANGE_LOG_SIZE = 1_000
 const DEFAULT_REQUEST_TTL_MS = 10 * 60_000
+/**
+ * A test hook of `tools/widgets-watchdog.mjs` (the case `as-host`, host_work_counts_against_main_slot): the first
+ * `widgetRecords.asHost` of a Host start holds the event loop for this many milliseconds of host work before its function.
+ */
+const TEST_AS_HOST_STALL_ENV = 'DEEPWIDGETS_TEST_AS_HOST_STALL_MS'
 
 /**
  * The Host environment key of safe mode (`widget_phase2.isolation.supervisor`). Electron main sets it
@@ -317,6 +322,12 @@ const programSchema = z.object({
   updatedAt: z.number(),
   seed: z.string().optional(),
 }).strict()
+/**
+ * main_widget.window_state: the shown state of the widget window of a slug, as the operator chose it in the main widget.
+ * A slug with no record shows: a new widget starts as shown. The Remove of the operator deletes the record. An agent
+ * `widget_remove` keeps it, so a later install of the slug comes up hidden, as a Turn off stays.
+ */
+const windowSchema = z.object({ shown: z.boolean(), updatedAt: z.number() }).strict()
 const requestSchema = z.object({
   hash: z.string(),
   at: z.number(),
@@ -334,6 +345,7 @@ export const widgetsDomain = defineDomain({
     state: domainTable(stateSchema),
     program: domainTable(programSchema),
     requests: domainTable(requestSchema),
+    windows: domainTable(windowSchema),
   },
 })
 
@@ -342,6 +354,7 @@ type WidgetsDomain = Domain<typeof widgetsDomain>
 export type ProgramRecord = z.infer<typeof programSchema>
 type StoredRequest = z.infer<typeof requestSchema>
 type WriteMark = z.infer<typeof writeMarkSchema>
+type WindowRecord = z.infer<typeof windowSchema>
 
 /** A checked definition, as the runtime keeps it. */
 interface Registration {
@@ -397,6 +410,8 @@ interface Runtime {
   programRecord(slug: string): Promise<ProgramRecord | undefined>
   stateRecord(slug: string): Promise<{ rev: number, data: unknown } | undefined>
   asHost<T>(fn: () => T): T
+  /** as_host_guard_bypass: whether `row` registered a built-in widget that is live in this Host start. */
+  builtInRow(row: string): boolean
   restoreProgram(slug: string, record: ProgramRecord | undefined, by: string): Promise<void>
   adoptSeed(slug: string, seed: string): Promise<void>
   clearOff(slug: string): void
@@ -404,6 +419,9 @@ interface Runtime {
   holdLift(slug: string): void
   settleLift(slug: string, ok: boolean): void
   rowsOf(slug: string): RegisteredRows
+  windowShown(slug: string): boolean
+  setWindowShown(slug: string, shown: boolean): Promise<void>
+  forgetWindow(slug: string): Promise<void>
   commit(slug: string, name: string | undefined): void
   committed(slug: string): string | undefined
   changes(since: string | undefined): { cursor: string, changes: WidgetChange[], reset?: true }
@@ -436,17 +454,30 @@ const hashOf = (value: unknown): string => createHash('sha256').update(JSON.stri
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error)
 
 /**
+ * as_host_guard_bypass: the runtime of each service, by the service object. Only this module reads it. A method runs
+ * with `this` set to a proxy of Cordis for the caller context, so {@link runtimeOf} reads the service object behind it.
+ */
+const runtimes = new WeakMap<object, Runtime>()
+/** The symbol under which a Cordis proxy of a service gives the service object (`symbols.original` of Cordis). */
+const ORIGINAL = Symbol.for('cordis.original')
+function runtimeOf(service: object): Runtime {
+  const runtime = runtimes.get((service as Record<symbol, object | undefined>)[ORIGINAL] ?? service)
+  if (runtime === undefined) throw new Error('widgets: the service has no runtime')
+  return runtime
+}
+
+/**
  * The service `widgets`. Each method reads `this.ctx` as the caller context, so a registration
  * belongs to the fiber that made it.
  */
 export class WidgetsService extends Service {
-  // A private field (#) does not work: the caller context reads the service through a proxy.
-  private readonly runtime: Runtime
-
   constructor(ctx: Context, runtime: Runtime) {
     super(ctx, 'widgets')
-    this.runtime = runtime
+    runtimes.set(this, runtime)
   }
+
+  // A private field (#) does not work: the caller context reads the service through a proxy. The runtime is in the
+  // module map `runtimes`, not in a property or a getter, so widget code can not reach it (as_host_guard_bypass).
 
   /**
    * Register one widget. The caller fiber owns the registration: it ends when the fiber ends.
@@ -459,7 +490,7 @@ export class WidgetsService extends Service {
    */
   register<S, const T extends readonly unknown[]>(def: WidgetDef<S, T>): () => Promise<void> {
     const registration = buildRegistration(def)
-    const runtime = this.runtime
+    const runtime = runtimeOf(this)
     // widget_phase2.isolation.blame: the Loader row is the blame key, and the caller package holds its files.
     const row = widgetRow(this.ctx.fiber)
     if (row !== undefined) {
@@ -476,7 +507,7 @@ export class WidgetsService extends Service {
 
   /** @returns `{ slug, title, rev, programRev }` for each live widget. */
   list(): WidgetSummary[] {
-    return this.runtime.list()
+    return runtimeOf(this).list()
   }
 
   /**
@@ -485,7 +516,7 @@ export class WidgetsService extends Service {
    * @throws {WidgetError} `unknown-widget`.
    */
   describe(slug: string): WidgetDescription {
-    return this.runtime.describe(slug)
+    return runtimeOf(this).describe(slug)
   }
 
   /**
@@ -494,7 +525,7 @@ export class WidgetsService extends Service {
    * @throws {WidgetError} `unknown-widget`.
    */
   get(slug: string): { rev: number, data: unknown } {
-    return this.runtime.get(slug)
+    return runtimeOf(this).get(slug)
   }
 
   /**
@@ -504,7 +535,7 @@ export class WidgetsService extends Service {
   call(slug: string, action: string, args: unknown, options: CallOptions): Promise<CallOutcome> {
     const late = lateWrite(this.ctx.fiber, slug)
     if (late !== undefined) return Promise.reject(late)
-    return this.runtime.call(slug, action, args, options)
+    return runtimeOf(this).call(slug, action, args, options)
   }
 
   /**
@@ -516,7 +547,7 @@ export class WidgetsService extends Service {
     const late = lateWrite(this.ctx.fiber, slug)
     if (late !== undefined) return Promise.reject(late)
     const by = options.by ?? `plugin:${this.ctx.fiber.name}`
-    return this.runtime.update(slug, fn as (state: unknown) => unknown, by) as Promise<S>
+    return runtimeOf(this).update(slug, fn as (state: unknown) => unknown, by) as Promise<S>
   }
 
   /**
@@ -526,19 +557,19 @@ export class WidgetsService extends Service {
   setProgram(slug: string, text: string, options: { by?: string } = {}): Promise<{ rev: number }> {
     const late = lateWrite(this.ctx.fiber, slug)
     if (late !== undefined) return Promise.reject(late)
-    return this.runtime.setProgram(slug, text, options.by ?? `plugin:${this.ctx.fiber.name}`)
+    return runtimeOf(this).setProgram(slug, text, options.by ?? `plugin:${this.ctx.fiber.name}`)
   }
 
   /**
    * The change feed after a cursor of {@link cursor}. A cursor of another process gives `reset: true`.
    */
   changes(since: string | undefined): { cursor: string, changes: WidgetChange[], reset?: true } {
-    return this.runtime.changes(since)
+    return runtimeOf(this).changes(since)
   }
 
   /** @returns a change-feed cursor for now. */
   cursor(): string {
-    return this.runtime.cursor()
+    return runtimeOf(this).cursor()
   }
 }
 
@@ -548,13 +579,13 @@ export class WidgetsService extends Service {
  * Only {@link WidgetRecordsService.asHost} takes a call from widget code, and only from the code of a built-in row.
  */
 export class WidgetRecordsService extends Service {
-  // A private field (#) does not work: the caller context reads the service through a proxy.
-  private readonly runtime: Runtime
-
   constructor(ctx: Context, runtime: Runtime) {
     super(ctx, 'widgetRecords')
-    this.runtime = runtime
+    runtimes.set(this, runtime)
   }
+
+  // A private field (#) does not work: the caller context reads the service through a proxy. The runtime is in the
+  // module map `runtimes`, not in a property or a getter, so widget code can not reach it (as_host_guard_bypass).
 
   /**
    * The stored program record of `slug`, also when the slug is not live. For a live slug, it waits
@@ -562,7 +593,7 @@ export class WidgetRecordsService extends Service {
    * @returns undefined when storage has no program for the slug.
    */
   programRecord(slug: string): Promise<ProgramRecord | undefined> {
-    return guard(() => this.runtime.programRecord(slug))
+    return guard(() => runtimeOf(this).programRecord(slug))
   }
 
   /**
@@ -571,54 +602,84 @@ export class WidgetRecordsService extends Service {
    * @returns undefined when storage has no state for the slug.
    */
   stateRecord(slug: string): Promise<{ rev: number, data: unknown } | undefined> {
-    return guard(() => this.runtime.stateRecord(slug))
+    return guard(() => runtimeOf(this).stateRecord(slug))
   }
 
   /**
    * main_widget.widgets: run `fn` as host code. `fn` and the work that it starts run outside the store of a widget row
    * and outside the queue slot of a call, so they can use the install records, and a crash in them is not blamed on the
    * widget. A built-in widget, such as `main`, calls it for host work: the plugin manager and the installer.
+   * as_host_guard_bypass: the check reads the widget row whose code runs now (the blame store), not the fiber of the
+   * context that reached this service. Thus widget code can not pass it through the context of a built-in row.
    * @throws {Error} when the caller is widget code of a row that is not built in.
    */
   asHost<T>(fn: () => T): T {
+    const runtime = runtimeOf(this)
     const row = runningRow()
-    if (row !== undefined && !isBuiltInRow(this.ctx, this.ctx.fiber)) throw new Error(`widgets: the widget row ${row} is not built in, so it can not run host code`)
-    return this.runtime.asHost(fn)
+    if (row !== undefined && !runtime.builtInRow(row)) throw new Error(`widgets: the widget row ${row} is not built in, so it can not run host code`)
+    return runtime.asHost(fn)
   }
 
   /** Put back the program record that `programRecord` gave before an install, or delete it when that gave undefined. */
   restoreProgram(slug: string, record: ProgramRecord | undefined, options: { by?: string } = {}): Promise<void> {
-    return guard(() => this.runtime.restoreProgram(slug, record, options.by ?? `plugin:${this.ctx.fiber.name}`))
+    return guard(() => runtimeOf(this).restoreProgram(slug, record, options.by ?? `plugin:${this.ctx.fiber.name}`))
   }
 
   /** Set the seed hash of a program record of an older format, which has none. The text stays. */
   adoptSeed(slug: string, seed: string): Promise<void> {
-    return guard(() => this.runtime.adoptSeed(slug, seed))
+    return guard(() => runtimeOf(this).adoptSeed(slug, seed))
   }
 
   /** Forget that safe mode turned the agent widget `slug` off in this Host start. Another off entry stays. */
   clearOff(slug: string): void {
-    guard(() => { this.runtime.clearOff(slug) })
+    guard(() => { runtimeOf(this).clearOff(slug) })
   }
 
   /** Whether `slug` is the slug of a built-in widget (`widget.builtin_slugs`), also when its row is off. */
   builtInSlug(slug: string): Promise<boolean> {
-    return guard(() => this.runtime.builtInSlug(slug))
+    return guard(() => runtimeOf(this).builtInSlug(slug))
   }
 
   /** An install of `slug` starts: a load of other files of a quarantined row of the slug does not end the quarantine yet. */
   holdLift(slug: string): void {
-    guard(() => { this.runtime.holdLift(slug) })
+    guard(() => { runtimeOf(this).holdLift(slug) })
   }
 
   /** The install of `slug` ends. With `ok`, a quarantined row of the slug that loaded other files leaves the quarantine. */
   settleLift(slug: string, ok: boolean): void {
-    guard(() => { this.runtime.settleLift(slug, ok) })
+    guard(() => { runtimeOf(this).settleLift(slug, ok) })
   }
 
   /** widget_fv.replace: the Loader rows that registered `slug`: of its live or failed entry, and of its standby. */
   rowsOf(slug: string): RegisteredRows {
-    return guard(() => this.runtime.rowsOf(slug))
+    return guard(() => runtimeOf(this).rowsOf(slug))
+  }
+
+  /**
+   * main_widget.window_state: whether the widget window of `slug` shows. A slug with no stored choice shows. The main
+   * widget reads it for the Window field of its Widgets tab.
+   */
+  windowShown(slug: string): boolean {
+    return guard(() => runtimeOf(this).windowShown(slug))
+  }
+
+  /**
+   * main_widget.window_state: store the shown state of the widget window of `slug`, across Host starts. The events route
+   * sends it to Electron main in a `window` frame, and Electron main shows or hides the window. The Show and Hide
+   * actions of the main widget call it.
+   * @throws {WidgetError} `unknown-widget` when `slug` has no widget window: it has no live or failed entry, or it is
+   * the main widget.
+   */
+  setWindowShown(slug: string, shown: boolean): Promise<void> {
+    return guard(() => runtimeOf(this).setWindowShown(slug, shown))
+  }
+
+  /**
+   * main_widget.window_state: forget the shown state of `slug`, so that a later install of it starts as shown. The Remove
+   * of the operator in the main widget calls it. An agent `widget_remove` does not, as for a Turn off.
+   */
+  forgetWindow(slug: string): Promise<void> {
+    return guard(() => runtimeOf(this).forgetWindow(slug))
   }
 
   /**
@@ -627,12 +688,12 @@ export class WidgetRecordsService extends Service {
    * standby. A standby of the committed name with no entry before it goes live at once.
    */
   commit(slug: string, name: string | undefined): void {
-    guard(() => { this.runtime.commit(slug, name) })
+    guard(() => { runtimeOf(this).commit(slug, name) })
   }
 
   /** widget_fv.replace: the package name of the committed version of `slug`, or undefined. */
   committed(slug: string): string | undefined {
-    return guard(() => this.runtime.committed(slug))
+    return guard(() => runtimeOf(this).committed(slug))
   }
 }
 
@@ -772,6 +833,18 @@ export const Config: Schema<Config> = Schema.object({
 
 export function apply(ctx: Context, config: Config): void {
   const requestTtlMs = config.requestTtlMs
+  let testStallMs = Math.max(0, Number(process.env[TEST_AS_HOST_STALL_ENV] ?? 0) || 0)
+  /**
+   * The test hook {@link TEST_AS_HOST_STALL_ENV}: host code that holds the event loop, in the first `asHost` of this
+   * runtime only. One query of `main` makes many host calls, and one stall is enough. It does nothing when it is not set.
+   */
+  function testHostStall(): void {
+    const stallMs = testStallMs
+    testStallMs = 0
+    for (const end = Date.now() + stallMs; Date.now() < end;) {
+      // A busy loop: the watchdog sees no heartbeat for this time.
+    }
+  }
   const widgets = new Map<string, Entry>()
   const safeMode = process.env[SAFE_MODE_ENV] === '1'
   /** The widgets that safe mode refused in this Host start, by slug. `agent`: the row is an agent bundle. */
@@ -875,13 +948,48 @@ export function apply(ctx: Context, config: Config): void {
   }
   /** main_widget.widget: the main widget has no widget window, so the events route does not name it. */
   const windowed = (slug: string): boolean => slug !== MAIN_SLUG
-  function pushEvent(message: { type: 'added' | 'removed', slug: string }): void {
-    if (!windowed(message.slug)) return
+  /** window_read_breaks_core_paths: true after the first read of a window record failed, so the log has one line. */
+  let windowReadFailed = false
+  /**
+   * main_widget.window_state: the stored shown state of the widget window of `slug`. A slug with no record shows. The
+   * events route opens its streams after the storage domain, so each frame reads the stored value.
+   * window_read_breaks_core_paths: `start()` and the `hello` of the events route read it, so a read never throws. After
+   * an `unknown-state` failure or the close of the domain, `get` throws: the window then shows, as when the domain did
+   * not open, and the log gets one line.
+   */
+  function shownOf(slug: string): boolean {
+    try {
+      return domain?.table('windows').get(slug)?.shown ?? true
+    } catch (error) {
+      if (!windowReadFailed) ctx.logger.warn(`widgets: the shown state of the widget windows can not be read; each window shows: ${errorText(error)}`)
+      windowReadFailed = true
+      return true
+    }
+  }
+  function sendEvent(message: unknown): void {
     const frame = sseFrame(message)
     for (const open of [...events]) open.send(frame)
   }
+  /** One frame of the events route for `slug`. An `added` frame carries the shown state of its window. */
+  function pushEvent(message: { type: 'added' | 'removed', slug: string }): void {
+    if (!windowed(message.slug)) return
+    sendEvent(message.type === 'added' ? { ...message, shown: shownOf(message.slug) } : message)
+  }
+  /** The first frame of the events route: each slug with a widget window, and the shown state of each one. */
+  function eventsHello(): { type: 'hello', slugs: string[], shown: Record<string, boolean> } {
+    const slugs = [...widgets.keys()].filter(windowed)
+    return { type: 'hello', slugs, shown: Object.fromEntries(slugs.map((slug) => [slug, shownOf(slug)])) }
+  }
   ctx.on('domain/changed', (change) => {
-    if (change.domain !== 'widgets' || change.operation !== 'put') return
+    if (change.domain !== 'widgets') return
+    if (change.table === 'windows') {
+      // main_widget.window_state: the write is durable, so Electron main can obey it. A slug that is not live has no window.
+      if (!widgets.has(change.key) || !windowed(change.key)) return
+      sendEvent({ type: 'window', slug: change.key, shown: change.operation === 'put' ? (change.value as WindowRecord).shown : true })
+      signalMain()
+      return
+    }
+    if (change.operation !== 'put') return
     const rev = (change.value as { rev: number }).rev
     if (change.table === 'state') push(change.key, { type: 'data', rev })
     else if (change.table === 'program') push(change.key, { type: 'program', rev })
@@ -1553,8 +1661,25 @@ export function apply(ctx: Context, config: Config): void {
     path: '/api/widgets/events',
     methods: ['GET'],
     requestBody: 'buffered',
-    fetch: guarded((request) => Promise.resolve(eventStream(request, events, () => ({ type: 'hello', slugs: [...widgets.keys()].filter(windowed) })))),
+    fetch: guarded(async (request) => {
+      // main_widget.window_state: the hello frame gives the stored shown state, so the stream waits for the domain. A
+      // domain that did not open shows each window, as a widget with no stored choice.
+      await ready.catch(() => undefined)
+      return eventStream(request, events, eventsHello)
+    }),
   })
+
+  // ---- main_widget.window_state: the shown state of each widget window ----
+  // window_writes_skip_queued_write: each Show, Hide, and forget is one job on the domain write chain, with no check of
+  // the record in memory first. Memory changes only when a write is durable, so a check would miss a write in the queue.
+  // Thus the last request wins, and a forget after a queued Hide leaves no record (`delete` looks at its chain slot).
+  async function setWindowShown(slug: string, shown: boolean): Promise<void> {
+    if (!windowed(slug) || !widgets.has(slug)) throw new WidgetError('unknown-widget', `${JSON.stringify(slug)} has no widget window: it is not live`)
+    await (await ready).table('windows').put(slug, { shown, updatedAt: Date.now() })
+  }
+  async function forgetWindow(slug: string): Promise<void> {
+    await (await ready).table('windows').delete(slug)
+  }
 
   // widget_phase2.isolation.blame: a quarantined widget row loads as one failed entry for each of its slugs.
   const isolation = createIsolation(ctx, {
@@ -1594,8 +1719,13 @@ export function apply(ctx: Context, config: Config): void {
     programRecord,
     stateRecord,
     // A call runs in the async context of its queue slot (`slot`) and of its widget row (the blame store). Host work
-    // leaves both, so it is not a write of that call and not code of that row.
-    asHost: (fn) => slot.exit(() => outsideRow(fn)),
+    // leaves both, so it is not a write of that call and not code of that row. It also leaves the running-widget slot of
+    // the watchdog (host_work_counts_against_main_slot).
+    asHost: (fn) => slot.exit(() => outsideRow(() => {
+      testHostStall()
+      return fn()
+    })),
+    builtInRow: (row) => [...widgets.values()].some((entry) => entry.registration.row === row && entry.registration.builtIn === true),
     restoreProgram: (slug, record, by) => admit(() => restoreProgram(slug, record, by)),
     adoptSeed: (slug, seed) => admit(() => adoptSeed(slug, seed)),
     clearOff: (slug) => { if (off.get(slug)?.agent === true) off.delete(slug) },
@@ -1605,6 +1735,9 @@ export function apply(ctx: Context, config: Config): void {
     holdLift: (slug) => { installing.add(slug); isolation.holdLift(slug) },
     settleLift: (slug, ok) => { installing.delete(slug); isolation.settleLift(slug, ok) },
     rowsOf,
+    windowShown: shownOf,
+    setWindowShown: (slug, shown) => admit(() => setWindowShown(slug, shown)),
+    forgetWindow: (slug) => admit(() => forgetWindow(slug)),
     changes,
     cursor,
   }

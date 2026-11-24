@@ -21,6 +21,17 @@
  *   dies after about 10 s with no blame. A read that counts as a suspend would keep the host alive.
  * - host-await: a widget awaits host work that holds the event loop for 3 s. That work has the store of the widget,
  *   but its frames are host code. The host lives, and no record blames the widget.
+ * - as-host (host_work_counts_against_main_slot): an action of the built-in widget `main` runs host work through
+ *   `widgetRecords.asHost`, and that host work holds the event loop for 3 s (the test hook
+ *   DEEPWIDGETS_TEST_AS_HOST_STALL_MS). The host work is outside the running slot of `main`, so the host lives, the
+ *   action answers, and no record blames or quarantines `main`.
+ * - as-host-guard (as_host_guard_bypass): the watchdog widget, which is not built in, calls `widgetRecords.asHost`
+ *   through each path: the service, a `runtime` property of the service `widgetRecords` or `widgets`, and the service
+ *   through the context of the `main` row. Each path refuses it. Then, for each path, it gives a loop to that path, and
+ *   runs the loop itself after the refusal: the host dies within 2.5 s, and the record blames the widget by its slot.
+ * - main-loop (as_host_covers_main_handlers): the query `widgets` of `main` loops in its own code, outside its host
+ *   calls (the test hook DEEPWIDGETS_TEST_MAIN_STALL_MS). The host dies within 2.5 s, and the record blames `main` by
+ *   its slot (decision `widget.watchdog_rule`).
  * - oom: a stall, then fast allocation. The out-of-memory abort (provisional record) and the stall kill (crash record)
  *   both blame the widget. The case checks the result: the host died, a record blames the widget, and the next host
  *   has the widget quarantined.
@@ -57,7 +68,7 @@ const isRow = (row, id) => typeof row === 'string' && (row === id || row.endsWit
 /** The cases to run. All cases when WIDGETS_WATCHDOG_CASES is not set. */
 const CASES = process.env.WIDGETS_WATCHDOG_CASES?.split(',').map((name) => name.trim()).filter((name) => name !== '')
 const runs = (name) => CASES === undefined || CASES.length === 0 || CASES.includes(name)
-const CASE_NAMES = ['parse', 'suspend', 'stall', 'spin', 'idle', 'native', 'native-off', 'native-slow', 'host-await', 'oom']
+const CASE_NAMES = ['parse', 'suspend', 'stall', 'spin', 'idle', 'native', 'native-off', 'native-slow', 'host-await', 'as-host', 'as-host-guard', 'main-loop', 'oom']
 /** native-slow: the reads add up to 6 s over the 10 s limit at most, so the kill comes in this window. */
 const SLOW_KILL_MAX_MS = 16_000
 /** safe_host.watchdog: a widget stall that the native stack finds kills the host in this time after the call. */
@@ -446,6 +457,79 @@ async function main() {
       const crash = readState('crash.json')
       check('host-await: 3 s of host work that the widget awaits does not kill the host', answer.status === 200 && alive(host) && crash?.pid !== pid,
         JSON.stringify({ status: answer.status, alive: alive(host), crash: crash === undefined ? null : { row: crash.row, method: crash.method, message: crash.error?.message } }))
+    } finally {
+      await host.stop()
+    }
+  }
+
+  // as-host (host_work_counts_against_main_slot): host work that `main` starts with asHost has the limit of the host.
+  if (runs('as-host')) {
+    clearState()
+    host = await startHost(port, inspectPort, [], { DEEPWIDGETS_TEST_AS_HOST_STALL_MS: '3000' })
+    try {
+      await live(host)
+      const pid = host.child.pid
+      const started = Date.now()
+      const answer = await host.post('/api/widgets/main/call', { action: 'widgets', args: {} })
+      const ms = Date.now() - started
+      await sleep(500)
+      const crash = readState('crash.json')
+      const quarantine = readState('quarantine.json')
+      const detail = JSON.stringify({ status: answer.status, ok: answer.body?.ok, ms, alive: alive(host), crash: crash === undefined ? null : { row: crash.row, method: crash.method, message: crash.error?.message }, quarantine })
+      check('as-host: 3 s of host work inside asHost of main does not kill the host, and the action answers',
+        answer.status === 200 && answer.body?.ok === true && Array.isArray(answer.body.result?.widgets) && ms >= 3_000 && alive(host), detail)
+      check('as-host: no record blames main, and main is not in the quarantine',
+        crash?.pid !== pid && !(Array.isArray(quarantine) && quarantine.some((item) => isRow(item?.row, 'deepwidgets-widget-main'))), detail)
+    } finally {
+      await host.stop()
+    }
+  }
+
+  // as-host-guard (as_host_guard_bypass): widget code that is not built in can not run host code through any path.
+  if (runs('as-host-guard')) {
+    const paths = ['service', 'recordsRuntime', 'widgetsRuntime', 'mainContext']
+    clearState()
+    host = await startHost(port, inspectPort)
+    try {
+      await live(host)
+      const answers = {}
+      for (const path of paths) answers[path] = (await host.post('/api/widgets/watchdog/call', { action: 'asHost', args: { path } })).body?.result
+      check('as-host-guard: each path to asHost refuses the watchdog widget', paths.every((path) => typeof answers[path]?.refused === 'string' && answers[path].ran === undefined)
+        && answers.service.refused.includes('is not built in') && answers.mainContext.refused.includes('is not built in'), JSON.stringify(answers))
+    } finally {
+      await host.stop()
+    }
+    for (const path of paths) {
+      clearState()
+      host = await startHost(port, inspectPort)
+      try {
+        await live(host)
+        const sent = Date.now()
+        void host.post('/api/widgets/watchdog/call', { action: 'asHost', args: { path, loop: true } }).catch(() => undefined)
+        const exit = await Promise.race([host.exited, sleep(20_000).then(() => null)])
+        const record = readState('crash.json')
+        const detail = JSON.stringify({ exit: exit === null ? 'alive after 20 s' : exit.signal ?? exit.code, ms: exit === null ? null : exit.at - sent, row: record?.row, method: record?.method, message: record?.error?.message })
+        check(`as-host-guard: a loop given to the path ${path} kills the host within ${String(KILL_WITHIN_MS)} ms and is blamed on the widget by its slot`,
+          exit !== null && exit.signal === 'SIGKILL' && exit.at - sent <= KILL_WITHIN_MS && isRow(record?.row, WIDGET) && record?.method === 'slot' && record?.pid === host.child.pid, detail)
+      } finally {
+        await host.stop()
+      }
+    }
+  }
+
+  // main-loop (as_host_covers_main_handlers): the code of an action of main, outside its host calls, is in its call.
+  if (runs('main-loop')) {
+    clearState()
+    host = await startHost(port, inspectPort, [], { DEEPWIDGETS_TEST_MAIN_STALL_MS: '60000' })
+    try {
+      await live(host)
+      const sent = Date.now()
+      void host.post('/api/widgets/main/call', { action: 'widgets', args: {} }).catch(() => undefined)
+      const exit = await Promise.race([host.exited, sleep(20_000).then(() => null)])
+      const record = readState('crash.json')
+      const detail = JSON.stringify({ exit: exit === null ? 'alive after 20 s' : exit.signal ?? exit.code, ms: exit === null ? null : exit.at - sent, row: record?.row, method: record?.method, message: record?.error?.message })
+      check(`main-loop: a loop in the code of an action of main kills the host within ${String(KILL_WITHIN_MS)} ms and is blamed on main by its slot`,
+        exit !== null && exit.signal === 'SIGKILL' && exit.at - sent <= KILL_WITHIN_MS && isRow(record?.row, 'deepwidgets-widget-main') && record?.method === 'slot' && record?.pid === host.child.pid, detail)
     } finally {
       await host.stop()
     }

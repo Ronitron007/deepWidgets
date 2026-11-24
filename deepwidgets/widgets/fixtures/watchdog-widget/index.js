@@ -48,6 +48,35 @@ export function apply(ctx) {
         },
       },
       {
+        // as_host_guard_bypass: this widget is not built in, so each path to widgetRecords.asHost must refuse it. With
+        // `loop`, a refused call runs the loop here, in the call of this widget: the watchdog blames it by its slot.
+        // A path that let it in would run the loop as host code, with no widget in the slot.
+        name: 'asHost',
+        kind: 'query',
+        handler: function watchdogAsHost(args) {
+          const path = String(args?.path ?? 'service')
+          const fn = () => {
+            if (args?.loop === true) for (;;) busy(1_000)
+            return 'ran as host code'
+          }
+          const paths = {
+            service: () => ctx.get('widgetRecords').asHost(fn),
+            recordsRuntime: () => ctx.get('widgetRecords').runtime.asHost(fn),
+            widgetsRuntime: () => ctx.widgets.runtime.asHost(fn),
+            mainContext: () => {
+              const main = [...ctx.get('loader').entries()].find((entry) => entry.options?.name === '@deepwidgets/widget-main')
+              return main.fiber.ctx.get('widgetRecords').asHost(fn)
+            },
+          }
+          try {
+            return { path, ran: paths[path]() }
+          } catch (error) {
+            if (args?.loop === true) fn()
+            return { path, refused: String(error?.message ?? error) }
+          }
+        },
+      },
+      {
         // A stall shorter than the threshold: the provisional record comes and goes, and the host lives.
         name: 'stall',
         kind: 'query',
