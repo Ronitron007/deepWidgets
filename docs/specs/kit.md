@@ -118,6 +118,8 @@ The service runs one change at a time, in order.
 
 - A start waits while another process changes the kit. Thus the start never removes a version that another process still makes.
 
+- The page gates never wait for the lock. While the kit is not ready, a page install fails at once with `kit-unavailable`, and its next step tells the agent to try again. Thus the installer queue does not stop. Before this rule, a page install waited for the lock and stopped the queue, so a later install with no `page/` also stopped (the verify of PR #140, verified by a run). Remove, Turn off, and Turn on also do not wait for the kit.
+
 - Without the lock, two processes both wrote `versions/2`, and `current` pointed at a folder that was gone. After that, each start found the kit unavailable (the review of PR #140, verified by a run).
 
 ### Errors `kit.service.errors`
