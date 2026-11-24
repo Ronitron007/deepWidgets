@@ -254,7 +254,8 @@ const currentNumber = () => Number(currentTarget().split('/')[1])
 /** True when the version folder `dir` has the mark that the kit writes after pnpm made its node_modules. */
 const isWhole = (dir) => existsSync(join(dir, 'node_modules', '.deepwidgets-kit-whole'))
 const versionsOnDisk = () => readdirSync(join(kitDir, 'versions')).filter((entry) => /^\d+$/.test(entry)).map(Number).sort((a, b) => a - b)
-const manifestOf = (dir) => JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+/** The package.json of a kit version. A version that a broken change left with no file reads as `{ missing: true }`, so its step fails with a line. */
+const manifestOf = (dir) => existsSync(join(dir, 'package.json')) ? JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) : { missing: true, dependencies: {} }
 const brief = (value) => JSON.stringify(value)?.slice(0, 900)
 
 /** The library of the page of PAGE_SLUG: its Note shows a year that date-fns computes, through the root and a subpath. */
@@ -487,9 +488,11 @@ async function lockHost(port) {
   const lockFile = join(kitDir, 'current.lock')
   writeFileSync(lockFile, `${String(holder.pid)}\n`)
   const busyStarted = performance.now()
-  const busy = await bounded(call('widget_install', { dir: pageDir }), lateAnswer('widget_install'))
+  // An MCP request that times out (60 s) is an answer of this step, not a crash of the stage.
+  const asked = (args) => bounded(call('widget_install', args), lateAnswer('widget_install')).catch((error) => ({ isError: true, body: { error: { code: 'client-error', message: String(error) } } }))
+  const busy = await asked({ dir: pageDir })
   const busyMs = Math.round(performance.now() - busyStarted)
-  const plain = await bounded(call('widget_install', { dir: plainDir }), lateAnswer('widget_install'))
+  const plain = await asked({ dir: plainDir })
   holder.kill('SIGKILL')
   rmSync(lockFile, { force: true })
   check('while another process holds the kit lock, a page install gives kit-unavailable with a next step to try again in at most 5 s, and a later install with no page/ applies',
@@ -587,14 +590,26 @@ try {
   base = `http://127.0.0.1:${String(port)}`
   console.log(`kit-service: work folder ${work}, port ${String(port)}`)
   const core = appCore()
-  await firstHost(port, core)
-  await afterRemoveHost(port)
-  await lockHost(port)
-  relinkPart(core)
-  await deadRegistryHost(port, core)
-  await pnpm10Host(port)
-  await plainHost(port)
-  await noStoreHost(port)
+  // A stage that throws, such as on a kit that a broken change left with no current version, gives a FAIL line with the
+  // error, and the next stage runs.
+  const stages = [
+    ['the first host', () => firstHost(port, core)],
+    ['the start after remove', () => afterRemoveHost(port)],
+    ['the lock steps', () => lockHost(port)],
+    ['the core link to another folder', () => relinkPart(core)],
+    ['the registry that does not answer', () => deadRegistryHost(port, core)],
+    ['pnpm 10', () => pnpm10Host(port)],
+    ['the host with no package manager', () => plainHost(port)],
+    ['no store', () => noStoreHost(port)],
+  ]
+  for (const [stage, run] of stages) {
+    try {
+      await run()
+    } catch (error) {
+      check(`the stage "${stage}" ran to its end`, false, error instanceof Error ? error.stack : String(error))
+      await stopHost().catch(() => undefined)
+    }
+  }
   const failed = results.filter((r) => !r.ok).length
   if (failed === 0 && results.length > 0) {
     console.log('kit-service: pass')
