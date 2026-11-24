@@ -6,6 +6,7 @@
  * - kit.service.start: the first start makes kit version 1 with the 8 core links, each at the folder of the app, and
  *   read() lists no extra. The kit config has minimumReleaseAge 1440.
  * - kit.settings: a mode switch of mcpSettings keeps the key kit of the settings file.
+ * - kit.service.calls: two add calls at once give versions 2 and 3, and version 3 has both extras.
  * - kit.gates: a page that imports date-fns fails the type gate before the kit has date-fns, and installs after
  *   add('date-fns@^4'), which makes version 2 with an exact version.
  * - kit.service.errors: in-core for a core package, not-found for a package and an extra that do not exist.
@@ -300,10 +301,16 @@ async function firstHost(port, core) {
   check('before the kit has date-fns, the page that imports it fails the gate page-types',
     before.isError && before.body?.error?.code === 'gate-failed' && before.body.error.gate === 'page-types' && JSON.stringify(before.body.error.diagnostics).includes('date-fns'),
     brief(before.body))
-  const dateFns = await kit('add', 'date-fns@^4')
+  // kit.service.calls: two add calls at once run one after the other, in order.
+  const [dateFns, ms] = await Promise.all([kit('add', 'date-fns@^4'), kit('add', 'ms@^2')])
   const v2 = manifestOf(versionPath(2))
+  const v3 = manifestOf(versionPath(3))
+  check('two add calls at once give versions 2 and 3, and version 3 has both extras',
+    dateFns.ok && ms.ok && dateFns.value.version === 2 && ms.value.version === 3 && currentTarget() === 'versions/3'
+      && v2.dependencies.ms === undefined && /^2\.\d+\.\d+$/.test(v3.dependencies.ms ?? '') && v3.dependencies['date-fns'] === v2.dependencies['date-fns'],
+    brief({ dateFns: dateFns.ok ? dateFns.value.version : dateFns, ms: ms.ok ? ms.value.version : ms, v2: v2.dependencies, v3: v3.dependencies }))
   check("add('date-fns@^4') makes version 2 with an exact version",
-    dateFns.ok && dateFns.value.version === 2 && currentTarget() === 'versions/2' && /^4\.\d+\.\d+$/.test(v2.dependencies['date-fns'] ?? '')
+    dateFns.ok && /^4\.\d+\.\d+$/.test(v2.dependencies['date-fns'] ?? '')
       && dateFns.value.extras.some((extra) => extra.name === 'date-fns' && extra.version === v2.dependencies['date-fns']),
     brief({ dateFns, spec: v2.dependencies['date-fns'] }))
   const installed = await call('widget_install', { dir: pageDir })
@@ -322,21 +329,21 @@ async function firstHost(port, core) {
   const missing = await kit('add', 'deepwidgets-no-such-package-zz9')
   const noExtra = await kit('remove', 'left-pad')
   check('add of a package that npm does not have, and remove of an extra that the kit does not have, give not-found',
-    !missing.ok && missing.code === 'not-found' && missing.pnpmCode === 'ERR_PNPM_FETCH_404' && !noExtra.ok && noExtra.code === 'not-found' && currentTarget() === 'versions/2' && !existsSync(versionPath(3)),
+    !missing.ok && missing.code === 'not-found' && missing.pnpmCode === 'ERR_PNPM_FETCH_404' && !noExtra.ok && noExtra.code === 'not-found' && currentTarget() === 'versions/3' && !existsSync(versionPath(4)),
     brief({ missing, noExtra }))
 
   // ---- kit.settings: refuseBuilds ----
   writeFileSync(settingsFile, JSON.stringify({ modes: { create: true }, kit: { refuseBuilds: ['core-js'] } }))
   const refused = await kit('add', 'core-js')
-  check("with refuseBuilds [\"core-js\"], add('core-js') gives install-failed that names core-js, and version 2 stays",
+  check("with refuseBuilds [\"core-js\"], add('core-js') gives install-failed that names core-js, and version 3 stays",
     !refused.ok && refused.code === 'install-failed' && refused.pnpmCode === 'ERR_DEEPWIDGETS_KIT_REFUSED' && /^core-js@/.test(refused.package ?? '')
-      && currentTarget() === 'versions/2' && !existsSync(versionPath(3)),
+      && currentTarget() === 'versions/3' && !existsSync(versionPath(4)),
     brief(refused))
   writeFileSync(settingsFile, JSON.stringify({ modes: { create: true }, kit: { refuseBuilds: [] } }))
   const coreJs = await kit('add', 'core-js')
-  const coreJsLog = coreJs.ok ? readFileSync(join(versionPath(3), 'pnpm.log'), 'utf8') : ''
-  check('with an empty list, add of core-js makes version 3, and the install script of core-js runs',
-    coreJs.ok && coreJs.value.version === 3 && /core-js@[^/\s]+\/node_modules\/core-js postinstall: Done/.test(coreJsLog),
+  const coreJsLog = coreJs.ok ? readFileSync(join(versionPath(4), 'pnpm.log'), 'utf8') : ''
+  check('with an empty list, add of core-js makes version 4, and the install script of core-js runs',
+    coreJs.ok && coreJs.value.version === 4 && /core-js@[^/\s]+\/node_modules\/core-js postinstall: Done/.test(coreJsLog),
     brief({ coreJs: coreJs.ok ? coreJs.value.extras : coreJs, log: coreJsLog.split('\n').filter((line) => line.includes('postinstall')) }))
 
   // ---- kit.checked.core_link: one react ----
@@ -345,15 +352,15 @@ async function firstHost(port, core) {
   // run has node_modules, and with no overrides it puts React from npm in place of the core. The step checks the kit
   // after that run.
   const recharts = await kit('add', 'recharts@^3')
-  const v4 = versionPath(4)
-  const store = existsSync(join(v4, 'node_modules', '.pnpm')) ? readdirSync(join(v4, 'node_modules', '.pnpm')) : []
+  const v5 = versionPath(5)
+  const store = existsSync(join(v5, 'node_modules', '.pnpm')) ? readdirSync(join(v5, 'node_modules', '.pnpm')) : []
   const copies = store.filter((entry) => /^react(?:-dom)?@/.test(entry))
-  const rechartsDir = existsSync(join(v4, 'node_modules', 'recharts')) ? realpathSync(join(v4, 'node_modules', 'recharts')) : undefined
+  const rechartsDir = existsSync(join(v5, 'node_modules', 'recharts')) ? realpathSync(join(v5, 'node_modules', 'recharts')) : undefined
   const rechartsReact = rechartsDir === undefined ? undefined : resolvedFrom(rechartsDir, 'react')
   const rechartsReactDom = rechartsDir === undefined ? undefined : resolvedFrom(rechartsDir, 'react-dom')
   check("after add('recharts@^3'), exactly one react and one react-dom are in the kit, the folders of the app, and recharts has an exact version",
-    recharts.ok && recharts.value.version === 4 && copies.length === 0 && rechartsReact === core.react && rechartsReactDom === core['react-dom']
-      && realpathSync(join(v4, 'node_modules', 'react')) === core.react && /^3\.\d+\.\d+$/.test(manifestOf(v4).dependencies.recharts ?? ''),
+    recharts.ok && recharts.value.version === 5 && copies.length === 0 && rechartsReact === core.react && rechartsReactDom === core['react-dom']
+      && realpathSync(join(v5, 'node_modules', 'react')) === core.react && /^3\.\d+\.\d+$/.test(manifestOf(v5).dependencies.recharts ?? ''),
     brief({ recharts: recharts.ok ? recharts.value.version : recharts, copies, rechartsReact, rechartsReactDom }))
 
   // ---- kit.gates: the build name hashes the kit version ----
@@ -365,9 +372,9 @@ async function firstHost(port, core) {
 
   // ---- kit.folder: remove, and the last 3 versions ----
   const removed = await kit('remove', 'core-js')
-  check('remove of core-js makes version 5 without it, and the kit keeps the last 3 versions',
-    removed.ok && removed.value.version === 5 && manifestOf(versionPath(5)).dependencies['core-js'] === undefined && JSON.stringify(versionsOnDisk()) === '[3,4,5]'
-      && removed.value.extras.map((extra) => extra.name).sort().join(',') === 'date-fns,recharts',
+  check('remove of core-js makes version 6 without it, and the kit keeps the last 3 versions',
+    removed.ok && removed.value.version === 6 && manifestOf(versionPath(6)).dependencies['core-js'] === undefined && JSON.stringify(versionsOnDisk()) === '[4,5,6]'
+      && removed.value.extras.map((extra) => extra.name).sort().join(',') === 'date-fns,ms,recharts',
     brief({ removed: removed.ok ? removed.value : removed, versions: versionsOnDisk() }))
   await stopHost()
 }
@@ -381,9 +388,9 @@ async function afterRemoveHost(port) {
   await startHost(port)
   const state = await kit('read')
   const log = readFileSync(logPath, 'utf8')
-  check('after remove, with no node_modules, the host start installs kit version 5 offline',
-    state.ok && state.value.available === true && state.value.version === 5 && isWhole(currentDir()) && existsSync(join(currentDir(), 'node_modules', 'recharts', 'package.json'))
-      && /kit: kit version 5 is ready/.test(log.slice(log.lastIndexOf('==== host start'))),
+  check('after remove, with no node_modules, the host start installs kit version 6 offline',
+    state.ok && state.value.available === true && state.value.version === 6 && isWhole(currentDir()) && existsSync(join(currentDir(), 'node_modules', 'recharts', 'package.json'))
+      && /kit: kit version 6 is ready/.test(log.slice(log.lastIndexOf('==== host start'))),
     brief(state))
   await stopHost()
 }
