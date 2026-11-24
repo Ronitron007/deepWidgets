@@ -17,6 +17,8 @@
  *   overrides, that run resolves React from npm.
  * - kit.folder: remove works, and the kit keeps the last 3 versions. After the remove, with no node_modules, the next
  *   host start installs the kit offline (kit.checked.offline: the lockfile of a remove needs trust-lockfile).
+ * - kit.service.lock: the host and another process (tools/fixtures/kit-process.mjs) change the kit at once, and both
+ *   changes finish. A start of another process during a change of the host waits, and leaves the change whole.
  * - kit.folder: with core/react pointed at another real folder, an offline frozen install passes and uses that folder.
  *   The next host start points core/react at the app again.
  * - kit.gates: with the registry at an address that does not answer and no node_modules, the host start installs the
@@ -41,6 +43,7 @@ import { pinnedFunction } from './in-host.mjs'
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const HOST = join(ROOT, 'tools/fixtures/kit-host.mjs')
+const KIT_PROCESS = join(ROOT, 'tools/fixtures/kit-process.mjs')
 const requireFromMcp = createRequire(join(ROOT, 'deepwidgets/mcp/package.json'))
 const { Client, StreamableHTTPClientTransport } = await import(pathToFileURL(requireFromMcp.resolve('@modelcontextprotocol/client')).href)
 
@@ -211,6 +214,9 @@ async function connect() {
 const versionPath = (n) => join(kitDir, 'versions', String(n))
 const currentTarget = () => readlinkSync(join(kitDir, 'current'))
 const currentDir = () => join(kitDir, currentTarget())
+const currentNumber = () => Number(currentTarget().split('/')[1])
+/** True when the version folder `dir` has the mark that the kit writes after pnpm made its node_modules. */
+const isWhole = (dir) => existsSync(join(dir, 'node_modules', '.deepwidgets-kit-whole'))
 const versionsOnDisk = () => readdirSync(join(kitDir, 'versions')).filter((entry) => /^\d+$/.test(entry)).map(Number).sort((a, b) => a - b)
 const manifestOf = (dir) => JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
 const brief = (value) => JSON.stringify(value)?.slice(0, 900)
@@ -360,9 +366,61 @@ async function afterRemoveHost(port) {
   const state = await kit('read')
   const log = readFileSync(logPath, 'utf8')
   check('after remove, with no node_modules, the host start installs kit version 5 offline',
-    state.ok && state.value.available === true && state.value.version === 5 && existsSync(join(currentDir(), 'node_modules', 'recharts', 'package.json'))
+    state.ok && state.value.available === true && state.value.version === 5 && isWhole(currentDir()) && existsSync(join(currentDir(), 'node_modules', 'recharts', 'package.json'))
       && /kit: kit version 5 is ready/.test(log.slice(log.lastIndexOf('==== host start'))),
     brief(state))
+  await stopHost()
+}
+
+/** Run the kit in another process (tools/fixtures/kit-process.mjs): `start`, `add`, or `remove`. Gives its RESULT. */
+function kitProcess(op, arg = '', env = {}) {
+  return new Promise((resolve) => {
+    const proc = spawn(process.execPath, [KIT_PROCESS, kitDir, settingsFile, op, arg], { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    let err = ''
+    proc.stdout.on('data', (chunk) => { out += chunk })
+    proc.stderr.on('data', (chunk) => { err += chunk })
+    proc.once('exit', (code) => {
+      const line = out.split('\n').find((item) => item.startsWith('RESULT '))
+      resolve(line === undefined ? { ok: false, code: `exit ${String(code)}`, message: err.slice(-600) } : JSON.parse(line.slice(7)))
+    })
+  })
+}
+
+/** Wait until `test` is true, for at most `ms`. */
+async function waitUntil(test, ms) {
+  const until = Date.now() + ms
+  while (Date.now() < until) {
+    if (test()) return true
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  return false
+}
+
+/** kit.service.lock: another process changes the kit while this host changes it, or starts while it changes. */
+async function lockHost(port) {
+  await startHost(port)
+  // Two processes change the kit at once: the host and another process. Each change finishes, one after the other.
+  const before = currentNumber()
+  const other = kitProcess('add', 'dequal@^2')
+  const here = await kit('add', 'clsx@^2')
+  const there = await other
+  const last = versionPath(before + 2)
+  const deps = existsSync(last) ? manifestOf(last).dependencies : {}
+  check('two processes that change the kit at once both finish, one after the other, and current names a whole version with both extras',
+    here.ok && there.ok && [here.value.version, there.value.version].sort().join(',') === `${String(before + 1)},${String(before + 2)}`
+      && currentNumber() === before + 2 && isWhole(last) && /^\d/.test(deps.clsx ?? '') && /^\d/.test(deps.dequal ?? ''),
+    brief({ here: here.ok ? here.value.version : here, there: there.ok ? there.value.version : there, current: currentTarget(), deps }))
+  // A start of another process during a change of the host waits for it, and leaves the change whole.
+  const from = currentNumber()
+  const changing = kit('add', 'nanoid@^5')
+  const inWork = await waitUntil(() => existsSync(join(versionPath(from + 1), 'package.json')), 60_000)
+  const starting = kitProcess('start')
+  const [changed, started] = [await changing, await starting]
+  check('a start during a change of another process leaves that change whole',
+    inWork && changed.ok && changed.value.version === from + 1 && started.ok && started.value.available === true && started.value.version === from + 1
+      && currentNumber() === from + 1 && isWhole(currentDir()) && existsSync(join(currentDir(), 'node_modules', 'nanoid', 'package.json')),
+    brief({ inWork, changed: changed.ok ? changed.value.version : changed, started: started.ok ? { version: started.value.version, available: started.value.available, reason: started.value.reason } : started, current: currentTarget() }))
   await stopHost()
 }
 
@@ -391,7 +449,7 @@ async function deadRegistryHost(port, core) {
   const state = await kit('read')
   const relinked = realpathSync(join(currentDir(), 'core', 'react'))
   check('with the registry at an address that does not answer, the host start installs the kit offline and points core/react at the app again',
-    state.ok && state.value.available === true && state.value.version === 5 && relinked === core.react && existsSync(join(currentDir(), 'node_modules', '.modules.yaml')),
+    state.ok && state.value.available === true && state.value.version === currentNumber() && relinked === core.react && isWhole(currentDir()),
     brief({ state, relinked }))
   const started = performance.now()
   const installed = await call('widget_install', { dir: pageDir })
@@ -428,6 +486,7 @@ try {
   const core = appCore()
   await firstHost(port, core)
   await afterRemoveHost(port)
+  await lockHost(port)
   relinkPart(core)
   await deadRegistryHost(port, core)
   await noStoreHost(port)

@@ -22,6 +22,7 @@
     "@deepseek-ai/dsh-subprocess": "workspace:*"
   },
   "dependencies": {
+    "@deepseek-ai/dsh-atomic-write": "workspace:*",
     "@deepseek-ai/dsh-home-paths": "workspace:*",
     "@deepwidgets/shell": "workspace:*",
     "@deepwidgets/widget-kit": "workspace:*",

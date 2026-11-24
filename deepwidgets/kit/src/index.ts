@@ -19,6 +19,9 @@
  * then points `current` at the copy (`kit.service.calls`). The copy goes when a step fails, so the current version does
  * not change. One change runs at a time. Only a change uses the network.
  *
+ * Two processes can use one DSH home, such as the dev app and a CLI host. Each change and each start holds the file lock
+ * of the kit (`kit.service.lock`), so a change of one process never meets a change or a start of another.
+ *
  * The kit runs pnpm with the command that the app gives the host (`profileContext.packageManager`), as the plugin
  * manager does. A host with no such command runs `pnpm` on the `PATH`.
  * @module @deepwidgets/kit
@@ -29,6 +32,7 @@ import { dirname, join } from 'node:path'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-app-boot'
+import { withFileLock } from '@deepseek-ai/dsh-atomic-write'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { z } from 'zod'
 import { appCoreFolders, CORE, firstManifestText, isCore, pnpmfileText, workspaceText } from './folder.ts'
@@ -61,6 +65,8 @@ const KEPT_VERSIONS = 3
 const OFFLINE_LIMIT_MS = 120_000
 /** The time limit of one pnpm run of a change. It is the silence limit of the plugin manager. */
 const CHANGE_LIMIT_MS = 600_000
+/** How long a start or a change waits for the lock of the kit: one change of another process has two pnpm runs. */
+const LOCK_WAIT_MS = 2 * CHANGE_LIMIT_MS + 60_000
 /** A name of an npm package. */
 const NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/
 /** A spec of `add`: a package name, then an optional version, range, or tag. */
@@ -162,39 +168,52 @@ export class KitService extends Service {
   }
 
   /**
+   * Run `work` while this process holds the file lock of the kit (`kit.service.lock`): `<kit>/current.lock`. The lock of
+   * a process that ended is taken over. The kit folder must exist.
+   */
+  private locked<T>(work: () => Promise<T>): Promise<T> {
+    return withFileLock(join(this.dir, 'current'), work, { waitMs: LOCK_WAIT_MS, signal: this.abort.signal })
+  }
+
+  /**
    * kit.service.start. It never rejects: a failure makes the kit unavailable, with the reason in the host log.
    */
   private async start(): Promise<void> {
     try {
       this.core = appCoreFolders()
       await mkdir(join(this.dir, 'versions'), { recursive: true })
-      // A host that stopped between a link and its rename left the link under its temporary name.
-      for (const entry of await readdir(this.dir)) if (entry.startsWith('.current-')) await rm(join(this.dir, entry), { force: true })
-      const current = await this.currentVersion()
-      if (current === undefined) {
-        await this.makeFirst()
-        this.availability = { available: true }
-        this.ctx.logger.info('kit: made kit version 1 with the core only')
-        return
-      }
-      await this.dropNewer(current)
-      const dir = this.versionDir(current)
-      await this.linkCore(dir)
-      if (!await this.whole(dir)) {
-        // kit.checked.offline: the 24-hour wait ran when a change wrote this lockfile. Without trust-lockfile, pnpm
-        // checks it again offline, and that check fails for a lockfile that `pnpm remove` wrote. Only this step trusts
-        // the lockfile; each change runs pnpm online with the wait.
-        const run = await this.pnpmIn(dir, ['install', '--offline', '--frozen-lockfile', '--config.trust-lockfile=true'], OFFLINE_LIMIT_MS)
-        if (!passed(run)) throw new Error(`the offline install of kit version ${String(current)} failed${this.codeText(run)}: ${outputTail(run, 600)}`)
-        await this.markWhole(dir)
-      }
+      // kit.service.lock: the start waits for a change of another process, so it never removes a version in work.
+      const message = await this.locked(() => this.startLocked())
       this.availability = { available: true }
-      this.ctx.logger.info(`kit: kit version ${String(current)} is ready`)
+      this.ctx.logger.info(message)
     } catch (error) {
       const reason = errorText(error)
       this.availability = { available: false, reason }
       this.ctx.logger.warn(`kit: the widget kit is unavailable, so a widget with page/ does not install: ${reason}`)
     }
+  }
+
+  /** The steps of the start that change the kit folder. Gives the log line of the start. */
+  private async startLocked(): Promise<string> {
+    // A host that stopped between a link and its rename left the link under its temporary name.
+    for (const entry of await readdir(this.dir)) if (entry.startsWith('.current-')) await rm(join(this.dir, entry), { force: true })
+    const current = await this.currentVersion()
+    if (current === undefined) {
+      await this.makeFirst()
+      return 'kit: made kit version 1 with the core only'
+    }
+    await this.dropNewer(current)
+    const dir = this.versionDir(current)
+    await this.linkCore(dir)
+    if (!await this.whole(dir)) {
+      // kit.checked.offline: the 24-hour wait ran when a change wrote this lockfile. Without trust-lockfile, pnpm
+      // checks it again offline, and that check fails for a lockfile that `pnpm remove` wrote. Only this step trusts
+      // the lockfile; each change runs pnpm online with the wait.
+      const run = await this.pnpmIn(dir, ['install', '--offline', '--frozen-lockfile', '--config.trust-lockfile=true'], OFFLINE_LIMIT_MS)
+      if (!passed(run)) throw new Error(`the offline install of kit version ${String(current)} failed${this.codeText(run)}: ${outputTail(run, 600)}`)
+      await this.markWhole(dir)
+    }
+    return `kit: kit version ${String(current)} is ready`
   }
 
   private codeText(run: PnpmRun): string {
@@ -364,36 +383,42 @@ export class KitService extends Service {
   private change(edit: (dir: string) => Promise<string>): Promise<KitState> {
     return this.serial(async () => {
       await this.started
-      const current = this.core === undefined ? undefined : await this.currentVersion().catch(() => undefined)
-      if (current === undefined) throw new KitError('kit-unavailable', `the widget kit has no version: ${this.unavailableReason()}`)
-      const refused = await this.refusedBuilds()
-      const next = current + 1
-      const from = this.versionDir(current)
-      const dir = this.versionDir(next)
-      await rm(dir, { recursive: true, force: true })
-      await mkdir(dir, { recursive: true })
-      let done: string
-      try {
-        await copyFile(join(from, 'package.json'), join(dir, 'package.json'))
-        await copyFile(join(from, 'pnpm-lock.yaml'), join(dir, 'pnpm-lock.yaml'))
-        await writeFile(join(dir, 'pnpm-workspace.yaml'), workspaceText())
-        // kit.settings: a change of the list changes the pnpmfile, so this version does not use a frozen lockfile.
-        await writeFile(join(dir, '.pnpmfile.cjs'), pnpmfileText(refused))
-        await this.linkCore(dir)
-        done = await edit(dir)
-        await this.markWhole(dir)
-        await this.pointCurrent(next)
-      } catch (error) {
-        await rm(dir, { recursive: true, force: true })
-        throw error
-      }
-      // A copy that pnpm made whole online also ends an unavailable start.
-      this.availability = { available: true }
-      this.ctx.logger.info(`kit: kit version ${String(next)} ${done}`)
-      // The change is committed: a failed prune does not undo it.
-      await this.prune().catch((error: unknown) => { this.ctx.logger.warn('kit: the old kit versions were not pruned', error) })
-      return this.readNow()
+      if (this.core === undefined) throw new KitError('kit-unavailable', `the widget kit has no version: ${this.unavailableReason()}`)
+      // kit.service.lock: another process can change the kit too, so `current` is read under the lock.
+      return this.locked(() => this.changeLocked(edit))
     })
+  }
+
+  private async changeLocked(edit: (dir: string) => Promise<string>): Promise<KitState> {
+    const current = await this.currentVersion().catch(() => undefined)
+    if (current === undefined) throw new KitError('kit-unavailable', `the widget kit has no version: ${this.unavailableReason()}`)
+    const refused = await this.refusedBuilds()
+    const next = current + 1
+    const from = this.versionDir(current)
+    const dir = this.versionDir(next)
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    let done: string
+    try {
+      await copyFile(join(from, 'package.json'), join(dir, 'package.json'))
+      await copyFile(join(from, 'pnpm-lock.yaml'), join(dir, 'pnpm-lock.yaml'))
+      await writeFile(join(dir, 'pnpm-workspace.yaml'), workspaceText())
+      // kit.settings: a change of the list changes the pnpmfile, so this version does not use a frozen lockfile.
+      await writeFile(join(dir, '.pnpmfile.cjs'), pnpmfileText(refused))
+      await this.linkCore(dir)
+      done = await edit(dir)
+      await this.markWhole(dir)
+      await this.pointCurrent(next)
+    } catch (error) {
+      await rm(dir, { recursive: true, force: true })
+      throw error
+    }
+    // A copy that pnpm made whole online also ends an unavailable start.
+    this.availability = { available: true }
+    this.ctx.logger.info(`kit: kit version ${String(next)} ${done}`)
+    // The change is committed: a failed prune does not undo it.
+    await this.prune().catch((error: unknown) => { this.ctx.logger.warn('kit: the old kit versions were not pruned', error) })
+    return this.readNow()
   }
 
   private unavailableReason(): string {
