@@ -34,8 +34,8 @@ const DEFAULT_TIMEOUT_MS = 5_000
 const CHANGE_LOG_SIZE = 1_000
 const DEFAULT_REQUEST_TTL_MS = 10 * 60_000
 /**
- * A test hook of `tools/widgets-watchdog.mjs` (the case `as-host`, host_work_counts_against_main_slot): each
- * `widgetRecords.asHost` holds the event loop for this many milliseconds of host work before its function.
+ * A test hook of `tools/widgets-watchdog.mjs` (the case `as-host`, host_work_counts_against_main_slot): the first
+ * `widgetRecords.asHost` of a Host start holds the event loop for this many milliseconds of host work before its function.
  */
 const TEST_AS_HOST_STALL_ENV = 'DEEPWIDGETS_TEST_AS_HOST_STALL_MS'
 
@@ -833,10 +833,15 @@ export const Config: Schema<Config> = Schema.object({
 
 export function apply(ctx: Context, config: Config): void {
   const requestTtlMs = config.requestTtlMs
-  const testStallMs = Math.max(0, Number(process.env[TEST_AS_HOST_STALL_ENV] ?? 0) || 0)
-  /** The test hook {@link TEST_AS_HOST_STALL_ENV}: host code that holds the event loop. It does nothing when it is not set. */
+  let testStallMs = Math.max(0, Number(process.env[TEST_AS_HOST_STALL_ENV] ?? 0) || 0)
+  /**
+   * The test hook {@link TEST_AS_HOST_STALL_ENV}: host code that holds the event loop, in the first `asHost` of this
+   * runtime only. One query of `main` makes many host calls, and one stall is enough. It does nothing when it is not set.
+   */
   function testHostStall(): void {
-    for (const end = Date.now() + testStallMs; Date.now() < end;) {
+    const stallMs = testStallMs
+    testStallMs = 0
+    for (const end = Date.now() + stallMs; Date.now() < end;) {
       // A busy loop: the watchdog sees no heartbeat for this time.
     }
   }
