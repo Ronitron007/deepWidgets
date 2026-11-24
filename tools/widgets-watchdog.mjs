@@ -25,6 +25,10 @@
  *   `widgetRecords.asHost`, and that host work holds the event loop for 3 s (the test hook
  *   DEEPWIDGETS_TEST_AS_HOST_STALL_MS). The host work is outside the running slot of `main`, so the host lives, the
  *   action answers, and no record blames or quarantines `main`.
+ * - as-host-guard (as_host_guard_bypass): the watchdog widget, which is not built in, calls `widgetRecords.asHost`
+ *   through each path: the service, a `runtime` property of the service `widgetRecords` or `widgets`, and the service
+ *   through the context of the `main` row. Each path refuses it. Then, for each path, it gives a loop to that path, and
+ *   runs the loop itself after the refusal: the host dies within 2.5 s, and the record blames the widget by its slot.
  * - oom: a stall, then fast allocation. The out-of-memory abort (provisional record) and the stall kill (crash record)
  *   both blame the widget. The case checks the result: the host died, a record blames the widget, and the next host
  *   has the widget quarantined.
@@ -61,7 +65,7 @@ const isRow = (row, id) => typeof row === 'string' && (row === id || row.endsWit
 /** The cases to run. All cases when WIDGETS_WATCHDOG_CASES is not set. */
 const CASES = process.env.WIDGETS_WATCHDOG_CASES?.split(',').map((name) => name.trim()).filter((name) => name !== '')
 const runs = (name) => CASES === undefined || CASES.length === 0 || CASES.includes(name)
-const CASE_NAMES = ['parse', 'suspend', 'stall', 'spin', 'idle', 'native', 'native-off', 'native-slow', 'host-await', 'as-host', 'oom']
+const CASE_NAMES = ['parse', 'suspend', 'stall', 'spin', 'idle', 'native', 'native-off', 'native-slow', 'host-await', 'as-host', 'as-host-guard', 'oom']
 /** native-slow: the reads add up to 6 s over the 10 s limit at most, so the kill comes in this window. */
 const SLOW_KILL_MAX_MS = 16_000
 /** safe_host.watchdog: a widget stall that the native stack finds kills the host in this time after the call. */
@@ -475,6 +479,38 @@ async function main() {
         crash?.pid !== pid && !(Array.isArray(quarantine) && quarantine.some((item) => isRow(item?.row, 'deepwidgets-widget-main'))), detail)
     } finally {
       await host.stop()
+    }
+  }
+
+  // as-host-guard (as_host_guard_bypass): widget code that is not built in can not run host code through any path.
+  if (runs('as-host-guard')) {
+    const paths = ['service', 'recordsRuntime', 'widgetsRuntime', 'mainContext']
+    clearState()
+    host = await startHost(port, inspectPort)
+    try {
+      await live(host)
+      const answers = {}
+      for (const path of paths) answers[path] = (await host.post('/api/widgets/watchdog/call', { action: 'asHost', args: { path } })).body?.result
+      check('as-host-guard: each path to asHost refuses the watchdog widget', paths.every((path) => typeof answers[path]?.refused === 'string' && answers[path].ran === undefined)
+        && answers.service.refused.includes('is not built in') && answers.mainContext.refused.includes('is not built in'), JSON.stringify(answers))
+    } finally {
+      await host.stop()
+    }
+    for (const path of paths) {
+      clearState()
+      host = await startHost(port, inspectPort)
+      try {
+        await live(host)
+        const sent = Date.now()
+        void host.post('/api/widgets/watchdog/call', { action: 'asHost', args: { path, loop: true } }).catch(() => undefined)
+        const exit = await Promise.race([host.exited, sleep(20_000).then(() => null)])
+        const record = readState('crash.json')
+        const detail = JSON.stringify({ exit: exit === null ? 'alive after 20 s' : exit.signal ?? exit.code, ms: exit === null ? null : exit.at - sent, row: record?.row, method: record?.method, message: record?.error?.message })
+        check(`as-host-guard: a loop given to the path ${path} kills the host within ${String(KILL_WITHIN_MS)} ms and is blamed on the widget by its slot`,
+          exit !== null && exit.signal === 'SIGKILL' && exit.at - sent <= KILL_WITHIN_MS && isRow(record?.row, WIDGET) && record?.method === 'slot' && record?.pid === host.child.pid, detail)
+      } finally {
+        await host.stop()
+      }
     }
   }
 

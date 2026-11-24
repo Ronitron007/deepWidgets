@@ -410,6 +410,8 @@ interface Runtime {
   programRecord(slug: string): Promise<ProgramRecord | undefined>
   stateRecord(slug: string): Promise<{ rev: number, data: unknown } | undefined>
   asHost<T>(fn: () => T): T
+  /** as_host_guard_bypass: whether `row` registered a built-in widget that is live in this Host start. */
+  builtInRow(row: string): boolean
   restoreProgram(slug: string, record: ProgramRecord | undefined, by: string): Promise<void>
   adoptSeed(slug: string, seed: string): Promise<void>
   clearOff(slug: string): void
@@ -452,17 +454,30 @@ const hashOf = (value: unknown): string => createHash('sha256').update(JSON.stri
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error)
 
 /**
+ * as_host_guard_bypass: the runtime of each service, by the service object. Only this module reads it. A method runs
+ * with `this` set to a proxy of Cordis for the caller context, so {@link runtimeOf} reads the service object behind it.
+ */
+const runtimes = new WeakMap<object, Runtime>()
+/** The symbol under which a Cordis proxy of a service gives the service object (`symbols.original` of Cordis). */
+const ORIGINAL = Symbol.for('cordis.original')
+function runtimeOf(service: object): Runtime {
+  const runtime = runtimes.get((service as Record<symbol, object | undefined>)[ORIGINAL] ?? service)
+  if (runtime === undefined) throw new Error('widgets: the service has no runtime')
+  return runtime
+}
+
+/**
  * The service `widgets`. Each method reads `this.ctx` as the caller context, so a registration
  * belongs to the fiber that made it.
  */
 export class WidgetsService extends Service {
-  // A private field (#) does not work: the caller context reads the service through a proxy.
-  private readonly runtime: Runtime
-
   constructor(ctx: Context, runtime: Runtime) {
     super(ctx, 'widgets')
-    this.runtime = runtime
+    runtimes.set(this, runtime)
   }
+
+  // A private field (#) does not work: the caller context reads the service through a proxy. The runtime is in the
+  // module map `runtimes`, not in a property or a getter, so widget code can not reach it (as_host_guard_bypass).
 
   /**
    * Register one widget. The caller fiber owns the registration: it ends when the fiber ends.
@@ -475,7 +490,7 @@ export class WidgetsService extends Service {
    */
   register<S, const T extends readonly unknown[]>(def: WidgetDef<S, T>): () => Promise<void> {
     const registration = buildRegistration(def)
-    const runtime = this.runtime
+    const runtime = runtimeOf(this)
     // widget_phase2.isolation.blame: the Loader row is the blame key, and the caller package holds its files.
     const row = widgetRow(this.ctx.fiber)
     if (row !== undefined) {
@@ -492,7 +507,7 @@ export class WidgetsService extends Service {
 
   /** @returns `{ slug, title, rev, programRev }` for each live widget. */
   list(): WidgetSummary[] {
-    return this.runtime.list()
+    return runtimeOf(this).list()
   }
 
   /**
@@ -501,7 +516,7 @@ export class WidgetsService extends Service {
    * @throws {WidgetError} `unknown-widget`.
    */
   describe(slug: string): WidgetDescription {
-    return this.runtime.describe(slug)
+    return runtimeOf(this).describe(slug)
   }
 
   /**
@@ -510,7 +525,7 @@ export class WidgetsService extends Service {
    * @throws {WidgetError} `unknown-widget`.
    */
   get(slug: string): { rev: number, data: unknown } {
-    return this.runtime.get(slug)
+    return runtimeOf(this).get(slug)
   }
 
   /**
@@ -520,7 +535,7 @@ export class WidgetsService extends Service {
   call(slug: string, action: string, args: unknown, options: CallOptions): Promise<CallOutcome> {
     const late = lateWrite(this.ctx.fiber, slug)
     if (late !== undefined) return Promise.reject(late)
-    return this.runtime.call(slug, action, args, options)
+    return runtimeOf(this).call(slug, action, args, options)
   }
 
   /**
@@ -532,7 +547,7 @@ export class WidgetsService extends Service {
     const late = lateWrite(this.ctx.fiber, slug)
     if (late !== undefined) return Promise.reject(late)
     const by = options.by ?? `plugin:${this.ctx.fiber.name}`
-    return this.runtime.update(slug, fn as (state: unknown) => unknown, by) as Promise<S>
+    return runtimeOf(this).update(slug, fn as (state: unknown) => unknown, by) as Promise<S>
   }
 
   /**
@@ -542,19 +557,19 @@ export class WidgetsService extends Service {
   setProgram(slug: string, text: string, options: { by?: string } = {}): Promise<{ rev: number }> {
     const late = lateWrite(this.ctx.fiber, slug)
     if (late !== undefined) return Promise.reject(late)
-    return this.runtime.setProgram(slug, text, options.by ?? `plugin:${this.ctx.fiber.name}`)
+    return runtimeOf(this).setProgram(slug, text, options.by ?? `plugin:${this.ctx.fiber.name}`)
   }
 
   /**
    * The change feed after a cursor of {@link cursor}. A cursor of another process gives `reset: true`.
    */
   changes(since: string | undefined): { cursor: string, changes: WidgetChange[], reset?: true } {
-    return this.runtime.changes(since)
+    return runtimeOf(this).changes(since)
   }
 
   /** @returns a change-feed cursor for now. */
   cursor(): string {
-    return this.runtime.cursor()
+    return runtimeOf(this).cursor()
   }
 }
 
@@ -564,13 +579,13 @@ export class WidgetsService extends Service {
  * Only {@link WidgetRecordsService.asHost} takes a call from widget code, and only from the code of a built-in row.
  */
 export class WidgetRecordsService extends Service {
-  // A private field (#) does not work: the caller context reads the service through a proxy.
-  private readonly runtime: Runtime
-
   constructor(ctx: Context, runtime: Runtime) {
     super(ctx, 'widgetRecords')
-    this.runtime = runtime
+    runtimes.set(this, runtime)
   }
+
+  // A private field (#) does not work: the caller context reads the service through a proxy. The runtime is in the
+  // module map `runtimes`, not in a property or a getter, so widget code can not reach it (as_host_guard_bypass).
 
   /**
    * The stored program record of `slug`, also when the slug is not live. For a live slug, it waits
@@ -578,7 +593,7 @@ export class WidgetRecordsService extends Service {
    * @returns undefined when storage has no program for the slug.
    */
   programRecord(slug: string): Promise<ProgramRecord | undefined> {
-    return guard(() => this.runtime.programRecord(slug))
+    return guard(() => runtimeOf(this).programRecord(slug))
   }
 
   /**
@@ -587,54 +602,57 @@ export class WidgetRecordsService extends Service {
    * @returns undefined when storage has no state for the slug.
    */
   stateRecord(slug: string): Promise<{ rev: number, data: unknown } | undefined> {
-    return guard(() => this.runtime.stateRecord(slug))
+    return guard(() => runtimeOf(this).stateRecord(slug))
   }
 
   /**
    * main_widget.widgets: run `fn` as host code. `fn` and the work that it starts run outside the store of a widget row
    * and outside the queue slot of a call, so they can use the install records, and a crash in them is not blamed on the
    * widget. A built-in widget, such as `main`, calls it for host work: the plugin manager and the installer.
+   * as_host_guard_bypass: the check reads the widget row whose code runs now (the blame store), not the fiber of the
+   * context that reached this service. Thus widget code can not pass it through the context of a built-in row.
    * @throws {Error} when the caller is widget code of a row that is not built in.
    */
   asHost<T>(fn: () => T): T {
+    const runtime = runtimeOf(this)
     const row = runningRow()
-    if (row !== undefined && !isBuiltInRow(this.ctx, this.ctx.fiber)) throw new Error(`widgets: the widget row ${row} is not built in, so it can not run host code`)
-    return this.runtime.asHost(fn)
+    if (row !== undefined && !runtime.builtInRow(row)) throw new Error(`widgets: the widget row ${row} is not built in, so it can not run host code`)
+    return runtime.asHost(fn)
   }
 
   /** Put back the program record that `programRecord` gave before an install, or delete it when that gave undefined. */
   restoreProgram(slug: string, record: ProgramRecord | undefined, options: { by?: string } = {}): Promise<void> {
-    return guard(() => this.runtime.restoreProgram(slug, record, options.by ?? `plugin:${this.ctx.fiber.name}`))
+    return guard(() => runtimeOf(this).restoreProgram(slug, record, options.by ?? `plugin:${this.ctx.fiber.name}`))
   }
 
   /** Set the seed hash of a program record of an older format, which has none. The text stays. */
   adoptSeed(slug: string, seed: string): Promise<void> {
-    return guard(() => this.runtime.adoptSeed(slug, seed))
+    return guard(() => runtimeOf(this).adoptSeed(slug, seed))
   }
 
   /** Forget that safe mode turned the agent widget `slug` off in this Host start. Another off entry stays. */
   clearOff(slug: string): void {
-    guard(() => { this.runtime.clearOff(slug) })
+    guard(() => { runtimeOf(this).clearOff(slug) })
   }
 
   /** Whether `slug` is the slug of a built-in widget (`widget.builtin_slugs`), also when its row is off. */
   builtInSlug(slug: string): Promise<boolean> {
-    return guard(() => this.runtime.builtInSlug(slug))
+    return guard(() => runtimeOf(this).builtInSlug(slug))
   }
 
   /** An install of `slug` starts: a load of other files of a quarantined row of the slug does not end the quarantine yet. */
   holdLift(slug: string): void {
-    guard(() => { this.runtime.holdLift(slug) })
+    guard(() => { runtimeOf(this).holdLift(slug) })
   }
 
   /** The install of `slug` ends. With `ok`, a quarantined row of the slug that loaded other files leaves the quarantine. */
   settleLift(slug: string, ok: boolean): void {
-    guard(() => { this.runtime.settleLift(slug, ok) })
+    guard(() => { runtimeOf(this).settleLift(slug, ok) })
   }
 
   /** widget_fv.replace: the Loader rows that registered `slug`: of its live or failed entry, and of its standby. */
   rowsOf(slug: string): RegisteredRows {
-    return guard(() => this.runtime.rowsOf(slug))
+    return guard(() => runtimeOf(this).rowsOf(slug))
   }
 
   /**
@@ -642,7 +660,7 @@ export class WidgetRecordsService extends Service {
    * widget reads it for the Window field of its Widgets tab.
    */
   windowShown(slug: string): boolean {
-    return guard(() => this.runtime.windowShown(slug))
+    return guard(() => runtimeOf(this).windowShown(slug))
   }
 
   /**
@@ -653,7 +671,7 @@ export class WidgetRecordsService extends Service {
    * the main widget.
    */
   setWindowShown(slug: string, shown: boolean): Promise<void> {
-    return guard(() => this.runtime.setWindowShown(slug, shown))
+    return guard(() => runtimeOf(this).setWindowShown(slug, shown))
   }
 
   /**
@@ -661,7 +679,7 @@ export class WidgetRecordsService extends Service {
    * of the operator in the main widget calls it. An agent `widget_remove` does not, as for a Turn off.
    */
   forgetWindow(slug: string): Promise<void> {
-    return guard(() => this.runtime.forgetWindow(slug))
+    return guard(() => runtimeOf(this).forgetWindow(slug))
   }
 
   /**
@@ -670,12 +688,12 @@ export class WidgetRecordsService extends Service {
    * standby. A standby of the committed name with no entry before it goes live at once.
    */
   commit(slug: string, name: string | undefined): void {
-    guard(() => { this.runtime.commit(slug, name) })
+    guard(() => { runtimeOf(this).commit(slug, name) })
   }
 
   /** widget_fv.replace: the package name of the committed version of `slug`, or undefined. */
   committed(slug: string): string | undefined {
-    return guard(() => this.runtime.committed(slug))
+    return guard(() => runtimeOf(this).committed(slug))
   }
 }
 
@@ -1702,6 +1720,7 @@ export function apply(ctx: Context, config: Config): void {
       testHostStall()
       return fn()
     })),
+    builtInRow: (row) => [...widgets.values()].some((entry) => entry.registration.row === row && entry.registration.builtIn === true),
     restoreProgram: (slug, record, by) => admit(() => restoreProgram(slug, record, by)),
     adoptSeed: (slug, seed) => admit(() => adoptSeed(slug, seed)),
     clearOff: (slug) => { if (off.get(slug)?.agent === true) off.delete(slug) },
