@@ -50,6 +50,8 @@ export class DesktopMenuBar {
   private readonly readyDeadline: ReturnType<typeof setTimeout>
   /** True from a click on the icon while the panel shows, until the panel hides: the operator closed the panel. */
   private closingByClick = false
+  /** The window of this app that had the keys when the panel opened, such as a floating widget window. */
+  private focusedBefore: BrowserWindow | undefined
   /** The times of the recent ends of the renderer of the panel. */
   private crashes: number[] = []
 
@@ -102,10 +104,16 @@ export class DesktopMenuBar {
       options.failed(new Error(`deepwidgets-menu-bar: the menu bar did not start in ${String(READY_DEADLINE_MS / 1000)} s; the icon has no click and no menu`))
     }, READY_DEADLINE_MS)
     this.menubar.once('ready', () => { clearTimeout(this.readyDeadline) })
+    // panel_close_takes_widget_focus: menubar emits `show` before the panel takes the focus.
+    this.menubar.on('show', () => {
+      const focused = BrowserWindow.getFocusedWindow() ?? undefined
+      this.focusedBefore = focused === this.panel ? this.focusedBefore : focused
+    })
     this.menubar.on('after-show', () => { options.attention() })
     this.menubar.on('after-hide', () => {
       if (this.closingByClick) this.giveFocusBack(app)
       this.closingByClick = false
+      this.focusedBefore = undefined
     })
     this.menubar.on('before-load', () => {
       const panel = this.menubar.window
@@ -151,14 +159,22 @@ export class DesktopMenuBar {
   }
 
   /**
-   * Give the keys back to the app that had them, after a click on the icon closed the panel. The panel activated this
-   * app, and with no window left the keys of the operator would go nowhere. app.hide() makes macOS activate the app
-   * before it, but it also hides each window of this app, so each floating window that showed shows again at once with
-   * no focus. A spike on Electron 44.7.0 kept the app before it in front. A hide at a loss of focus does not call this:
-   * the focus is already in another window or app.
+   * Give the keys back to the window or the app that had them, after a click on the icon closed the panel. When a window
+   * of this app had the keys before the panel opened, and it still shows, it takes them again
+   * (panel_close_takes_widget_focus): the operator typed in a floating widget. Else the panel activated this app, and
+   * with no window left the keys of the operator would go nowhere. app.hide() makes macOS activate the app before it,
+   * but it also hides each window of this app, so each floating window that showed shows again at once with no focus.
+   * A spike on Electron 44.7.0 kept the app before it in front. A hide at a loss of focus does not call this: the focus
+   * is already in another window or app.
    */
   private giveFocusBack(app: App): void {
     const panel = this.panel
+    const before = this.focusedBefore
+    this.focusedBefore = undefined
+    if (before !== undefined && !before.isDestroyed() && before !== panel && before.isVisible()) {
+      before.focus()
+      return
+    }
     const shown = BrowserWindow.getAllWindows().filter(window => window !== panel && window.isVisible())
     app.hide()
     for (const window of shown) window.showInactive()
