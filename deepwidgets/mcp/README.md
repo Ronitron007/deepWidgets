@@ -150,7 +150,7 @@ The page gates use the widget kit (spec `kit`, package `@deepwidgets/kit`):
 
 - Each extra is an allowed import, with its subpaths, such as `date-fns` and `date-fns/addDays`.
 
-- When the kit is unavailable, `widget_install` and `widget_reload` of a folder with `page/` give the error code `kit-unavailable`. A folder with no `page/` installs as before.
+- When the kit is unavailable, or while another process holds the lock of the kit, `widget_install` and `widget_reload` of a folder with `page/` give the error code `kit-unavailable` at once. They do not wait for the kit. Its next step tells the agent to try again. A folder with no `page/` installs as before.
 
 The render check gets the catalog of the widget definition. When the `CATALOG_ID` of `page/child.tsx` is another id, the gate `page-render` refuses the page with the diagnostic code `wrong-catalog` (spec `agent_library.guide.catalog`).
 

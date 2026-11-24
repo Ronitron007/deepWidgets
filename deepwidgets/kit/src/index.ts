@@ -159,6 +159,8 @@ export class KitService extends Service {
   /** The real folders of the core in the app; undefined when they do not resolve. */
   private core: Record<CoreName, string> | undefined
   private readonly started: Promise<void>
+  /** True when the start ended, with or without success. `folders()` reads it and never waits for the start. */
+  private startDone = false
   /** The changes, one at a time. */
   private queue: Promise<unknown> = Promise.resolve()
 
@@ -199,7 +201,26 @@ export class KitService extends Service {
       const reason = errorText(error)
       this.availability = { available: false, reason }
       this.ctx.logger.warn(`kit: the widget kit is unavailable, so a widget with page/ does not install: ${reason}`)
+    } finally {
+      this.startDone = true
     }
+  }
+
+  /**
+   * The process ID in the lock file of the kit when another process that is alive holds the lock: its start or its
+   * change runs now. Undefined when no lock file exists, when this process holds it, or when its process ended.
+   */
+  private async otherLockHolder(): Promise<number | undefined> {
+    const text = await readFile(join(this.dir, 'current.lock'), 'utf8').catch(() => undefined)
+    const pid = text === undefined ? Number.NaN : Number.parseInt(text, 10)
+    if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) return undefined
+    try {
+      process.kill(pid, 0)
+    } catch (error) {
+      // ESRCH: the holder ended, and the next start or change takes the lock over. EPERM: a process of another user.
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return undefined
+    }
+    return pid
   }
 
   /**
@@ -523,11 +544,16 @@ export class KitService extends Service {
 
   /**
    * The real folder of each core package and of each extra of the current version, for the page gates (`kit.gates`).
-   * @throws {KitError} `kit-unavailable` when the kit can not be made whole offline.
+   * It never waits for the start or for the lock (`kit.service.lock`), so the installer queue never stops on the kit.
+   * A change of this process does not hold it back: `current` names a whole version until the change swaps it.
+   * @throws {KitError} `kit-unavailable` at once while the start runs, while another process holds the lock of the
+   * kit, or when the kit can not be made whole offline.
    */
   async folders(): Promise<KitFolders> {
-    await this.started
+    if (!this.startDone) throw new KitError('kit-unavailable', 'the widget kit is not ready: its start runs, and the start can wait for a change of another process')
     if (!this.availability.available) throw new KitError('kit-unavailable', `the widget kit is unavailable: ${this.availability.reason}`)
+    const holder = await this.otherLockHolder()
+    if (holder !== undefined) throw new KitError('kit-unavailable', `the widget kit is not ready: the process ${String(holder)} holds its lock and changes it now`)
     const version = await this.currentVersion()
     if (version === undefined || this.core === undefined) throw new KitError('kit-unavailable', 'the widget kit has no version')
     const dir = this.versionDir(version)

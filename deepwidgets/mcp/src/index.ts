@@ -116,7 +116,7 @@ const NEXT_STEP: Record<ToolErrorCode, string> = {
   'install-failed': 'Read the diagnostics. Fix the code and call widget_install again. If the diagnostics name the plugin manager or pnpm, tell the user.',
   'not-installed': 'Call widget_list. Only a widget that widget_install installed can be reloaded or removed.',
   'creation-unavailable': 'This host has no plugin manager, so it cannot install widgets. Tell the user.',
-  'kit-unavailable': 'The widget kit is unavailable, so a widget with page/ does not install now. Nothing was installed. A widget folder with no page/ still installs. Tell the user the message: the host log names the reason.',
+  'kit-unavailable': 'The widget kit is not ready, so a widget with page/ does not install now. Nothing was installed. Call widget_install again in a minute: another process can be changing the kit. If the answer stays kit-unavailable, tell the user the message: the host log names the reason. A widget folder with no page/ still installs.',
   'mode-off': 'This mode is off, and the call did nothing. Ask the user to turn the mode on: set the setting to true in the settings file. Do not change the file yourself. The next call reads the file again, with no restart.',
 }
 

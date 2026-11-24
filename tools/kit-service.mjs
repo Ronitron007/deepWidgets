@@ -19,7 +19,8 @@
  * - kit.folder: remove works, and the kit keeps the last 3 versions. After the remove, with no node_modules, the next
  *   host start installs the kit offline (kit.checked.offline: the lockfile of a remove needs trust-lockfile).
  * - kit.service.lock: the host and another process (tools/fixtures/kit-process.mjs) change the kit at once, and both
- *   changes finish. A start of another process during a change of the host waits, and leaves the change whole.
+ *   changes finish. A start of another process during a change of the host waits, and leaves the change whole. While
+ *   another process holds the lock, a page install gives kit-unavailable at once, and an install with no page/ applies.
  * - kit.folder: with core/react pointed at another real folder, an offline frozen install passes and uses that folder.
  *   The next host start points core/react at the app again.
  * - kit.gates: with the registry at an address that does not answer and no node_modules, the host start installs the
@@ -478,6 +479,23 @@ async function lockHost(port) {
     inWork && changed.ok && changed.value.version === from + 1 && started.ok && started.value.available === true && started.value.version === from + 1
       && currentNumber() === from + 1 && isWhole(currentDir()) && existsSync(join(currentDir(), 'node_modules', 'nanoid', 'package.json')),
     brief({ inWork, changed: changed.ok ? changed.value.version : changed, started: started.ok ? { version: started.value.version, available: started.value.available, reason: started.value.reason } : started, current: currentTarget() }))
+
+  // The page gates never wait for the lock. A process that is alive holds the lock file of the kit, as the start or the
+  // change of another process does. It lives 60 s, so a page gate that waits for the lock gets it only after that.
+  const call = await connect()
+  const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { stdio: 'ignore' })
+  const lockFile = join(kitDir, 'current.lock')
+  writeFileSync(lockFile, `${String(holder.pid)}\n`)
+  const busyStarted = performance.now()
+  const busy = await bounded(call('widget_install', { dir: pageDir }), lateAnswer('widget_install'))
+  const busyMs = Math.round(performance.now() - busyStarted)
+  const plain = await bounded(call('widget_install', { dir: plainDir }), lateAnswer('widget_install'))
+  holder.kill('SIGKILL')
+  rmSync(lockFile, { force: true })
+  check('while another process holds the kit lock, a page install gives kit-unavailable with a next step to try again in at most 5 s, and a later install with no page/ applies',
+    busy.isError && busy.body?.error?.code === 'kit-unavailable' && /again/.test(busy.body.error.nextStep ?? '') && busyMs <= 5000
+      && !plain.isError && plain.body?.application === 'applied',
+    brief({ busyMs, busy: busy.body?.error ?? busy.body?.application ?? busy, plain: plain.body?.error ?? plain.body?.application ?? plain }))
   await stopHost()
 }
 
