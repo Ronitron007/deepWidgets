@@ -23,6 +23,8 @@
  *   The next host start points core/react at the app again.
  * - kit.gates: with the registry at an address that does not answer and no node_modules, the host start installs the
  *   kit offline, and a page install passes.
+ * - kit.folder: with pnpm 10, the start makes the kit unavailable and names the version. A dsh CLI host with no package
+ *   manager runs the pnpm of the repository, 11.28.5, not the pnpm on the PATH.
  * - kit.service.start: with no store and no node_modules, the host starts, read() says unavailable, a page install gives
  *   kit-unavailable in at most 5 s, and a widget with no page/ installs.
  * The check needs the npm registry for the changes. Prints `kit-service: pass` and exits 0 only when every check passes.
@@ -44,6 +46,8 @@ import { pinnedFunction } from './in-host.mjs'
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const HOST = join(ROOT, 'tools/fixtures/kit-host.mjs')
 const KIT_PROCESS = join(ROOT, 'tools/fixtures/kit-process.mjs')
+/** The dsh CLI with no package manager: the kit runs the pnpm of the repository. */
+const BIN = join(ROOT, 'apps/cli/lib/bin.js')
 const requireFromMcp = createRequire(join(ROOT, 'deepwidgets/mcp/package.json'))
 const { Client, StreamableHTTPClientTransport } = await import(pathToFileURL(requireFromMcp.resolve('@modelcontextprotocol/client')).href)
 
@@ -110,11 +114,12 @@ async function stopHost() {
   clearTimeout(timer)
 }
 
-async function startHost(port, env = {}) {
+/** Start a host. `entry` is the script: the host with the pnpm of the app, or `BIN`, the dsh CLI with no package manager. */
+async function startHost(port, env = {}, entry = HOST) {
   mkdirSync(home, { recursive: true })
   const out = createWriteStream(logPath, { flags: 'a' })
   out.write(`\n==== host start ${new Date().toISOString()} ${JSON.stringify(env)}\n`)
-  child = spawn(process.execPath, [`--inspect=127.0.0.1:${String(inspectPort)}`, HOST, '--profile', 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open'], {
+  child = spawn(process.execPath, [`--inspect=127.0.0.1:${String(inspectPort)}`, entry, '--profile', 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open'], {
     cwd: home,
     env: { ...process.env, DSH_HOME: home, OPENUI_TELEMETRY_DISABLED: '1', ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -458,6 +463,34 @@ async function deadRegistryHost(port, core) {
   await stopHost()
 }
 
+/** kit.folder: the kit runs only pnpm 11. A pnpm entry that says 10.28.1 makes the kit unavailable. */
+async function pnpm10Host(port) {
+  const fake = join(work, 'pnpm-10.mjs')
+  writeFileSync(fake, "if (process.argv.includes('--version')) { console.log('10.28.1'); process.exit(0) }\nconsole.error('pnpm 10.28.1 of the check: only --version'); process.exit(1)\n")
+  const before = currentTarget()
+  await startHost(port, { KIT_HOST_PNPM: fake })
+  const call = await connect()
+  const state = await kit('read')
+  const change = await kit('add', 'left-pad@^1')
+  const page = await call('widget_install', { dir: pageDir })
+  check('with pnpm 10, the start makes the kit unavailable and names 10.28.1, a change and a page install give kit-unavailable, and the kit stays',
+    state.ok && state.value.available === false && (state.value.reason ?? '').includes('10.28.1') && !change.ok && change.code === 'kit-unavailable'
+      && page.isError && page.body?.error?.code === 'kit-unavailable' && currentTarget() === before,
+    brief({ state: state.ok ? { available: state.value.available, reason: state.value.reason } : state, change, page: page.body?.error?.code }))
+  await stopHost()
+}
+
+/** kit.folder: a CLI host with no package manager runs the pnpm of the repository, 11.28.5, not the pnpm on the PATH. */
+async function plainHost(port) {
+  await startHost(port, {}, BIN)
+  const state = await kit('read')
+  const log = readFileSync(logPath, 'utf8')
+  const ready = /kit: kit version \d+ is ready \(pnpm ([^)]+)\)/.exec(log.slice(log.lastIndexOf('==== host start')))?.[1]
+  check('a CLI host with no package manager runs the pnpm of the repository, 11.28.5',
+    state.ok && state.value.available === true && ready === '11.28.5', brief({ ready, state: state.ok ? { available: state.value.available, reason: state.value.reason } : state }))
+  await stopHost()
+}
+
 async function noStoreHost(port) {
   rmSync(join(kitDir, 'store'), { recursive: true, force: true })
   rmSync(join(currentDir(), 'node_modules'), { recursive: true, force: true })
@@ -489,6 +522,8 @@ try {
   await lockHost(port)
   relinkPart(core)
   await deadRegistryHost(port, core)
+  await pnpm10Host(port)
+  await plainHost(port)
   await noStoreHost(port)
   const failed = results.filter((r) => !r.ok).length
   if (failed === 0 && results.length > 0) {

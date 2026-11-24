@@ -16,5 +16,6 @@ export const PNPM_ENTRY = join(ROOT, 'apps/desktop/node_modules/pnpm/bin/pnpm.mj
 
 if (import.meta.main) {
   const { runCli } = await import(pathToFileURL(join(ROOT, 'apps/cli/lib/bin.js')).href)
-  await runCli({ packageManager: { command: process.execPath, args: [PNPM_ENTRY], env: {} } })
+  // KIT_HOST_PNPM replaces the pnpm entry, for the step of tools/kit-service.mjs with another pnpm version.
+  await runCli({ packageManager: { command: process.execPath, args: [process.env.KIT_HOST_PNPM ?? PNPM_ENTRY], env: {} } })
 }

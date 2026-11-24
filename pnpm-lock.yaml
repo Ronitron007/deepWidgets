@@ -1280,6 +1280,9 @@ importers:
       execa:
         specifier: ^10.0.1
         version: 10.0.1
+      pnpm:
+        specifier: 11.28.5
+        version: 11.28.5
       zod:
         specifier: 4.4.3
         version: 4.4.3

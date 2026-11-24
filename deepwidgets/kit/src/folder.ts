@@ -62,6 +62,19 @@ export function appCoreFolders(): Record<CoreName, string> {
   }
 }
 
+/**
+ * The pnpm of the repository, for a host whose profile has no package manager (a CLI host): the package `pnpm` that this
+ * package depends on, 11.28.5, run by the Node of the host. The kit runs only pnpm 11 (`kit.folder`), and the `pnpm` on
+ * the PATH can be another version.
+ * @throws {Error} when the package `pnpm` does not resolve.
+ */
+export function repositoryPnpm(): { command: string, args: string[], env: Record<string, string> } {
+  const found = (require.resolve.paths('pnpm') ?? []).map((base) => join(base, 'pnpm')).find((path) => existsSync(join(path, 'bin', 'pnpm.mjs')))
+  if (found === undefined) throw new Error('the package pnpm of the repository does not resolve from @deepwidgets/kit')
+  // In Electron, process.execPath is the app; the variable makes it run as Node.
+  return { command: process.execPath, args: [join(realpathSync(found), 'bin', 'pnpm.mjs')], env: { ELECTRON_RUN_AS_NODE: '1' } }
+}
+
 /** The `package.json` of version 1: the core links only. pnpm writes each later version. */
 export function firstManifestText(): string {
   const dependencies = Object.fromEntries(CORE.map((name) => [name, coreSpec(name)]))

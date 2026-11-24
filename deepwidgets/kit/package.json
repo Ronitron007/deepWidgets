@@ -27,6 +27,7 @@
     "@deepwidgets/shell": "workspace:*",
     "@deepwidgets/widget-kit": "workspace:*",
     "execa": "^10.0.1",
+    "pnpm": "11.28.5",
     "zod": "4.4.3"
   },
   "devDependencies": {

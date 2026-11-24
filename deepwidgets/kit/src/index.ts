@@ -23,7 +23,8 @@
  * of the kit (`kit.service.lock`), so a change of one process never meets a change or a start of another.
  *
  * The kit runs pnpm with the command that the app gives the host (`profileContext.packageManager`), as the plugin
- * manager does. A host with no such command runs `pnpm` on the `PATH`.
+ * manager does. A host with no such command runs the pnpm of the repository, 11.28.5. The kit runs only pnpm 11: at
+ * start it checks the major version, and with another version the kit is unavailable (`kit.service.start`).
  * @module @deepwidgets/kit
  */
 import { lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, symlink, writeFile, appendFile, copyFile } from 'node:fs/promises'
@@ -35,7 +36,7 @@ import type {} from '@deepseek-ai/dsh-app-boot'
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { z } from 'zod'
-import { appCoreFolders, CORE, firstManifestText, isCore, pnpmfileText, workspaceText } from './folder.ts'
+import { appCoreFolders, CORE, firstManifestText, isCore, pnpmfileText, repositoryPnpm, workspaceText } from './folder.ts'
 import type { CoreName } from './folder.ts'
 import { immaturePackage, logBlock, NOT_FOUND_CODES, outputTail, passed, pnpmCode, refusedPackage, runPnpm, wasRefused } from './pnpm.ts'
 import type { PnpmCommand, PnpmRun } from './pnpm.ts'
@@ -73,6 +74,10 @@ const NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/
 const SPEC = /^((?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*)(?:@([0-9A-Za-z.^~<>=|*+ -]+))?$/
 /** An exact version, as `pnpm add --save-exact` writes it. */
 const EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
+/** The time limit of `pnpm --version`. */
+const VERSION_LIMIT_MS = 30_000
+/** The major version of pnpm that the kit runs (`kit.folder`). */
+const PNPM_MAJOR = 11
 /** A kit version folder under `versions/`. */
 const VERSION_DIR = /^[1-9]\d{0,8}$/
 /**
@@ -145,7 +150,10 @@ export class KitService extends Service {
   // A private field (#) does not work: the caller context reads the service through a proxy.
   private readonly dir: string
   private readonly settingsFile: string
-  private readonly pnpm: PnpmCommand
+  /** The pnpm command, or the reason that the host has none. */
+  private readonly pnpm: PnpmCommand | Error
+  /** The version of pnpm, after the start checked that its major version is {@link PNPM_MAJOR}. */
+  private pnpmVersion: string | undefined
   private readonly abort = new AbortController()
   private availability: Availability = { available: false, reason: 'the kit has not started' }
   /** The real folders of the core in the app; undefined when they do not resolve. */
@@ -154,7 +162,7 @@ export class KitService extends Service {
   /** The changes, one at a time. */
   private queue: Promise<unknown> = Promise.resolve()
 
-  constructor(ctx: Context, options: { dir: string, settingsFile: string, pnpm: PnpmCommand }) {
+  constructor(ctx: Context, options: { dir: string, settingsFile: string, pnpm: PnpmCommand | Error }) {
     super(ctx, 'kit')
     this.dir = options.dir
     this.settingsFile = options.settingsFile
@@ -182,15 +190,29 @@ export class KitService extends Service {
     try {
       this.core = appCoreFolders()
       await mkdir(join(this.dir, 'versions'), { recursive: true })
+      this.pnpmVersion = await this.checkPnpm()
       // kit.service.lock: the start waits for a change of another process, so it never removes a version in work.
       const message = await this.locked(() => this.startLocked())
       this.availability = { available: true }
-      this.ctx.logger.info(message)
+      this.ctx.logger.info(`${message} (pnpm ${this.pnpmVersion})`)
     } catch (error) {
       const reason = errorText(error)
       this.availability = { available: false, reason }
       this.ctx.logger.warn(`kit: the widget kit is unavailable, so a widget with page/ does not install: ${reason}`)
     }
+  }
+
+  /**
+   * The version of pnpm (`kit.service.start`). pnpm 10 prints its error codes in another form and uses another store
+   * folder, so a kit that pnpm 11 made is not whole under it.
+   * @throws {Error} that names the version when its major version is not {@link PNPM_MAJOR}, or when pnpm gives none.
+   */
+  private async checkPnpm(): Promise<string> {
+    const run = await this.pnpmIn(undefined, ['--version'], VERSION_LIMIT_MS)
+    const version = run.output.split('\n').map((line) => line.trim()).find((line) => /^\d+\.\d+\.\d+/.test(line))
+    if (!passed(run) || version === undefined) throw new Error(`pnpm gave no version${this.codeText(run)}: ${outputTail(run, 300)}`)
+    if (Number(version.split('.')[0]) !== PNPM_MAJOR) throw new Error(`the kit runs only pnpm ${String(PNPM_MAJOR)}, and the pnpm of this host is ${version}`)
+    return version
   }
 
   /** The steps of the start that change the kit folder. Gives the log line of the start. */
@@ -223,9 +245,11 @@ export class KitService extends Service {
     return run.timedOut ? ': the time limit stopped pnpm' : ` with exit code ${String(run.exitCode)}`
   }
 
-  /** Run pnpm in a kit version and append the run to its `pnpm.log`. */
-  private async pnpmIn(dir: string, args: readonly string[], timeoutMs: number): Promise<PnpmRun> {
-    const run = await runPnpm(this.pnpm, dir, args, timeoutMs, this.abort.signal)
+  /** Run pnpm in the kit version `dir` and append the run to its `pnpm.log`. With no `dir`, it runs in the kit folder with no log. */
+  private async pnpmIn(dir: string | undefined, args: readonly string[], timeoutMs: number): Promise<PnpmRun> {
+    if (this.pnpm instanceof Error) throw this.pnpm
+    const run = await runPnpm(this.pnpm, dir ?? this.dir, args, timeoutMs, this.abort.signal)
+    if (dir === undefined) return run
     await appendFile(join(dir, 'pnpm.log'), logBlock(run)).catch((error: unknown) => {
       this.ctx.logger.warn(`kit: the log of the pnpm run in ${dir} was not written`, error)
     })
@@ -383,7 +407,8 @@ export class KitService extends Service {
   private change(edit: (dir: string) => Promise<string>): Promise<KitState> {
     return this.serial(async () => {
       await this.started
-      if (this.core === undefined) throw new KitError('kit-unavailable', `the widget kit has no version: ${this.unavailableReason()}`)
+      // A start that found no pnpm 11 or no core leaves the kit as it is: no change runs.
+      if (this.core === undefined || this.pnpmVersion === undefined) throw new KitError('kit-unavailable', `the widget kit is unavailable: ${this.unavailableReason()}`)
       // kit.service.lock: another process can change the kit too, so `current` is read under the lock.
       return this.locked(() => this.changeLocked(edit))
     })
@@ -522,7 +547,12 @@ export class KitService extends Service {
 }
 
 export function apply(ctx: Context, config: Config = {}): void {
-  const pnpm = ctx.get('profileContext')?.packageManager ?? { command: 'pnpm', args: [], env: {} }
+  let pnpm: PnpmCommand | Error
+  try {
+    pnpm = ctx.get('profileContext')?.packageManager ?? repositoryPnpm()
+  } catch (error) {
+    pnpm = error instanceof Error ? error : new Error(String(error))
+  }
   const kit = new KitService(ctx, {
     dir: config.dir ?? dshHomePath('deepwidgets', 'kit'),
     settingsFile: config.settingsFile ?? dshHomePath('deepwidgets', 'settings.json'),
