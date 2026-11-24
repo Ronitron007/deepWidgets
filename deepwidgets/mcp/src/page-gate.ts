@@ -73,6 +73,8 @@ export const ALLOWED_TEXT = `${ALLOWED.filter((name) => !name.startsWith('vite/'
  * of each extra of the current kit version, by package name. `folders()` of the service `kit` gives them.
  */
 export interface PageKit {
+  /** The kit version. The name of a page build hashes it, so a kit change builds each page again. */
+  version: number
   core: Record<string, string>
   extras: Record<string, string>
 }
@@ -196,8 +198,11 @@ async function pageLinks(dir: string): Promise<string[]> {
   return links
 }
 
-/** The hash of the sources of a page: the relative path and the text of each file, sorted. It names the build. */
-async function sourceHash(page: string): Promise<string> {
+/**
+ * The hash that names a page build: the kit version, then the relative path and the text of each file of the page,
+ * sorted (`kit.gates`). An install of the same sources after a kit change thus builds the page again.
+ */
+async function buildHash(page: string, kitVersion: number): Promise<string> {
   const files: string[] = []
   const walk = async (dir: string): Promise<void> => {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -207,7 +212,7 @@ async function sourceHash(page: string): Promise<string> {
     }
   }
   await walk(page)
-  const hash = createHash('sha256')
+  const hash = createHash('sha256').update(`kit ${String(kitVersion)}`).update('\0')
   for (const file of files.sort()) hash.update(relative(page, file)).update('\0').update(await readFile(file)).update('\0')
   return hash.digest('hex').slice(0, 16)
 }
@@ -390,7 +395,7 @@ export async function runPageGates(dir: string, input: PageInput, tools: PageToo
   gates.push(files)
   if (!files.ok) return { gates }
   const { staging, page } = await stagePage(dir, folders.stagingRoot, kit)
-  const name = `page-${await sourceHash(page)}`
+  const name = `page-${await buildHash(page, kit.version)}`
   const made = !existsSync(folders.slugDir)
   await mkdir(folders.slugDir, { recursive: true })
   const slugDir = await realpath(folders.slugDir)

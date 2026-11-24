@@ -311,6 +311,10 @@ async function firstHost(port, core) {
     !installed.isError && installed.body?.application === 'applied' && installed.body.gates?.some((gate) => gate.gate === 'page-build' && gate.ok) && dateFnsWarnings(installed).length === 0,
     brief(installed.body?.error ?? { application: installed.body?.application, warnings: dateFnsWarnings(installed) }))
 
+  // The link `page` of the slug names the build of this install.
+  const pageLink = join(home, 'profiles', 'web', 'deepwidgets-widgets', PAGE_SLUG, 'page')
+  const firstBuild = existsSync(pageLink) ? readlinkSync(pageLink) : undefined
+
   // ---- kit.service.errors ----
   const inCore = await kit('add', 'react@18')
   const removeCore = await kit('remove', 'zod')
@@ -351,6 +355,13 @@ async function firstHost(port, core) {
     recharts.ok && recharts.value.version === 4 && copies.length === 0 && rechartsReact === core.react && rechartsReactDom === core['react-dom']
       && realpathSync(join(v4, 'node_modules', 'react')) === core.react && /^3\.\d+\.\d+$/.test(manifestOf(v4).dependencies.recharts ?? ''),
     brief({ recharts: recharts.ok ? recharts.value.version : recharts, copies, rechartsReact, rechartsReactDom }))
+
+  // ---- kit.gates: the build name hashes the kit version ----
+  const again = await call('widget_install', { dir: pageDir })
+  const secondBuild = existsSync(pageLink) ? readlinkSync(pageLink) : undefined
+  check('an install of the same page sources after a kit change builds the page again',
+    !again.isError && again.body?.application === 'applied' && firstBuild !== undefined && secondBuild !== undefined && secondBuild !== firstBuild,
+    brief({ firstBuild, secondBuild, answer: again.body?.error ?? again.body?.application }))
 
   // ---- kit.folder: remove, and the last 3 versions ----
   const removed = await kit('remove', 'core-js')
