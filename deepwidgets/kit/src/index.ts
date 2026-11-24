@@ -417,12 +417,14 @@ export class KitService extends Service {
       const run = await this.pnpmIn(dir, ['add', '--save-exact', spec], CHANGE_LIMIT_MS)
       if (!passed(run)) throw this.changeError(run, name)
       // pnpm keeps a range of the spec in package.json, also with --save-exact. A second run saves the exact
-      // version that it installed, from the store and the cache.
+      // version that it installed. It runs online with the 24-hour wait, as each run of a change. It is the run with
+      // node_modules, where pnpm puts React from npm in place of the core when the overrides are missing
+      // (kit.checked.core_link).
       const saved = (await manifestDependencies(dir))[name]
       if (saved !== undefined && EXACT.test(saved)) return `added ${name}@${saved}`
       const installed = (JSON.parse(await readFile(join(dir, 'node_modules', name, 'package.json'), 'utf8')) as { version?: unknown }).version
       if (typeof installed !== 'string' || !EXACT.test(installed)) throw new KitError('install-failed', `pnpm installed no exact version of ${name}, so the kit did not change`, { package: name })
-      const pin = await this.pnpmIn(dir, ['add', '--save-exact', '--offline', `${name}@${installed}`], CHANGE_LIMIT_MS)
+      const pin = await this.pnpmIn(dir, ['add', '--save-exact', `${name}@${installed}`], CHANGE_LIMIT_MS)
       if (!passed(pin)) throw this.changeError(pin, name)
       return `added ${name}@${installed}`
     })

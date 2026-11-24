@@ -325,9 +325,10 @@ async function firstHost(port, core) {
     brief({ coreJs: coreJs.ok ? coreJs.value.extras : coreJs, log: coreJsLog.split('\n').filter((line) => line.includes('postinstall')) }))
 
   // ---- kit.checked.core_link: one react ----
-  // A change runs `pnpm add` in a copy with no node_modules. There pnpm keeps the core link of React also with no
-  // overrides. The range makes the kit run pnpm again to save the exact version, now with node_modules: with no
-  // overrides, that run resolves the React peer of recharts from npm.
+  // kit.checked.core_link: a change runs `pnpm add` in a copy with no node_modules, and there pnpm keeps the core link
+  // of React also with no overrides. The range makes the kit run pnpm again, online, to save the exact version. That
+  // run has node_modules, and with no overrides it puts React from npm in place of the core. The step checks the kit
+  // after that run.
   const recharts = await kit('add', 'recharts@^3')
   const v4 = versionPath(4)
   const store = existsSync(join(v4, 'node_modules', '.pnpm')) ? readdirSync(join(v4, 'node_modules', '.pnpm')) : []
