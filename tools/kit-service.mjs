@@ -178,16 +178,45 @@ async function inHost(body, arg = null) {
   }
 }
 
+/**
+ * The time that one step of the kit may take in the check. A change takes seconds, and the kit stops a pnpm run after
+ * 600 s, so a step that gives no answer in this time fails, and the check goes on.
+ */
+const KIT_STEP_MS = 300_000
+
+/** `promise`, or `fallback` when it gives no answer in {@link KIT_STEP_MS}. */
+function bounded(promise, fallback) {
+  let timer
+  const late = new Promise((resolve) => { timer = setTimeout(() => resolve(fallback), KIT_STEP_MS) })
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer))
+}
+
+const lateAnswer = (what) => ({ ok: false, code: 'check-timeout', message: `${what} gave no answer in ${String(KIT_STEP_MS)} ms` })
+
 /** One call of the service `kit`: `{ ok, value }`, or `{ ok: false, code, pnpmCode, package, message }`. */
 function kit(method, ...args) {
-  return inHost(`
+  return bounded(inHost(`
     const kit = loader.ctx.get('kit')
     if (kit === undefined) return { ok: false, code: 'no-service' }
     try {
       return { ok: true, value: await kit[arg.method](...arg.args) }
     } catch (error) {
       return { ok: false, code: error.code, pnpmCode: error.pnpmCode, package: error.package, message: error.message }
-    }`, { method, args })
+    }`, { method, args }), lateAnswer(`kit.${method}`))
+}
+
+/**
+ * Calls of the service `kit` that start at once, in this order, in one evaluation in the host. Two inspector calls could
+ * reach the host in the other order. Gives the answer of each call, as {@link kit} does.
+ */
+function kitAtOnce(calls) {
+  return bounded(inHost(`
+    const kit = loader.ctx.get('kit')
+    if (kit === undefined) return arg.map(() => ({ ok: false, code: 'no-service' }))
+    return await Promise.all(arg.map(([method, ...args]) => kit[method](...args).then(
+      (value) => ({ ok: true, value }),
+      (error) => ({ ok: false, code: error.code, pnpmCode: error.pnpmCode, package: error.package, message: error.message }))))`, calls),
+  calls.map(([method]) => lateAnswer(`kit.${method}`)))
 }
 
 /** The handshake of mcp_readme.handshake, then an MCP client with the token. */
@@ -302,7 +331,7 @@ async function firstHost(port, core) {
     before.isError && before.body?.error?.code === 'gate-failed' && before.body.error.gate === 'page-types' && JSON.stringify(before.body.error.diagnostics).includes('date-fns'),
     brief(before.body))
   // kit.service.calls: two add calls at once run one after the other, in order.
-  const [dateFns, ms] = await Promise.all([kit('add', 'date-fns@^4'), kit('add', 'ms@^2')])
+  const [dateFns, ms] = await kitAtOnce([['add', 'date-fns@^4'], ['add', 'ms@^2']])
   const v2 = manifestOf(versionPath(2))
   const v3 = manifestOf(versionPath(3))
   check('two add calls at once give versions 2 and 3, and version 3 has both extras',
@@ -397,8 +426,9 @@ async function afterRemoveHost(port) {
 
 /** Run the kit in another process (tools/fixtures/kit-process.mjs): `start`, `add`, or `remove`. Gives its RESULT. */
 function kitProcess(op, arg = '', env = {}) {
-  return new Promise((resolve) => {
-    const proc = spawn(process.execPath, [KIT_PROCESS, kitDir, settingsFile, op, arg], { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
+  let proc
+  const answer = new Promise((resolve) => {
+    proc = spawn(process.execPath, [KIT_PROCESS, kitDir, settingsFile, op, arg], { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
     let out = ''
     let err = ''
     proc.stdout.on('data', (chunk) => { out += chunk })
@@ -407,6 +437,10 @@ function kitProcess(op, arg = '', env = {}) {
       const line = out.split('\n').find((item) => item.startsWith('RESULT '))
       resolve(line === undefined ? { ok: false, code: `exit ${String(code)}`, message: err.slice(-600) } : JSON.parse(line.slice(7)))
     })
+  })
+  return bounded(answer, lateAnswer(`the kit process ${op}`)).then((result) => {
+    if (result.code === 'check-timeout') proc.kill('SIGKILL')
+    return result
   })
 }
 
