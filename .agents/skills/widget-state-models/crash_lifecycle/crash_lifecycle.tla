@@ -6,6 +6,9 @@
 (* host.hmr_guards (safe_host.hmr) added HostWork: agent rows load through  *)
 (* the agent-row gate (deepwidgets/widgets/src/gate.ts) after IsolationStart, *)
 (* so RunWidget needs Started also at boot. The slot never spans an await.  *)
+(* supervisor.replacement_restart added UpdateReplace: after a failed update *)
+(* install, Electron main starts a replacement Host itself and disarms the   *)
+(* supervisor first. Its code refs name functions, not lines.               *)
 (* Host process + crash.json/provisional.json + quarantine.json + the       *)
 (* watchdog thread + the Electron-main supervisor (HostCrashPolicy).        *)
 (* Code refs (path, function):                                              *)
@@ -69,13 +72,14 @@ VARIABLES
   unbl,       \* ghost: ages of the crashes the supervisor decided were unblamed
   lastCount,  \* ghost: |unbl| at the last decision
   last,       \* ghost: the last decision of supervisor.failed()
-  ghostQ      \* ghost: per row, the true files version at its last quarantine (-1 none)
+  ghostQ,     \* ghost: per row, the true files version at its last quarantine (-1 none)
+  repl        \* ghost: the replacement Host of an update in this launch: "no" | "booting" | "ready" | "failed" (died before ready)
 
 vars == <<sup, armed, safeMode, timer, policy, launches, host, nextPid, run, slot,
           beat, stall, provAt, registered, loaded, crash, prov, quar, hash, unbl,
-          lastCount, last, ghostQ>>
+          lastCount, last, ghostQ, repl>>
 mainVars == <<run, slot, beat, stall, provAt, registered, loaded>>
-supVars == <<sup, armed, safeMode, timer, policy, launches, unbl, lastCount, last>>
+supVars == <<sup, armed, safeMode, timer, policy, launches, unbl, lastCount, last, repl>>
 
 Alive == host.phase \in {"spawned", "booting", "ready"}
 Started == host.phase \in {"booting", "ready"}  \* the isolation ran (ISO:205)
@@ -110,6 +114,7 @@ Init ==
   /\ hash = [w \in Widgets |-> 0]
   /\ unbl = {} /\ lastCount = 0 /\ last = NoDecision
   /\ ghostQ = [w \in Widgets |-> -1]
+  /\ repl = "no"
 
 (***************************************************************************)
 (* Host boot: the widgets runtime row creates the isolation (ISO:205-253).   *)
@@ -147,6 +152,7 @@ HostReady ==
   /\ host.phase = "booting" /\ run = None
   /\ host' = [host EXCEPT !.phase = "ready"]
   /\ armed' = TRUE
+  /\ repl' = IF repl = "booting" THEN "ready" ELSE repl
   /\ UNCHANGED <<sup, safeMode, timer, policy, launches, unbl, lastCount, last, nextPid, mainVars,
                  crash, prov, quar, hash, ghostQ>>
 
@@ -320,6 +326,7 @@ HostFails ==
                          /\ safeMode' = (IF Mutant = "safe_off_by_one" THEN n > 2 ELSE n >= 2)   \* POL:48 SAFE_MODE_AFTER
                          /\ timer' = IF row = None THEN Backoff[Min(n, 3)] ELSE Backoff[1]  \* POL:47
                /\ UNCHANGED <<armed, launches>>
+  /\ repl' = IF repl = "booting" THEN "failed" ELSE repl   \* ghost: the replacement died before ready
   /\ UNCHANGED <<nextPid, mainVars, crash, quar, hash, ghostQ>>
 
 AgeBy(S, d) == {a + d : a \in {x \in S : x + d < WIN}}
@@ -329,7 +336,7 @@ LongQuiet ==
   /\ host.phase = "ready" /\ run = None /\ ~provAt /\ (policy # {} \/ unbl # {})
   /\ policy' = {} /\ unbl' = {}
   /\ UNCHANGED <<sup, armed, safeMode, timer, launches, lastCount, last, host, nextPid, mainVars,
-                 crash, prov, quar, hash, ghostQ>>
+                 crash, prov, quar, hash, ghostQ, repl>>
 
 \* SUP:170-182 the timer fires after its delay (the crashes age by it): start a
 \* new Host with the safe-mode env (main.ts:549).
@@ -338,6 +345,21 @@ Restart ==
   /\ NewHost(nextPid, safeMode)
   /\ timer' = -1 /\ policy' = AgeBy(policy, timer) /\ unbl' = AgeBy(unbl, timer)
   /\ UNCHANGED <<sup, armed, safeMode, launches, lastCount, last,
+                 crash, prov, quar, hash, ghostQ, repl>>
+
+\* main.ts publishUpdate, the restoreHost branch (supervisor.replacement_restart): the update
+\* preparation stopped the ready Host on purpose (backend.stop), and the install failed. A stop
+\* on purpose is no failure, so no HostFails. Electron main calls supervisor.disarm() (SUP disarm),
+\* then starts a replacement Host itself, with the safe-mode env of the supervisor. disarm also
+\* drops a waiting restart; none waits while a Host is ready. One update for each app launch keeps
+\* the model small. The mutant replacement_armed is the code before the fix: no disarm.
+UpdateReplace ==
+  /\ sup = "run" /\ host.phase = "ready" /\ run = None /\ repl = "no" /\ nextPid <= MaxHosts
+  /\ NewHost(nextPid, safeMode)
+  /\ armed' = (armed /\ Mutant = "replacement_armed")
+  /\ timer' = -1
+  /\ repl' = "booting"
+  /\ UNCHANGED <<sup, safeMode, policy, launches, unbl, lastCount, last,
                  crash, prov, quar, hash, ghostQ>>
 
 \* The user starts the app again after a dialog. Files under $DSH_HOME stay.
@@ -346,6 +368,7 @@ Relaunch ==
   /\ NewHost(nextPid, FALSE)
   /\ sup' = "run" /\ armed' = FALSE /\ safeMode' = FALSE /\ timer' = -1 /\ policy' = {}
   /\ launches' = launches + 1 /\ unbl' = {} /\ lastCount' = 0 /\ last' = NoDecision
+  /\ repl' = "no"
   /\ UNCHANGED <<crash, prov, quar, hash, ghostQ>>
 
 \* A new version of an agent widget's files is installed while no Host runs.
@@ -371,7 +394,7 @@ Next ==
   \/ PollBeat \/ PollStall \/ WatchdogKill \/ Suspend
   \/ \E k \in {"exit1", "dispkill"} : Throw(k)
   \/ Abort \/ OtherExit \/ BootFail
-  \/ HostFails \/ LongQuiet \/ Restart \/ Relaunch
+  \/ HostFails \/ LongQuiet \/ Restart \/ UpdateReplace \/ Relaunch
   \/ \E w \in Agents : ChangeHash(w)
   \/ Done
 
@@ -395,6 +418,9 @@ Spec == Init /\ [][Next]_vars
 (* The mutant of host.hmr_guards is the code at 5a47dd3d:                   *)
 (*   slot_spans_awaits   the slot stays across an await of an agent row     *)
 (*                                                -> InnocentNeverQuarantined *)
+(* The mutant of supervisor.replacement_restart is the code before its fix: *)
+(*   replacement_armed   no disarm before the replacement Host of an update *)
+(*                                                -> ReplacementFailsLoudly *)
 (***************************************************************************)
 
 (***************************************************************************)
@@ -440,8 +466,14 @@ InnocentNeverQuarantined ==
 \* ProvisionalGoneAfterBeat (SPEC:28; WDW:5-6,150-157): the provisional record is gone once the heartbeat came back.
 ProvisionalGoneAfterBeat == (Started /\ ~provAt) => ~OwnProv
 
+\* ReplacementFailsLoudly (supervisor.replacement_restart; SUP DesktopHostSupervisor doc): a replacement
+\* Host that Electron main started itself and that died before it was ready gives the DSH fatal dialog,
+\* with no restart behind it.
+ReplacementFailsLoudly == repl = "failed" => (sup = "fatal" /\ timer = -1 /\ host = NoHost)
+
 TypeOK ==
   /\ sup \in {"run", "fatal", "gaveUp"}
   /\ stall \in 0..TIdle
   /\ run \in Widgets \cup {None, HostCode} /\ slot \in Widgets \cup {None}
+  /\ repl \in {"no", "booting", "ready", "failed"}
 =============================================================================

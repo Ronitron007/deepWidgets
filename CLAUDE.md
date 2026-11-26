@@ -84,6 +84,8 @@ The smoke check `tools/smoke-desktop.mjs` boots the app. Each flag below adds a 
 
 These scripts run with no app, unless the item says otherwise:
 
+- `corepack pnpm exec vitest run apps/desktop/tests` checks the code of Electron main with stubs in place of Electron and the Host. It covers `main.ts`, the supervisor, and the give-up path of the supervisor.
+
 - `tools/widgets-runtime.mjs` and `tools/widgets-mcp.mjs` check the runtime and the MCP server with a host.
 
 - `tools/widgets-mcp-port.mjs` checks the fixed port. It also boots the app two times, unless `WIDGETS_MCP_PORT_SKIP_DESKTOP=1`.
@@ -192,6 +194,7 @@ DSH_SMOKE_WIDGET=sample node tools/smoke-desktop.mjs
 DSH_SMOKE_MAIN=1 node tools/smoke-desktop.mjs
 DSH_SMOKE_WINDOWS=1 node tools/smoke-desktop.mjs
 DSH_SMOKE_LOG=1 node tools/smoke-desktop.mjs
+corepack pnpm exec vitest run apps/desktop/tests
 node tools/widgets-runtime.mjs
 node tools/widgets-mcp.mjs
 node tools/widgets-mcp-port.mjs
