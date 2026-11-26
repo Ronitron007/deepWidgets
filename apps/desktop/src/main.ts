@@ -704,6 +704,9 @@ async function main(): Promise<void> {
       shellInstallerOwnsQuit = false
       updateStoppedHost = false
       if (restoreHost) {
+        // deepwidgets-trim: supervisor.replacement_restart; added line. The supervisor owns the replacement Host only
+        // after it is ready, so a replacement that can not boot shows the fatal dialog once, with no restart behind it.
+        supervisor.disarm()
         // Only confirmed process exit permits replacement before another installation confirmation.
         const hostReady = backend.start(prepareHostEnvironment)
         startup = hostReady
