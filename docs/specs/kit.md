@@ -195,6 +195,10 @@ The main widget gets these actions. Each one calls the service `kit` through `wi
 
 - `setRefuseBuilds` takes only valid npm package names. It refuses another name with `bad-name`.
 
+- When the host has no service `kit`, the part `kit` is a refusal with the code `unavailable`, as the MCP sections give when the host has no MCP server. The section shows only that message.
+
+- When the host has no service `mcpSettings`, or the settings file does not parse, the refuse list in the part `kit` is a refusal of its own. The rest of the part still shows, and the controls of the refuse list do nothing, as in the section of the modes.
+
 ### The service `kit.pane.service`
 
 The service `kit` keeps two values in memory for the section:
@@ -204,6 +208,8 @@ The service `kit` keeps two values in memory for the section:
 - `last`: the result of the last change, with its kind, its spec or name, its end time, and, when it failed, its error code and message.
 
 `read()` gives both. A new start of the host clears them.
+
+- `read()` waits for the end of the kit start, and the start can wait for the lock of another process (`kit.service.lock`). The query `settings` has a limit of 5 s, so it must not wait. Thus the service gets a second read, `snapshot()`, which never waits. It gives the same answer as `read()`, with the status `starting` while the start runs. The query `settings` uses `snapshot()`. `read()` stays as it is.
 
 - `add(spec)` and `remove(name)` keep their promise for the tools of `kit.tools`. The actions of `main` do not wait for that promise.
 
@@ -218,6 +224,7 @@ The service `kit` keeps two values in memory for the section:
 | The section reads again each second while a change runs, not through a stream | The section shows only one change at a time. A read each second for the length of one change costs little. |
 | `mcpSettings` writes `kit.refuseBuilds` | One writer for one file. Two writers can each read the file, change one key, and write it over the change of the other. |
 | The switch for agents comes with `kit.tools` | That switch belongs to the tools that it controls. |
+| The query `settings` uses `snapshot()`, which never waits | A start can wait up to 21 minutes for the lock of another process. A query that waits for it times out, and the whole Settings tab then shows no modes, no port, and no login item. |
 
 ## Open points `kit.open`
 
