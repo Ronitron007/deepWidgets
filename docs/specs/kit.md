@@ -154,20 +154,83 @@ The spike of 2026-11-19 ran pnpm 11.28.5 with node 24.8.0. Each row is verified 
 | `kit.checked.core_link` | With `link:` only, `pnpm add recharts` put React 19.3.1 from npm in place of the linked React 18.3.1, when `node_modules` was there. With no `node_modules`, pnpm kept the linked React. A change runs `pnpm add` in a copy with no `node_modules`, and then a second run, with `node_modules`, writes the exact version. Without the overrides, that second run fetched React from npm. With the same links in `overrides`, the kit kept one React, the copy of the app, with no peer warning. |
 | `kit.checked.offline` | An offline frozen install of a copy at the same depth took 1.85 s. A copy 2 levels deeper failed with `ERR_PNPM_OUTDATED_LOCKFILE`. With no store, the install failed in 0.43 s with `ERR_PNPM_NO_OFFLINE_TARBALL`. Without `trust-lockfile`, an offline install passes only when pnpm listed the lockfile in `cache/lockfile-verified.jsonl`. `pnpm add` lists its lockfile, but `pnpm remove` did not, and the next offline install failed with `ERR_PNPM_NO_OFFLINE_META` with the store present. With `trust-lockfile`, it passed in 1.7 s (the run of the implementer, 2026-11-19). |
 
+## The kit section of the settings `kit.pane`
+
+The operator asked for this unit on 2026-11-26, before `kit.host_extras`, `kit.tools`, and `kit.pins`. The planning session made the calls of this section with no review of the operator. The operator can change each one (`kit.pane.decisions`).
+
+### What the section shows `kit.pane.view`
+
+The Settings tab of the main widget (`main_widget.settings`) gets the section "Widget kit", after "MCP modes". The section is one part of the component set `deepwidgets-main@1`, named `WidgetKit`.
+
+| Part | What it shows | What the operator can do |
+|---|---|---|
+| Status | `ready`, `starting`, `changing`, or `unavailable`. For `changing`, the package and the time since the start. For `unavailable`, the cause and the next step. | Nothing |
+| Kit version | The number of the current kit version | Nothing |
+| Core | One row for each core package, with its version and a lock mark | Nothing. The core changes only with the app (`kit.core`). |
+| Extras | One row for each extra, with its exact version and a Remove button | Remove an extra |
+| Add | One text field for a spec, such as `date-fns@^4`, and an Add button | Add an extra |
+| Last change | The result of the last change: the package, the time, and an error code and message when it failed | Nothing |
+| Refused install scripts | The names in `kit.refuseBuilds`, each with a remove button, and a field to add a name. A note says that a refused name blocks the whole package (`kit.settings`). | Add or remove a name |
+
+- The Add button, the Remove buttons, and the refuse list do nothing while the status is `starting`, `changing`, or `unavailable`.
+
+- The section is for the operator only. Agents can not see `main` (`main_widget.widget`). The switch that lets agents add packages comes with `kit.tools`.
+
+### The actions `kit.pane.actions`
+
+The main widget gets these actions. Each one calls the service `kit` through `widgetRecords.asHost`.
+
+| Action | Kind | What it does |
+|---|---|---|
+| `settings` | query | Its answer gets the part `kit`, the answer of `read()` of the kit (`kit.service.calls`), with the status, the current change, the last change, and `kit.refuseBuilds`. |
+| `kitAdd` | mutation | Takes `{ spec }`. Starts the change and answers at once with `started`. It does not wait for pnpm. |
+| `kitRemove` | mutation | Takes `{ name }`. Starts the change and answers at once with `started`. |
+| `setRefuseBuilds` | mutation | Takes `{ names }`. Writes `kit.refuseBuilds` to the settings file through the service `mcpSettings`, and keeps each other key. |
+
+- A change runs pnpm, and pnpm can take longer than the time limit of an action (5 s, and 10 s for a host call of `main`). Thus `kitAdd` and `kitRemove` start the change and do not wait for it.
+
+- While a change runs, the section reads the query `settings` again each second. When the status leaves `changing`, the section stops.
+
+- `kitAdd` and `kitRemove` answer `in-core`, `kit-busy`, or `kit-unavailable` at once when the change can not start. The other errors of `kit.service.errors` show in the part "Last change".
+
+- `setRefuseBuilds` takes only valid npm package names. It refuses another name with `bad-name`.
+
+### The service `kit.pane.service`
+
+The service `kit` keeps two values in memory for the section:
+
+- `change`: the change that runs now, with its kind (`add` or `remove`), its spec or name, and its start time. Empty when no change runs.
+
+- `last`: the result of the last change, with its kind, its spec or name, its end time, and, when it failed, its error code and message.
+
+`read()` gives both. A new start of the host clears them.
+
+- `add(spec)` and `remove(name)` keep their promise for the tools of `kit.tools`. The actions of `main` do not wait for that promise.
+
+- The service `mcpSettings` is the only writer of the settings file. It gets a call that sets `kit.refuseBuilds`. Thus a mode switch and a refuse list change can not write the file over each other.
+
+### Decisions `kit.pane.decisions`
+
+| Decision | Reason |
+|---|---|
+| The section uses actions of `main`, not the routes `/api/kit` of `kit_spike.config` | The page talks only to the host through its widget channel (`main_widget.settings`, `widget.page_channel`). The actions of `main` already carry the Settings tab. |
+| `kitAdd` and `kitRemove` start the change and answer at once | A change runs pnpm online. The spike measured about 4.7 s for one change, and the network on this machine can make it slower. The limit of an action is 5 s. |
+| The section reads again each second while a change runs, not through a stream | The section shows only one change at a time. A read each second for the length of one change costs little. |
+| `mcpSettings` writes `kit.refuseBuilds` | One writer for one file. Two writers can each read the file, change one key, and write it over the change of the other. |
+| The switch for agents comes with `kit.tools` | That switch belongs to the tools that it controls. |
+
 ## Open points `kit.open`
 
 - `kit.packaged`: the packaged app keeps the core in `app.asar`, and its file rules remove the type files (`apps/desktop/packaging/README.md`). Thus the links of `kit.folder` work only in the dev app and in a CLI host. The packaged app can not be built today (`build.packaged_deepwidgets`). When it can, a unit must unpack the core next to `app.asar` and keep its type files.
 
 ## Later `kit.later`
 
-These units follow, in this order. Each one waits for the operator's direction.
+These units follow. Each one waits for the operator's direction. The operator moved `kit.pane` before them (`kit.pane`).
 
 - `kit.host_extras`: the host half of a widget can import an extra.
 
 - `kit.tools`: the MCP mode `kit` with `kit_read`, `kit_describe`, `kit_add`, and `kit_remove`, and the setting that lets agents add packages.
 
 - `kit.pins`: each widget records its kit version, and a rebuild happens only on request.
-
-- `kit.pane`: the settings pane and `/api/kit`.
 
 - `kit.model`: a TLA+ model of the kit, and a change to `WidgetInstall.tla` for the page gates.
