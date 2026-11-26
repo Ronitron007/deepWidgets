@@ -36,6 +36,9 @@ export const step = (a, from, to) => {
     case "HostFails": return "Electron main sees the exit";
     case "LongQuiet": return "a minute passes";
     case "Restart": return "the restart timer fires";
+    case "UpdatePrepare": return "the update preparation starts";
+    case "UpdateStop": return "the update stops the Host, and the installer runs";
+    case "UpdateInstallFails": return "the install fails, and Electron main starts a replacement Host";
     case "Relaunch": return "you start the app again";
     case "ChangeHash": return "a new version of the widget is installed";
     case "Done": return null;

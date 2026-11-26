@@ -25,7 +25,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 // widget.crash_records fixed HashChangeLifts, ProvisionalOnlyOnAbort, and InnocentNeverQuarantined (widget_fv.crash).
 const CRASH_HOLDS = ['TypeOK', 'BlamedCrashNeverCounts', 'SafeModeAfterTwo', 'GiveUpAtFour', 'NoRestartAfterGiveUp',
   'QuarantinedNeverRuns', 'HashChangeLifts', 'ProvisionalOnlyOnAbort', 'InnocentNeverQuarantined',
-  'RecordOnlyBlamesItsHost', 'ProvisionalGoneAfterBeat', 'NoDeadlock']
+  'RecordOnlyBlamesItsHost', 'ProvisionalGoneAfterBeat', 'ReplacementFailsLoudly', 'NoHostWhileInstalling', 'NoDeadlock']
 // The known breaks of widget_fv.open (built-in widgets).
 const CRASH_BREAKS = ['SampleNeverQuarantined', 'SampleLiveInSafeMode']
 const ACTION_HOLDS = ['TypeOK', 'AtMostOnce', 'ReplaySameResult', 'ReplayFlag', 'ConflictOnOtherArgs', 'NoLateWrite', 'OneAtATime', 'FIFO',
@@ -49,6 +49,8 @@ const crashMutants = {
   no_row_root: 'HashChangeLifts', prov_outlives_call: 'InnocentNeverQuarantined', keep_prov_unarmed: 'ProvisionalOnlyOnAbort',
   // host.hmr_guards: the code at 5a47dd3d kept an agent row in the running slot across an await.
   slot_spans_awaits: 'InnocentNeverQuarantined',
+  // supervisor.replacement_restart: no_disarm is the code before its fix. disarm_keeps_timer keeps a waiting restart.
+  no_disarm: 'ReplacementFailsLoudly', disarm_keeps_timer: 'NoHostWhileInstalling',
 }
 const installMutants = {
   'M-builtinRow-BuiltInUntouched': 'BuiltInUntouched', 'M-builtinRow-OneBundlePerSlug': 'OneBundlePerSlug',

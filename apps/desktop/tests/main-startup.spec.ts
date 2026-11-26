@@ -2303,11 +2303,7 @@ describe('desktop main startup', () => {
     expect(host.updateTasks.mock.calls).toEqual([['inspect'], ['lock'], ['unlock']])
   })
 
-  // deepwidgets-trim: widget_phase2.isolation.supervisor stays armed from the first Host. It also restarts a replacement Host
-  // that could not boot, behind the fatal dialog, so the next update preparation sees that restart, not the startup error.
-  // Open bug `supervisor.replacement_restart` (Ronitron007/deepWidgets#133). Unskip this case when that bug is fixed.
-  // it('reports replacement startup failure without authorizing installation or retrying automatically', async () => {
-  it.skip('reports replacement startup failure without authorizing installation or retrying automatically', async () => {
+  it('reports replacement startup failure without authorizing installation or retrying automatically', async () => {
     const host = await readyForUpdate()
     harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 })
     const preparing = harness.prepareUpdate()
@@ -2327,7 +2323,52 @@ describe('desktop main startup', () => {
     expect(harness.dialog.showMessageBox.mock.calls.some(call =>
       (call.at(-1) as MessageBoxOptions).detail?.includes('replacement startup failed'))).toBe(true)
     await expect(harness.prepareUpdate()).rejects.toThrow('replacement startup failed')
+    // deepwidgets-trim: supervisor.replacement_restart; added line. Past each backoff delay, no restart runs behind the dialog.
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(harness.hosts).toHaveLength(2)
+  })
+
+  // deepwidgets-trim: supervisor.replacement_restart; added case (review finding fix.update_stop_window). A Host that crashes
+  // while the update preparation closes the platform view gets no restart while the installer owns the quit.
+  it('does not restart a Host that crashes while the update stops it', async () => {
+    const host = await readyForUpdate()
+    harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 })
+    const cleanup = harness.deferPlatformClose()
+    const preparing = harness.prepareUpdate()
+    await vi.waitFor(() => { expect(harness.platformCloseAndWait).toHaveBeenCalledOnce() })
+    host.onFailure!(new Error('backend exited'))
+    cleanup.resolve()
+    await host.stopping.promise
+    host.exited.resolve()
+    await expect(preparing).resolves.toBe(true)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(harness.hosts).toHaveLength(1)
+  })
+
+  // deepwidgets-trim: supervisor.replacement_restart; added case (review finding fix.disarm_ready_host). After a failed
+  // install, the supervisor owns the replacement Host again once it is ready, and restarts it after a crash.
+  it('restarts a crashed replacement Host that was ready', async () => {
+    const host = await readyForUpdate()
+    harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 })
+    const preparing = harness.prepareUpdate()
+    await host.stopping.promise
+    host.exited.resolve()
+    await expect(preparing).resolves.toBe(true)
+    harness.dialog.showMessageBox.mockResolvedValue({ response: 1 })
+    const restarted = harness.nextHostStart()
+    harness.publishUpdate({ phase: 'error', version: '1.0.1-nightly.1', failedOperation: 'install', message: 'Installer failed' })
+    await restarted
+    const replacement = harness.hosts[1]!
+    const navigated = harness.nextNavigation()
+    replacement.ready.resolve()
+    await navigated
+    const again = harness.nextHostStart()
+    replacement.onFailure!(new Error('backend exited'))
+    await replacement.stopping.promise
+    replacement.exited.resolve()
+    await vi.advanceTimersByTimeAsync(500)
+    await again
+    expect(harness.hosts).toHaveLength(3)
   })
 
   it('opens fatal recovery when the replacement page cannot reload', async () => {
@@ -2485,17 +2526,39 @@ describe('desktop main startup', () => {
     expect((harness.dialog.showMessageBox.mock.calls[0]![0] as MessageBoxOptions).detail).toContain('profile has no cordis.yml')
   })
 
-  // deepwidgets-trim: widget_phase2.isolation.supervisor restarts a Host that crashed in the running phase. It writes no crash report.
-  // it('attaches the primary window\'s error-level console output to a running-phase Host crash report', async () => {
-  it.skip('attaches the primary window\'s error-level console output to a running-phase Host crash report', async () => {
+  // deepwidgets-trim: widget_phase2.isolation.supervisor restarts the first 3 unblamed Host crashes in 60 s, and gives up at the
+  // 4th. Only the give-up shows the fatal dialog of a running-phase crash. This crashes the ready Host 3 times, waits for
+  // each restart, and returns the 4th Host.
+  async function crashUntilGiveUp() {
+    for (const delay of [500, 2000, 8000]) {
+      const host = harness.hosts.at(-1)!
+      const restarted = harness.nextHostStart()
+      host.onFailure!(new Error('backend exited'))
+      await host.stopping.promise
+      host.exited.resolve()
+      await vi.advanceTimersByTimeAsync(delay)
+      await restarted
+      const navigated = harness.nextNavigation()
+      harness.hosts.at(-1)!.ready.resolve()
+      await navigated
+    }
+    expect(harness.hosts).toHaveLength(4)
+    return harness.hosts.at(-1)!
+  }
+
+  // deepwidgets-trim: widget_phase2.isolation.supervisor. The crash report is written at the give-up.
+  it('attaches the primary window\'s error-level console output to a running-phase Host crash report', async () => {
     harness.dialog.showMessageBox.mockResolvedValue({ response: 0, checkboxChecked: false })
     await import('../src/main.ts')
     await harness.preparing.promise
     harness.prepared.resolve()
     await harness.hostStarted.promise
-    const host = harness.hosts[0]!
-    host.ready.resolve()
+    // deepwidgets-trim: widget_phase2.isolation.supervisor; the 4th Host crashes below.
+    // const host = harness.hosts[0]!
+    // host.ready.resolve()
+    harness.hosts[0]!.ready.resolve()
     await Promise.resolve(invoke(DESKTOP_IPC.boot))
+    const host = await crashUntilGiveUp()
     const window = harness.windows[0]!
     window.webContents.emit('console-message', { level: 'info', message: 'boot ok', sourceId: 'dsh-app://app/assets/entry.js', lineNumber: 1 })
     window.webContents.emit('console-message', {
@@ -2580,11 +2643,8 @@ describe('desktop main startup', () => {
     }
   })
 
-  // deepwidgets-trim: widget_phase2.isolation.supervisor restarts a Host that crashed in the running phase. It opens no recovery dialog.
-  // it.each([{ response: 0, stuck: false }, { response: 1, stuck: false }, { response: 2, stuck: false },
-  //   { response: 0, stuck: true }])('waits for Host exit and bounds Worker cleanup for recovery $response (stuck=$stuck)',
-  //   async ({ response, stuck }) => {
-  it.skip.each([{ response: 0, stuck: false }, { response: 1, stuck: false }, { response: 2, stuck: false },
+  // deepwidgets-trim: widget_phase2.isolation.supervisor. The recovery dialog opens at the give-up.
+  it.each([{ response: 0, stuck: false }, { response: 1, stuck: false }, { response: 2, stuck: false },
     { response: 0, stuck: true }])('waits for Host exit and bounds Worker cleanup for recovery $response (stuck=$stuck)', async ({ response, stuck }) => {
     let finishReport!: (result: { appended: boolean; timedOut: boolean; cancelled: boolean }) => void
     let reportSignal: AbortSignal | undefined
@@ -2597,9 +2657,12 @@ describe('desktop main startup', () => {
     await harness.preparing.promise
     harness.prepared.resolve()
     await harness.hostStarted.promise
-    const host = harness.hosts[0]!
-    host.ready.resolve()
+    // deepwidgets-trim: widget_phase2.isolation.supervisor; the 4th Host crashes below.
+    // const host = harness.hosts[0]!
+    // host.ready.resolve()
+    harness.hosts[0]!.ready.resolve()
     await Promise.resolve(invoke(DESKTOP_IPC.boot))
+    const host = await crashUntilGiveUp()
     host.onFailure!(new Error('backend exited'))
     await host.stopping.promise
     expect(harness.app.relaunch).not.toHaveBeenCalled()
@@ -2622,10 +2685,14 @@ describe('desktop main startup', () => {
         profilePatchBackup: 'desktop-test-profile/cordis.patch.yml.bak-1789555200000', homePatch: 'unchanged',
       })
     } else {
-      expect(console.info).not.toHaveBeenCalled()
+      // deepwidgets-trim: widget_phase2.isolation.supervisor. The fatal dialog logs its own `deepwidgets-fatal-dialog` line.
+      // expect(console.info).not.toHaveBeenCalled()
+      expect(vi.mocked(console.info).mock.calls.map(call => String(call[0]).split(' ')[0])).toEqual(['deepwidgets-fatal-dialog'])
     }
     expect(harness.dialog.showMessageBox).toHaveBeenCalledOnce()
-    expect(harness.windows[0]!.urls).toEqual(['dsh-app://app/'])
+    // deepwidgets-trim: widget_phase2.isolation.supervisor. The page loads at boot and after each of the 3 restarts.
+    // expect(harness.windows[0]!.urls).toEqual(['dsh-app://app/'])
+    expect(harness.windows[0]!.urls).toEqual(Array.from({ length: 4 }, () => 'dsh-app://app/'))
   })
 
   it('creates the Host only after the login-shell read and ends the read on quit', async () => {
