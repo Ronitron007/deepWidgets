@@ -10,6 +10,7 @@ const TEMPLATE = PROFILE_TEMPLATES.web!.bundles
 const NEW_SINCE_BASELINE = TEMPLATE.filter(name => !TEMPLATE_BEFORE_RECORD.includes(name))
 const MAIN = '@deepwidgets/widget-main'
 const SAMPLE = '@deepwidgets/widget-sample'
+const KIT = '@deepwidgets/kit'
 
 function profile(bundles: readonly string[]): string {
   const dir = mkdtempSync(join(tmpdir(), 'deepwidgets-profile-bundles-'))
@@ -28,6 +29,7 @@ function recordOf(dir: string): string[] {
 
 describe('template bundles of an existing profile (main_widget.menu_bar)', () => {
   it('adds each template bundle that a profile made before main.runtime never had, in its template place', () => {
+    expect(NEW_SINCE_BASELINE).toEqual(expect.arrayContaining([MAIN, KIT]))
     const dir = profile([...TEMPLATE_BEFORE_RECORD, 'plugin'])
     expect(addTemplateBundles(dir, TEMPLATE)).toEqual(NEW_SINCE_BASELINE)
     expect(bundlesOf(dir)).toEqual([...TEMPLATE, 'plugin'])
