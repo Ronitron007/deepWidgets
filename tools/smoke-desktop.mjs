@@ -1091,7 +1091,12 @@ async function checkWm(deadline) {
 }
 
 async function checkWmSteps(deadline) {
-  const ready = await wmMain(deadline, 'return until((wm) => wm.visible && wm.loaded && wm.barLoaded, 60000)')
+  // The window of sample opens after the hello frame of the host, which can come after the host is ready.
+  let ready
+  for (const until = Math.min(deadline, Date.now() + 60_000); Date.now() < until; await delay(500)) {
+    ready = await wmMain(deadline, 'return until((wm) => wm.visible && wm.loaded && wm.barLoaded, 10000)')
+    if (ready?.ok === true) break
+  }
   if (ready?.ok !== true) return `wm: the window of sample with its bar did not load: ${JSON.stringify(ready)}`
   // The hook point outside each window: the bar must be hidden. The real mouse can be anywhere.
   const start = await wmMain(deadline, 'hover({ x: -100000, y: -100000 }); await sleep(500); return read()')
