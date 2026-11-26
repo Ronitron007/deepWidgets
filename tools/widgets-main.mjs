@@ -33,10 +33,11 @@
  *   query settings shows ready, the kit version, the 8 core packages, no extra, and an empty refuse list. kitAdd of
  *   date-fns@^4 answers started in at most 1 s. Then the status is changing, a second kitAdd and a kitRemove give
  *   kit-busy, and later the status is ready, with date-fns at an exact version and a last change with no error. A core
- *   package gives in-core at once, and a spec that is not a package name gives not-found at once. setRefuseBuilds of
- *   core-js keeps the key modes, and then kitAdd of core-js ends with a last change of install-failed that names
- *   core-js. kitRemove removes date-fns. A name that npm does not accept gives bad-name, and the old name JSONStream is
- *   written. A settings file that does not parse makes only the refuse list a refusal. With the row of the kit off, the part kit is the refusal unavailable, and the modes still
+ *   package gives in-core at once, and a spec that is not a registry name (a path, a git URL, a file: spec) gives
+ *   not-found at once. setRefuseBuilds of core-js keeps the key modes, and then kitAdd of core-js ends with a last
+ *   change of install-failed that names core-js. kitRemove removes date-fns. A name that npm does not accept gives
+ *   bad-name, and the old name JSONStream is written. A settings file that does not parse makes only the refuse list a
+ *   refusal. With the row of the kit off, the part kit is the refusal unavailable, and the modes still
  *   show. These steps need the npm registry.
  * - kit.pane.service: a fourth host start, while another live process holds the kit lock. The query settings answers in
  *   at most 2 s, with the kit status starting and the modes, and kitAdd and kitRemove give kit-unavailable at once. A
@@ -549,14 +550,19 @@ async function kitPart(call) {
   // ---- refusals before a change starts ----
   const inCore = await timedRoute('kitAdd', { spec: 'react' })
   const removeCore = await timedRoute('kitRemove', { name: 'zod' })
-  const badSpec = await timedRoute('kitAdd', { spec: 'Not A Spec' })
+  // kit.pane.actions: a spec that is not a registry name with an optional version or range.
+  const notRegistry = []
+  for (const spec of ['Not A Spec', './local-package', 'file:../local-package', 'github:user/repo', 'git+https://github.com/user/repo.git']) {
+    notRegistry.push({ spec, ...(await timedRoute('kitAdd', { spec })) })
+  }
   const afterRefusals = await kitSettings()
   check('kitAdd and kitRemove of a core package answer in-core at once, and the kit takes no change',
     refusedWith(inCore) === 'in-core' && refusedWith(removeCore) === 'in-core' && inCore.ms <= 1000 && removeCore.ms <= 1000
       && kitReady(afterRefusals) && afterRefusals.last?.spec === 'date-fns@^4' && afterRefusals.version === addedEnd.kit.version,
     JSON.stringify({ inCore: inCore.body, removeCore: removeCore.body, ms: [inCore.ms, removeCore.ms], last: afterRefusals?.last }))
-  check('kitAdd of a spec that is not a package name answers not-found at once, and the kit takes no change',
-    refusedWith(badSpec) === 'not-found' && badSpec.ms <= 1000 && kitReady(afterRefusals), JSON.stringify({ ms: badSpec.ms, body: badSpec.body }))
+  check('kitAdd of a spec that is not a registry name, such as a path, a git URL, or a file: spec, answers not-found at once, and the kit takes no change',
+    notRegistry.every((item) => refusedWith(item) === 'not-found' && item.ms <= 1000) && kitReady(afterRefusals) && afterRefusals.version === addedEnd.kit.version,
+    JSON.stringify(notRegistry.map((item) => ({ spec: item.spec, ms: item.ms, code: refusedWith(item) ?? item.body }))))
 
   // ---- setRefuseBuilds keeps the key modes; a refused package ends with install-failed ----
   const beforeFile = JSON.parse(readFileSync(settingsFile, 'utf8'))
