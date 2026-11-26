@@ -6,7 +6,8 @@
  *    of the template files.
  * 2. `page-types`: the type check of oxlint (the type gate of the host gates) on a staging copy of `page/`. The copy
  *    has a `node_modules` folder with links to the allowed packages only, so an import of another package does not
- *    resolve.
+ *    resolve. The allowed packages are the core and the extras of the widget kit (`kit.gates`): the installer gets
+ *    their real folders from `folders()` of the service `kit`, so a page build uses no network.
  * 3. `page-build`: Vite builds the copy in a child process (`page-build-child.ts`). Its import fence and its output
  *    fence do not refuse the build (`agent_library.fence_warn`): each import that is not on the allowed list, and each
  *    file outside `page/` and the allowed packages, is a warning of this gate. A config file, `@plugin`, `@config`,
@@ -21,7 +22,7 @@
  */
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, rmdir, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join, relative } from 'node:path'
@@ -65,7 +66,18 @@ const BUILD_LIMIT_MS = 90_000
 const MAX_DIAGNOSTICS = 20
 
 /** The list of allowed imports, for the next step of a refused page. */
-export const ALLOWED_TEXT = `${ALLOWED.filter((name) => !name.startsWith('vite/')).join(', ')}, ${ALLOWED_PREFIXES.map((prefix) => `${prefix}*`).join(', ')}`
+export const ALLOWED_TEXT = `${ALLOWED.filter((name) => !name.startsWith('vite/')).join(', ')}, ${ALLOWED_PREFIXES.map((prefix) => `${prefix}*`).join(', ')}, each extra of the widget kit with its subpaths`
+
+/**
+ * The packages of the widget kit for one run of the page gates (`kit.gates`): the real folder of each core package and
+ * of each extra of the current kit version, by package name. `folders()` of the service `kit` gives them.
+ */
+export interface PageKit {
+  /** The kit version. The name of a page build hashes it, so a kit change builds each page again. */
+  version: number
+  core: Record<string, string>
+  extras: Record<string, string>
+}
 
 /** What Electron main gets for the render check (`agent_library.build_gate.render`). */
 export interface RenderCheckRequest {
@@ -186,8 +198,11 @@ async function pageLinks(dir: string): Promise<string[]> {
   return links
 }
 
-/** The hash of the sources of a page: the relative path and the text of each file, sorted. It names the build. */
-async function sourceHash(page: string): Promise<string> {
+/**
+ * The hash that names a page build: the kit version, then the relative path and the text of each file of the page,
+ * sorted (`kit.gates`). An install of the same sources after a kit change thus builds the page again.
+ */
+async function buildHash(page: string, kitVersion: number): Promise<string> {
   const files: string[] = []
   const walk = async (dir: string): Promise<void> => {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -197,7 +212,7 @@ async function sourceHash(page: string): Promise<string> {
     }
   }
   await walk(page)
-  const hash = createHash('sha256')
+  const hash = createHash('sha256').update(`kit ${String(kitVersion)}`).update('\0')
   for (const file of files.sort()) hash.update(relative(page, file)).update('\0').update(await readFile(file)).update('\0')
   return hash.digest('hex').slice(0, 16)
 }
@@ -227,40 +242,17 @@ async function filesGate(page: string): Promise<GateReport> {
   return { gate: 'page-files', ok: diagnostics.length === 0, ms: elapsed(started), diagnostics, warnings: [] }
 }
 
-/** The real folder of an allowed package, as `@deepwidgets/widget-kit` resolves it, so the page and the core share one copy. */
-function packageFolders(): Record<string, string> {
-  const kit = dirname(require.resolve('@deepwidgets/widget-kit/package.json'))
-  const kitRequire = createRequire(join(kit, 'package.json'))
-  // A package can leave `package.json` out of its exports, so the folder comes from the node_modules lookup paths.
-  const folder = (from: NodeJS.Require, name: string): string => {
-    const found = (from.resolve.paths(name) ?? []).map((base) => join(base, name)).find((path) => existsSync(join(path, 'package.json')))
-    if (found === undefined) throw new Error(`the page gates did not find the package ${name}`)
-    return found
-  }
-  // zod is a peer of OpenUI: the page gets the copy that OpenUI resolves, from its real folder.
-  const lang = realpathSync(folder(kitRequire, '@openuidev/react-lang'))
-  return {
-    'react': folder(kitRequire, 'react'),
-    'react-dom': folder(kitRequire, 'react-dom'),
-    '@openuidev/react-lang': lang,
-    'zod': folder(createRequire(join(lang, 'package.json')), 'zod'),
-    '@types/react': folder(kitRequire, '@types/react'),
-    '@types/react-dom': folder(kitRequire, '@types/react-dom'),
-    '@deepwidgets/widget-kit': kit,
-    '@deepwidgets/shell': dirname(require.resolve('@deepwidgets/shell/package.json')),
-  }
-}
-
 /**
  * Copy `dir/page` into a new staging folder: `<staging>/page`, next to `<staging>/node_modules` with links to the allowed packages only,
- * and the configs of the type gate.
+ * and the configs of the type gate. The links name the core and the extras of `kit`, so the page and the core share one
+ * copy of each package.
  */
-async function stagePage(dir: string, stagingRoot: string): Promise<{ staging: string, page: string }> {
+async function stagePage(dir: string, stagingRoot: string, kit: PageKit): Promise<{ staging: string, page: string }> {
   await mkdir(stagingRoot, { recursive: true })
   const staging = await realpath(await mkdtemp(join(stagingRoot, 'stage-')))
   const page = join(staging, 'page')
   await cp(join(dir, 'page'), page, { recursive: true, filter: (source) => !relative(dir, source).split(/[\\/]/).includes('node_modules') })
-  for (const [name, target] of Object.entries(packageFolders())) {
+  for (const [name, target] of Object.entries({ ...kit.extras, ...kit.core })) {
     const link = join(staging, 'node_modules', name)
     await mkdir(dirname(link), { recursive: true })
     await symlink(await realpath(target), link, 'dir')
@@ -328,8 +320,8 @@ export const fenceFindings = (warnings: string[]): string[] => warnings.filter((
 /** The count of the findings of fence warning lines: one for each finding, and the count of each summary line. */
 export const fenceCount = (warnings: string[]): number => warnings.reduce((sum, line) => sum + (summaryCount(line) ?? 1), 0)
 
-/** Gate `page-build`: Vite in a child process. */
-async function buildGate(staging: string, slug: string, outDir: string): Promise<{ report: GateReport, built?: string }> {
+/** Gate `page-build`: Vite in a child process. Each extra of the kit is an allowed import, with its subpaths. */
+async function buildGate(staging: string, slug: string, outDir: string, extras: readonly string[]): Promise<{ report: GateReport, built?: string }> {
   const started = performance.now()
   const emptyDir = join(staging, 'env')
   await mkdir(emptyDir, { recursive: true })
@@ -340,8 +332,8 @@ async function buildGate(staging: string, slug: string, outDir: string): Promise
     base: `/widget/${slug}/`,
     emptyDir,
     cacheDir: join(staging, 'vite-cache'),
-    allowed: ALLOWED,
-    allowedPrefixes: ALLOWED_PREFIXES,
+    allowed: [...ALLOWED, ...extras],
+    allowedPrefixes: [...ALLOWED_PREFIXES, ...extras.map((name) => `${name}/`)],
   }
   const jobFile = join(staging, 'build-job.json')
   await writeFile(jobFile, JSON.stringify(job))
@@ -393,17 +385,17 @@ async function renderGate(built: string, input: PageInput, renderCheck: RenderCh
 }
 
 /**
- * Run the page gates on `dir/page`. The first failed gate stops the run. Vite builds into
+ * Run the page gates on `dir/page`, with the packages of the widget kit `kit`. The first failed gate stops the run. Vite builds into
  * `<slugDir>/page-<hash>.tmp`, and the render check loads that folder. When each gate passes, the folder becomes
  * `page-<hash>`. When a gate fails, it goes. The staging copy goes in each case.
  */
-export async function runPageGates(dir: string, input: PageInput, tools: PageTools, renderCheck: RenderCheck | undefined, folders: PageFolders): Promise<PageOutcome> {
+export async function runPageGates(dir: string, input: PageInput, tools: PageTools, renderCheck: RenderCheck | undefined, folders: PageFolders, kit: PageKit): Promise<PageOutcome> {
   const gates: GateReport[] = []
   const files = await filesGate(join(dir, 'page'))
   gates.push(files)
   if (!files.ok) return { gates }
-  const { staging, page } = await stagePage(dir, folders.stagingRoot)
-  const name = `page-${await sourceHash(page)}`
+  const { staging, page } = await stagePage(dir, folders.stagingRoot, kit)
+  const name = `page-${await buildHash(page, kit.version)}`
   const made = !existsSync(folders.slugDir)
   await mkdir(folders.slugDir, { recursive: true })
   const slugDir = await realpath(folders.slugDir)
@@ -415,7 +407,7 @@ export async function runPageGates(dir: string, input: PageInput, tools: PageToo
     const types = await typesGate(staging, tools)
     gates.push(types)
     if (!types.ok) return { gates }
-    const { report, built } = await buildGate(staging, input.slug, tmp)
+    const { report, built } = await buildGate(staging, input.slug, tmp, Object.keys(kit.extras))
     gates.push(report)
     if (built === undefined) return { gates }
     const render = await renderGate(built, input, renderCheck)
