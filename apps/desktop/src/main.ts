@@ -704,9 +704,6 @@ async function main(): Promise<void> {
       shellInstallerOwnsQuit = false
       updateStoppedHost = false
       if (restoreHost) {
-        // deepwidgets-trim: supervisor.replacement_restart; added line. The supervisor owns the replacement Host only
-        // after it is ready, so a replacement that can not boot shows the fatal dialog once, with no restart behind it.
-        supervisor.disarm()
         // Only confirmed process exit permits replacement before another installation confirmation.
         const hostReady = backend.start(prepareHostEnvironment)
         startup = hostReady
@@ -812,6 +809,9 @@ async function main(): Promise<void> {
         await disposeFileDrag().catch((error: unknown) => { console.error(error) })
         requireCleanStop = true
         updateStopFailure = undefined
+        // deepwidgets-trim: supervisor.replacement_restart; added line. Electron main stops the Host on purpose. No restart
+        // runs while the installer owns the quit, and a replacement Host after a failed install is owned only after it is ready.
+        supervisor.disarm()
         await Promise.all([backend.stop(), stopOperationReports()])
         updateStoppedHost = true
         // The backend's async cleanup callback can assign this after the reset above.

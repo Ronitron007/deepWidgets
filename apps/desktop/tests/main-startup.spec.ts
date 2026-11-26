@@ -2328,6 +2328,49 @@ describe('desktop main startup', () => {
     expect(harness.hosts).toHaveLength(2)
   })
 
+  // deepwidgets-trim: supervisor.replacement_restart; added case (review finding fix.update_stop_window). A Host that crashes
+  // while the update preparation closes the platform view gets no restart while the installer owns the quit.
+  it('does not restart a Host that crashes while the update stops it', async () => {
+    const host = await readyForUpdate()
+    harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 })
+    const cleanup = harness.deferPlatformClose()
+    const preparing = harness.prepareUpdate()
+    await vi.waitFor(() => { expect(harness.platformCloseAndWait).toHaveBeenCalledOnce() })
+    host.onFailure!(new Error('backend exited'))
+    cleanup.resolve()
+    await host.stopping.promise
+    host.exited.resolve()
+    await expect(preparing).resolves.toBe(true)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(harness.hosts).toHaveLength(1)
+  })
+
+  // deepwidgets-trim: supervisor.replacement_restart; added case (review finding fix.disarm_ready_host). After a failed
+  // install, the supervisor owns the replacement Host again once it is ready, and restarts it after a crash.
+  it('restarts a crashed replacement Host that was ready', async () => {
+    const host = await readyForUpdate()
+    harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 })
+    const preparing = harness.prepareUpdate()
+    await host.stopping.promise
+    host.exited.resolve()
+    await expect(preparing).resolves.toBe(true)
+    harness.dialog.showMessageBox.mockResolvedValue({ response: 1 })
+    const restarted = harness.nextHostStart()
+    harness.publishUpdate({ phase: 'error', version: '1.0.1-nightly.1', failedOperation: 'install', message: 'Installer failed' })
+    await restarted
+    const replacement = harness.hosts[1]!
+    const navigated = harness.nextNavigation()
+    replacement.ready.resolve()
+    await navigated
+    const again = harness.nextHostStart()
+    replacement.onFailure!(new Error('backend exited'))
+    await replacement.stopping.promise
+    replacement.exited.resolve()
+    await vi.advanceTimersByTimeAsync(500)
+    await again
+    expect(harness.hosts).toHaveLength(3)
+  })
+
   it('opens fatal recovery when the replacement page cannot reload', async () => {
     const host = await readyForUpdate()
     harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 })
