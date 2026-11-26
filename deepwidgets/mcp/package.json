@@ -45,6 +45,7 @@
     "@deepseek-ai/dsh-app-boot": "workspace:*",
     "@deepseek-ai/dsh-host-webserver": "workspace:*",
     "@deepseek-ai/dsh-plugin-manager": "workspace:*",
+    "@deepwidgets/kit": "workspace:*",
     "@deepwidgets/widgets": "workspace:*",
     "@modelcontextprotocol/client": "2.2.0"
   },
