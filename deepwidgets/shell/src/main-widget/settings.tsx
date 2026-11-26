@@ -1,17 +1,31 @@
 /**
- * The Settings tab of the main widget (`main_widget.settings`). Each section is one view: the MCP modes, the approved
- * agents, the MCP port, and launch at login. The data comes from the query `settings` of main. A switch calls one
- * action of main (`setMode`, `setLoginItem`), shows the answer at once, and then runs `refresh`, so the query reads the
- * files and Electron main again. The page talks only to the host (`widget.page_channel`).
+ * The Settings tab of the main widget (`main_widget.settings`). Each section is one view: the MCP modes, the widget kit,
+ * the approved agents, the MCP port, and launch at login. The data comes from the query `settings` of main. A switch
+ * calls one action of main (`setMode`, `setLoginItem`), shows the answer at once, and then runs `refresh`, so the query
+ * reads the files and Electron main again. The controls of the widget kit (`kit.pane.view`) call `kitAdd`, `kitRemove`,
+ * and `setRefuseBuilds` the same way. The page talks only to the host (`widget.page_channel`).
  * @module @deepwidgets/shell/main-widget/settings
  */
-import { useEffect, useState, type ReactNode } from 'react'
-import { Check, Copy } from 'lucide-react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { Check, Copy, Lock, Plus, Trash2, X } from 'lucide-react'
 import { z } from 'zod'
 import { Button } from '../ui/button.tsx'
+import { Input } from '../ui/input.tsx'
 import { Switch } from '../ui/switch.tsx'
 import { useCall } from './call.tsx'
-import { LoginItemAnswerSchema, ModesAnswerSchema, ModesSchema, PortAnswerSchema, type LoginStatus } from './schema.ts'
+import {
+  KitAnswerSchema,
+  LoginItemAnswerSchema,
+  ModesAnswerSchema,
+  ModesSchema,
+  PortAnswerSchema,
+  RefuseBuildsSchema,
+  type Kit,
+  type KitChange,
+  type KitLast,
+  type KitStatus,
+  type LoginStatus,
+} from './schema.ts'
 
 /** One section of the tab: a title, and its content. */
 function Section({ title, dw, children, extra }: { title: string, dw: string, children: ReactNode, extra?: Record<string, string> }) {
@@ -116,6 +130,230 @@ export function ModeSwitchesView({ modes, refresh }: { modes: unknown, refresh: 
       </ul>
       <span className="dwm-path">File <code title={shown.file} data-dw="settings-file">{shown.file}</code></span>
       <CallError message={control.error} />
+    </Section>
+  )
+}
+
+const KIT_STATUS_TEXT: Record<KitStatus, string> = { starting: 'Starting', ready: 'Ready', changing: 'Changing', unavailable: 'Unavailable' }
+
+/** The tone of each status: the colors of the status badge of a widget in main.css, keyed by its `data-kind`. */
+const KIT_STATUS_TONE: Record<KitStatus, string> = { starting: 'turned-off', ready: 'live', changing: 'safe-mode', unavailable: 'failed' }
+
+/** A change of the kit for people: `add date-fns@^4` or `remove date-fns`. */
+function kitChangeText(change: KitChange | KitLast): string {
+  return change.kind === 'add' ? `add ${change.spec}` : `remove ${change.name}`
+}
+
+/** A time span for people: `4 s`, `2 min 5 s`. */
+function spanText(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  return seconds < 60 ? `${String(seconds)} s` : `${String(Math.floor(seconds / 60))} min ${String(seconds % 60)} s`
+}
+
+/** A heading inside a section. */
+function SubTitle({ children }: { children: ReactNode }) {
+  return <span className="font-medium text-foreground">{children}</span>
+}
+
+/** The status line of the kit: the badge, and the change that runs, the start, or the cause of `unavailable`. */
+function KitStatusLine({ kit, now }: { kit: Kit, now: number }) {
+  const { status, change } = kit
+  let detail: ReactNode = null
+  if (status === 'changing' && change !== undefined) {
+    detail = <span data-dw="kit-change"><code className="font-mono">{kitChangeText(change)}</code> · {spanText(now - change.startedAt)}</span>
+  } else if (status === 'starting') {
+    detail = 'The kit starts. Its controls wait for the start.'
+  } else if (status === 'ready') {
+    detail = 'Add and Remove change the kit with pnpm and the network.'
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="dwm-setting-row">
+        <span className="flex min-w-0 flex-col">
+          <SubTitle>Status</SubTitle>
+          {detail === null ? null : <span className="text-[11px] text-muted-foreground">{detail}</span>}
+        </span>
+        <span className="dwm-status" data-kind={KIT_STATUS_TONE[status]} data-dw="kit-status" data-status={status}>
+          <span className="dwm-status-dot" aria-hidden="true" />
+          {KIT_STATUS_TEXT[status]}
+        </span>
+      </div>
+      {status === 'unavailable' ? (
+        <div className="dwm-callout" data-tone="error" role="alert" data-dw="kit-unavailable">
+          <strong>The kit is unavailable.</strong> {kit.reason ?? 'The host log names the cause.'} To try the start again, quit deepWidgets and open it again. A widget with no page still installs.
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+/** The result of the last change: the change, the time, and the error code and message when it failed. */
+function KitLastLine({ last }: { last: KitLast }) {
+  const time = new Date(last.endedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5" data-dw="kit-last" data-kind={last.kind} data-ok={last.error === undefined ? 'true' : 'false'} data-code={last.error?.code ?? ''}>
+      <SubTitle>Last change</SubTitle>
+      <span className="text-muted-foreground">
+        <code className="font-mono text-foreground">{kitChangeText(last)}</code> at <span className="tabular-nums">{time}</span>
+        {last.error === undefined ? <> · made kit version <span className="tabular-nums">{last.version}</span></> : <> · failed with <code className="font-mono text-destructive">{last.error.code}</code></>}
+      </span>
+      {last.error === undefined ? null : <span className="line-clamp-4 break-words text-destructive" title={last.error.message} data-dw="kit-last-error">{last.error.message}</span>}
+    </div>
+  )
+}
+
+/** A text field and one button, sent with Enter or with the button. */
+function KitField({ value, setValue, placeholder, label, button, dw, disabled, onSubmit }: {
+  value: string
+  setValue: (value: string) => void
+  placeholder: string
+  label: string
+  button: string
+  dw: string
+  disabled: boolean
+  onSubmit: (value: string) => void
+}) {
+  function submit(event: FormEvent): void {
+    event.preventDefault()
+    const text = value.trim()
+    if (!disabled && text !== '') onSubmit(text)
+  }
+  // The Input of shadcn has h-9 and text-base, and clsx keeps both classes of a pair, so the sizes of the section need the
+  // important modifier of Tailwind.
+  return (
+    <form className="flex items-center gap-2" onSubmit={submit}>
+      <Input value={value} onChange={(event) => { setValue(event.target.value) }} placeholder={placeholder} aria-label={label}
+        spellCheck={false} autoComplete="off" autoCapitalize="off" className="h-7! px-2! font-mono text-[12px]!" data-dw={`${dw}-field`} />
+      <Button type="submit" size="xs" variant="outline" disabled={disabled || value.trim() === ''} data-dw={dw}><Plus />{button}</Button>
+    </form>
+  )
+}
+
+/**
+ * The widget kit (`kit.pane.view`): the status, the kit version, the core with a lock mark, the extras with Remove, the
+ * Add field, the last change, and the refused install scripts. Add, Remove, and the refuse list do nothing unless the
+ * status is `ready`. While a change runs, the section reads the query `settings` again each second, and it stops when the
+ * status leaves `changing` (`kit.pane.actions`).
+ */
+export function WidgetKitView({ kit, refresh }: { kit: unknown, refresh: () => void }) {
+  const change = useSwitchCall()
+  const refuse = useSwitchCall()
+  const [keptNames, keepNames] = useAnswerUntilRefresh<string[]>(kit)
+  const [spec, setSpec] = useState('')
+  const [refuseName, setRefuseName] = useState('')
+  const [now, setNow] = useState(() => Date.now())
+  const parsed = kit === null || kit === undefined ? undefined : KitAnswerSchema.safeParse(kit)
+  const status = parsed?.success === true && parsed.data.ok ? parsed.data.status : undefined
+  const changing = status === 'changing'
+  const latestRefresh = useRef(refresh)
+  useEffect(() => { latestRefresh.current = refresh })
+  useEffect(() => {
+    if (!changing) return
+    setNow(Date.now())
+    const timer = setInterval(() => {
+      setNow(Date.now())
+      latestRefresh.current()
+    }, 1000)
+    return () => { clearInterval(timer) }
+  }, [changing])
+  const extra = { 'data-done': String(change.done + refuse.done), 'data-busy': change.busy || refuse.busy ? 'true' : 'false', 'data-status': status ?? '' }
+  if (parsed === undefined) return <Section title="Widget kit" dw="settings-kit" extra={extra}><Loading /></Section>
+  if (!parsed.success) return <Section title="Widget kit" dw="settings-kit" extra={extra}><SectionProblem text={`The host gave the kit in a shape that the page can not read: ${z.prettifyError(parsed.error)}`} /></Section>
+  if (!parsed.data.ok) return <Section title="Widget kit" dw="settings-kit" extra={extra}><SectionProblem text={parsed.data.message} /></Section>
+  const data = parsed.data
+  const ready = data.status === 'ready'
+  const list = data.refuseBuilds
+  const names = keptNames ?? (list.ok ? list.names : [])
+  const listOff = !ready || refuse.busy || !list.ok
+
+  async function startChange(action: 'kitAdd' | 'kitRemove', args: Record<string, unknown>): Promise<boolean> {
+    const result = await change.run(action, args)
+    refresh()
+    return result !== undefined
+  }
+  async function setNames(next: string[]): Promise<boolean> {
+    const written = RefuseBuildsSchema.safeParse(await refuse.run('setRefuseBuilds', { names: next }))
+    if (written.success) keepNames(written.data.names)
+    refresh()
+    return written.success
+  }
+
+  return (
+    <Section title="Widget kit" dw="settings-kit" extra={extra}>
+      <p className="dwm-section-note">The packages that the page of a widget can import. A change of the kit makes a new kit version.</p>
+      <KitStatusLine kit={data} now={now} />
+      <div className="dwm-setting-row">
+        <SubTitle>Kit version</SubTitle>
+        <code className="font-mono text-[12px] tabular-nums" data-dw="kit-version">{data.version ?? 'none'}</code>
+      </div>
+      <div className="flex flex-col gap-1">
+        <SubTitle>Core</SubTitle>
+        <span className="text-[11px] text-muted-foreground">The core comes with the app. Only an app update changes it.</span>
+        <ul className="dwm-settings-list">
+          {data.core.map((item) => (
+            <li key={item.name} className="dwm-setting-row" data-dw="kit-core" data-name={item.name}>
+              <code className="min-w-0 truncate font-mono text-[12px]">{item.name}</code>
+              <span className="flex flex-none items-center gap-1.5 text-muted-foreground">
+                <span className="font-mono text-[11px] tabular-nums">{item.version}</span>
+                <span className="inline-flex" title="Core package: only an app update changes it" data-dw="kit-lock">
+                  <Lock className="size-3" aria-hidden="true" /><span className="sr-only">Locked</span>
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="flex flex-col gap-1">
+        <SubTitle>Extras</SubTitle>
+        {data.extras.length === 0
+          ? <span className="text-[11px] text-muted-foreground" data-dw="kit-no-extras">No extras yet.</span>
+          : (
+            <ul className="dwm-settings-list">
+              {data.extras.map((item) => (
+                <li key={item.name} className="dwm-setting-row" data-dw="kit-extra" data-name={item.name}>
+                  <span className="flex min-w-0 items-baseline gap-2">
+                    <code className="truncate font-mono text-[12px]">{item.name}</code>
+                    <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{item.version}</span>
+                  </span>
+                  <Button variant="ghost" size="xs" className="dwm-remove" disabled={!ready || change.busy} aria-label={`Remove ${item.name}`}
+                    onClick={() => { void startChange('kitRemove', { name: item.name }) }} data-dw="kit-remove" data-name={item.name}>
+                    <Trash2 />Remove
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        <KitField value={spec} setValue={setSpec} placeholder="date-fns@^4" label="Package to add, with an optional version or range" button="Add"
+          dw="kit-add" disabled={!ready || change.busy} onSubmit={(text) => { void startChange('kitAdd', { spec: text }).then((started) => { if (started) setSpec('') }) }} />
+        <CallError message={change.error} />
+      </div>
+      {data.last === undefined ? null : <KitLastLine last={data.last} />}
+      <div className="flex flex-col gap-1" data-dw="kit-refuse">
+        <SubTitle>Refused install scripts</SubTitle>
+        <span className="text-[11px] text-muted-foreground" data-dw="kit-refuse-note">
+          The kit refuses each package on this list, also when another package needs it. A name blocks the whole package, not only its install script. The next change of the kit reads the list.
+        </span>
+        {!list.ok
+          ? <div className="dwm-callout" data-tone="error" role="alert" data-dw="kit-refuse-error">{list.message}</div>
+          : names.length === 0
+            ? <span className="text-[11px] text-muted-foreground" data-dw="kit-refuse-empty">No refused packages.</span>
+            : (
+              <ul className="dwm-settings-list">
+                {names.map((name) => (
+                  <li key={name} className="dwm-setting-row" data-dw="kit-refuse-row" data-name={name}>
+                    <code className="min-w-0 truncate font-mono text-[12px]">{name}</code>
+                    <Button variant="ghost" size="xs" className="dwm-remove" disabled={listOff} aria-label={`Stop refusing ${name}`}
+                      onClick={() => { void setNames(names.filter((item) => item !== name)) }} data-dw="kit-refuse-remove" data-name={name}>
+                      <X />Remove
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+        <KitField value={refuseName} setValue={setRefuseName} placeholder="core-js" label="Package name to refuse" button="Refuse" dw="kit-refuse-add"
+          disabled={listOff} onSubmit={(text) => { void setNames(names.includes(text) ? names : [...names, text]).then((written) => { if (written) setRefuseName('') }) }} />
+        <CallError message={refuse.error} />
+      </div>
     </Section>
   )
 }

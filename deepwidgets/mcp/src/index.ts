@@ -19,7 +19,8 @@
  *
  * The main widget is for the operator only (`main_widget.widget`): the tools treat the slug `main` as a slug that
  * does not exist. The row also provides the service `widgetInstaller`, the remove path of `widget_remove` for the main
- * widget, and the service `mcpSettings`, the modes and the port for its Settings tab (`main_widget.settings`).
+ * widget, and the service `mcpSettings`, the modes, the port, and the refuse list of the kit for its Settings tab
+ * (`main_widget.settings`, `kit.pane`).
  * @module @deepwidgets/mcp
  */
 import { execFile } from 'node:child_process'
@@ -198,6 +199,32 @@ async function loadSettingsFile(file: string): Promise<SettingsFile> {
   const checked = settingsSchema.safeParse(parsed)
   if (!checked.success) return { error: `the settings file does not match { "modes": { "create": true, "library": true } }: ${z.prettifyError(checked.error)}` }
   return { raw: parsed as Record<string, unknown>, settings: checked.data }
+}
+
+/**
+ * The key `kit` of the settings file (`kit.settings`), with the parse of `settingsSchema` in `@deepwidgets/kit`, which
+ * reads `kit.refuseBuilds` at each change of the kit. Other keys belong to other readers, so the schema is not strict.
+ */
+const kitSettingsSchema = z.object({ kit: z.object({ refuseBuilds: z.array(z.string()).optional() }).optional() })
+
+/**
+ * A package name that the refuse list takes (`kit.pane.actions`): the rule of `NAME` in `@deepwidgets/kit`, which
+ * `remove` of the kit uses. A scope is optional. The name has lowercase letters, digits, `.`, `_`, `~`, and `-`, with a
+ * letter or a digit first. npm allows at most 214 characters.
+ */
+const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/
+const PACKAGE_NAME_MAX = 214
+
+/**
+ * The settings file with its refuse list: the parsed JSON with each key that it has, and the names of
+ * `kit.refuseBuilds`. The reason when the file does not parse, also when only its key `kit` does not match.
+ */
+async function loadRefuseBuilds(file: string): Promise<{ raw: Record<string, unknown>, names: string[] } | { error: string }> {
+  const loaded = await loadSettingsFile(file)
+  if ('error' in loaded) return loaded
+  const checked = kitSettingsSchema.safeParse(loaded.raw)
+  if (!checked.success) return { error: `the settings file does not match { "kit": { "refuseBuilds": ["<package name>"] } }: ${z.prettifyError(checked.error)}` }
+  return { raw: loaded.raw, names: checked.data.kit?.refuseBuilds ?? [] }
 }
 
 /**
@@ -626,11 +653,29 @@ export type SetModeRefusal = 'unknown-mode' | 'settings-unreadable' | 'write-fai
 /** The answer of {@link McpSettingsService.setMode}. A refusal leaves the settings file as it was. */
 export type SetModeResult = { ok: true, settings: ModeSettings } | { ok: false, code: SetModeRefusal, message: string }
 
+/** The refused install scripts of the kit section (`kit.settings`): the names of `kit.refuseBuilds`, and the settings file. */
+export interface RefuseBuildsSetting {
+  file: string
+  names: string[]
+}
+
+/** The answer of {@link McpSettingsService.refuseBuilds}: the list, or `settings-unreadable` for a file that does not parse. */
+export type RefuseBuildsResult = { ok: true, setting: RefuseBuildsSetting } | { ok: false, code: 'settings-unreadable', message: string }
+
+/** The code of a change of the refuse list that did not write the settings file. */
+export type SetRefuseBuildsRefusal = 'bad-name' | 'settings-unreadable' | 'write-failed'
+
+/** The answer of {@link McpSettingsService.setRefuseBuilds}. A refusal leaves the settings file as it was. */
+export type SetRefuseBuildsResult = { ok: true, setting: RefuseBuildsSetting } | { ok: false, code: SetRefuseBuildsRefusal, message: string }
+
 /**
  * The service `mcpSettings` (`main_widget.settings`): the settings of the MCP server for the Settings tab of the main
  * widget. It reads the settings file with the parse of the tools, so the tab shows what the next tool call uses. A switch
  * writes the file in one rename and keeps each other key. It never writes a file that does not parse: the operator fixes
  * that file by hand. Only the operator calls it, through the main widget, which the MCP tools do not show.
+ *
+ * It is the only writer of the settings file (`kit.pane.service`): it also writes `kit.refuseBuilds` for the kit
+ * section. Each write waits for the one before it, so a mode switch and a change of the refuse list keep each other.
  */
 export class McpSettingsService extends Service {
   // A private field (#) does not work: the caller context reads the service through a proxy.
@@ -671,6 +716,50 @@ export class McpSettingsService extends Service {
       }
       return { ok: true, settings: await this.modes() }
     }
+    return this.queued(run)
+  }
+
+  /**
+   * kit.settings: the names of `kit.refuseBuilds`, as the next change of the kit reads them. A missing file or key is an
+   * empty list.
+   * @returns the list, or `settings-unreadable` when the file exists and does not parse, also when only its key `kit`
+   *   does not match. The list then can not change until the operator fixes or removes the file.
+   */
+  async refuseBuilds(): Promise<RefuseBuildsResult> {
+    const loaded = await loadRefuseBuilds(this.settingsFile)
+    if ('error' in loaded) return { ok: false, code: 'settings-unreadable', message: `${loaded.error}. The refuse list can not change until you fix or remove ${this.settingsFile}.` }
+    return { ok: true, setting: { file: this.settingsFile, names: loaded.names } }
+  }
+
+  /**
+   * kit.pane.actions: set `kit.refuseBuilds` to `names`, in the order given, with each name once. The next change of the
+   * kit reads the list; a change that runs now keeps the list that it read.
+   * @returns the list after the write, or a refusal: `bad-name` for a name that is not an npm package name
+   *   (`PACKAGE_NAME`), `settings-unreadable` for a file that does not parse, or `write-failed`. A refusal writes nothing.
+   */
+  setRefuseBuilds(names: readonly string[]): Promise<SetRefuseBuildsResult> {
+    const run = async (): Promise<SetRefuseBuildsResult> => {
+      const bad = names.filter((name) => name.length > PACKAGE_NAME_MAX || !PACKAGE_NAME.test(name))
+      if (bad.length > 0) {
+        return { ok: false, code: 'bad-name', message: `the refuse list takes only npm package names, and ${bad.map((name) => JSON.stringify(name)).join(', ')} ${bad.length === 1 ? 'is not one' : 'are not'}. A name has lowercase letters, digits, ".", "_", "~", and "-", with a letter or a digit first and an optional scope, such as @scope/name. The list did not change.` }
+      }
+      const loaded = await loadRefuseBuilds(this.settingsFile)
+      if ('error' in loaded) return { ok: false, code: 'settings-unreadable', message: `${loaded.error}. The refuse list did not change. Fix or remove ${this.settingsFile}.` }
+      const unique = [...new Set(names)]
+      const kit = (loaded.raw.kit ?? {}) as Record<string, unknown>
+      const next = { ...loaded.raw, kit: { ...kit, refuseBuilds: unique } }
+      try {
+        await writeFileAtomic(this.settingsFile, `${JSON.stringify(next, null, 2)}\n`)
+      } catch (error) {
+        return { ok: false, code: 'write-failed', message: `the settings file ${this.settingsFile} was not written, so it is as it was: ${error instanceof Error ? error.message : String(error)}` }
+      }
+      return { ok: true, setting: { file: this.settingsFile, names: unique } }
+    }
+    return this.queued(run)
+  }
+
+  /** Run one write of the settings file after the write before it, so that each write reads the file that the last one wrote. */
+  private queued<T>(run: () => Promise<T>): Promise<T> {
     const result = this.writes.then(run)
     this.writes = result.catch(() => undefined)
     return result

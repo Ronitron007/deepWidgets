@@ -2,8 +2,8 @@
  * The component set `deepwidgets-main@1` (`main_widget.catalog`): the parts of the page of the main widget. The root
  * `Panel` holds the tabs Widgets and Settings. `WidgetTable` is the Widgets tab (`main_widget.widgets`). The status
  * badge, the state viewer, and the actions list are parts of each row, and a program can also use each one alone.
- * `ModeSwitches`, `ApprovedAgents`, `McpPort`, and `LaunchAtLogin` are the sections of the Settings tab
- * (`main_widget.settings`).
+ * `ModeSwitches`, `WidgetKit`, `ApprovedAgents`, `McpPort`, and `LaunchAtLogin` are the sections of the Settings tab
+ * (`main_widget.settings`, `kit.pane.view`).
  * @module @deepwidgets/shell/main-widget/library
  */
 import { useEffect, useState, type ReactNode } from 'react'
@@ -13,7 +13,7 @@ import { action, createLibrary, defineComponent, useRendererQuery, useTriggerAct
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs.tsx'
 import { ActionListView, StateView, StatusPill } from './parts.tsx'
 import { ActionSchema, StateSchema, StatusSchema, WidgetSchema, type Widget } from './schema.ts'
-import { ApprovedAgentsView, LaunchAtLoginView, McpPortView, ModeSwitchesView } from './settings.tsx'
+import { ApprovedAgentsView, LaunchAtLoginView, McpPortView, ModeSwitchesView, WidgetKitView } from './settings.tsx'
 import { WidgetRow } from './widget-row.tsx'
 
 // action() gives a wider type than useTriggerAction takes under exactOptionalPropertyTypes; the values are the same.
@@ -145,6 +145,17 @@ const ModeSwitches = defineComponent({
   component: ({ props }) => <ModeSwitchesPart modes={props.modes} refresh={props.refresh as TriggerPlan | undefined} />,
 })
 
+function WidgetKitPart({ kit, refresh }: { kit: unknown, refresh: TriggerPlan | undefined }) {
+  return <WidgetKitView kit={kit} refresh={useRefresh(refresh)} />
+}
+
+const WidgetKit = defineComponent({
+  name: 'WidgetKit',
+  description: 'The widget kit of the Settings tab: the status, the kit version, the core, the extras with Add and Remove, the last change, and the refused install scripts. kit is null while the query loads. refresh runs after each control, and each second while a change of the kit runs.',
+  props: z.object({ kit: z.unknown(), refresh: action().optional() }),
+  component: ({ props }) => <WidgetKitPart kit={props.kit} refresh={props.refresh as TriggerPlan | undefined} />,
+})
+
 const ApprovedAgents = defineComponent({
   name: 'ApprovedAgents',
   description: 'The approved agents of the Settings tab. It says that the consent server is not built yet.',
@@ -170,7 +181,7 @@ const LaunchAtLogin = defineComponent({
   component: ({ props }) => <LaunchAtLoginPart loginItem={props.loginItem} refresh={props.refresh as TriggerPlan | undefined} />,
 })
 
-const tabChildren = [WidgetTable.ref, Note.ref, StatusBadge.ref, StateViewer.ref, ActionList.ref, ModeSwitches.ref, ApprovedAgents.ref, McpPort.ref, LaunchAtLogin.ref]
+const tabChildren = [WidgetTable.ref, Note.ref, StatusBadge.ref, StateViewer.ref, ActionList.ref, ModeSwitches.ref, WidgetKit.ref, ApprovedAgents.ref, McpPort.ref, LaunchAtLogin.ref]
 
 const Tab = defineComponent({
   name: 'Tab',
@@ -227,5 +238,5 @@ const Panel = defineComponent({
 /** The library of `deepwidgets-main@1`. The root is `Panel`. */
 export const mainLibrary = createLibrary({
   root: 'Panel',
-  components: [Panel, Tab, WidgetTable, Note, StatusBadge, StateViewer, ActionList, ModeSwitches, ApprovedAgents, McpPort, LaunchAtLogin],
+  components: [Panel, Tab, WidgetTable, Note, StatusBadge, StateViewer, ActionList, ModeSwitches, WidgetKit, ApprovedAgents, McpPort, LaunchAtLogin],
 })

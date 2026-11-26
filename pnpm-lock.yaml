@@ -1513,6 +1513,9 @@ importers:
       '@deepseek-ai/dsh-plugin-manager':
         specifier: workspace:*
         version: link:../../packages/boot/plugin-manager
+      '@deepwidgets/kit':
+        specifier: workspace:*
+        version: link:../kit
       '@deepwidgets/mcp':
         specifier: workspace:*
         version: link:../mcp

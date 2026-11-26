@@ -21,13 +21,20 @@
  * host (the message `deepwidgets-login-item`), because the page talks only to the host. Electron main sets the login
  * item and reads its status back; a dev run sets nothing.
  *
+ * The kit section of the Settings tab (`kit.pane`) reads `snapshot()` of the service `kit` of `@deepwidgets/kit`, which
+ * never waits for the kit start, and the refuse list of `mcpSettings`. The mutations `kitAdd` and `kitRemove` start one
+ * change of the kit and answer at once, because pnpm can run longer than the limit of an action: the kit keeps the result
+ * in `last`, and the page reads it there. The mutation `setRefuseBuilds` writes `kit.refuseBuilds` through `mcpSettings`,
+ * the only writer of the settings file.
+ *
  * An action that refuses gives a {@link MainRefusal} as its result, with a code, so the page routes by the code. Only a
  * defect throws: the call then gives `handler-error`.
  * @module @deepwidgets/widget-main
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { ChangeResult, PluginInfo } from '@deepseek-ai/dsh-plugin-manager'
-import type { CreationErrorCode, ModeSettings, PortSetting, SetModeRefusal } from '@deepwidgets/mcp'
+import type { KitChange, KitChangeTarget, KitErrorCode, KitState } from '@deepwidgets/kit'
+import type { CreationErrorCode, ModeSettings, PortSetting, RefuseBuildsSetting, SetModeRefusal, SetRefuseBuildsRefusal } from '@deepwidgets/mcp'
 import type { WidgetActionDescription, WidgetDescription } from '@deepwidgets/widgets'
 import { z } from 'zod'
 
@@ -48,14 +55,16 @@ export const CATALOG = 'deepwidgets-main@1'
  * of the shell entry `main.html`. The query `widgets` feeds the Widgets tab, and the query `settings` feeds the
  * Settings tab. Their defaults are null, so the page shows a loading state, not an empty list. The row controls of
  * `WidgetTable` call `show`, `hide`, `turnOff`, `turnOn`, `remove`, and `program` with the slug of the row, then run `refresh`. The
- * switches of `ModeSwitches` and `LaunchAtLogin` call `setMode` and `setLoginItem`, then run `refresh`. The runtime
- * also sends a `data` frame to the page of main on each change of another widget, and the page then runs each query.
+ * switches of `ModeSwitches` and `LaunchAtLogin` call `setMode` and `setLoginItem`, then run `refresh`. The controls of
+ * `WidgetKit` call `kitAdd`, `kitRemove`, and `setRefuseBuilds`, then run `refresh`, and `WidgetKit` runs `refresh` each
+ * second while a change of the kit runs (`kit.pane.actions`). The runtime also sends a `data` frame to the page of main
+ * on each change of another widget, and the page then runs each query.
  */
 export const PROGRAM = `root = Panel("deepWidgets", [widgetsTab, settingsTab])
 widgetsTab = Tab("Widgets", [WidgetTable(w.widgets, Action([@Run(w)]))])
-settingsTab = Tab("Settings", [ModeSwitches(s.modes, Action([@Run(s)])), ApprovedAgents(), McpPort(s.port), LaunchAtLogin(s.loginItem, Action([@Run(s)]))])
+settingsTab = Tab("Settings", [ModeSwitches(s.modes, Action([@Run(s)])), WidgetKit(s.kit, Action([@Run(s)])), ApprovedAgents(), McpPort(s.port), LaunchAtLogin(s.loginItem, Action([@Run(s)]))])
 w = Query("widgets", {}, {widgets: null})
-s = Query("settings", {}, {modes: null, port: null, loginItem: null})
+s = Query("settings", {}, {modes: null, port: null, loginItem: null, kit: null})
 `
 
 /** The time limit of an action that changes a plugin row. A remove runs pnpm in the profile. */
@@ -120,6 +129,9 @@ export interface MainWidget {
 const slugInput = z.object({ slug: z.string() })
 const modeInput = z.object({ mode: z.string(), on: z.boolean() })
 const loginItemInput = z.object({ open: z.boolean() })
+const kitAddInput = z.object({ spec: z.string() })
+const kitRemoveInput = z.object({ name: z.string() })
+const refuseBuildsInput = z.object({ names: z.array(z.string()) })
 
 /** The status of the login item that macOS gives (`main_widget.settings`). Same values as `apps/desktop/src/deepwidgets-login-item.ts`. */
 export type LoginItemStatus = 'enabled' | 'requires-approval' | 'not-registered' | 'not-found'
@@ -197,16 +209,28 @@ function askLoginItem(next: { id: number }, open: boolean | null): Promise<Login
   })
 }
 
+/**
+ * The part `kit` of the query `settings` (`kit.pane.actions`): the snapshot of the kit, and the refuse list as an answer
+ * of its own. The refuse list refuses with no `mcpSettings` or with a settings file that does not parse, and the rest
+ * of the part still shows.
+ */
+export type MainKit = KitState & { refuseBuilds: MainAnswer<RefuseBuildsSetting> }
+
 /** The answer of the query `settings`: one part for each section of the Settings tab that the host fills. */
 export interface MainSettings {
   modes: MainAnswer<ModeSettings>
+  /** A refusal with the code `unavailable` when the host has no service `kit`: the section shows only its message. */
+  kit: MainAnswer<MainKit>
   port: MainAnswer<PortSetting>
   loginItem: MainAnswer<LoginItemSetting>
 }
 
-/** The code of a refusal of an action of `main`. The codes of the installer come from the remove path of `widget_remove`. */
+/**
+ * The code of a refusal of an action of `main`. The codes of the installer come from the remove path of `widget_remove`.
+ * `kit-busy` and the codes of the kit come from `kitAdd` and `kitRemove`.
+ */
 export type MainRefusalCode = 'unknown-widget' | 'built-in' | 'no-row' | 'no-window' | 'unavailable' | 'change-failed' | CreationErrorCode
-  | SetModeRefusal | LoginItemRefusal
+  | SetModeRefusal | LoginItemRefusal | KitErrorCode | 'kit-busy' | SetRefuseBuildsRefusal
 
 /** A refusal of an action of `main`: the result of the action, so that the page routes by `code`, not by the message. */
 export interface MainRefusal {
@@ -256,6 +280,19 @@ function creationError(error: unknown): { code: CreationErrorCode, message: stri
     nextStep: typeof nextStep === 'string' ? nextStep : undefined,
   }
 }
+
+const KIT_ERROR_CODES: ReadonlySet<string> = new Set<KitErrorCode>(['in-core', 'not-found', 'install-failed', 'kit-unavailable'])
+
+/** The code and the message of a `KitError` of `@deepwidgets/kit`, read by shape: this package imports only its types. */
+function kitError(error: unknown): { code: KitErrorCode, message: string } | undefined {
+  if (!(error instanceof Error) || error.name !== 'KitError') return undefined
+  const { code } = error as Error & { code?: unknown }
+  if (typeof code !== 'string' || !KIT_ERROR_CODES.has(code)) return undefined
+  return { code: code as KitErrorCode, message: error.message }
+}
+
+/** A change of the kit for people: `add date-fns@^4` or `remove date-fns`. */
+const changeText = (target: KitChangeTarget): string => target.kind === 'add' ? `add ${target.spec}` : `remove ${target.name}`
 
 /** The slug that the row id of the entry `entryId` names, or undefined for a row that is not widget code. */
 function slugOfEntry(entryId: string): string | undefined {
@@ -453,12 +490,74 @@ export function apply(ctx: Context): void {
   /** Each section of the Settings tab that the host fills. A section that fails gives its refusal; the others still show. */
   async function settingsAnswer(): Promise<MainSettings> {
     const mcp = ctx.get('mcpSettings')
-    const [modes, port, loginItem] = await Promise.all([
+    const [modes, kit, port, loginItem] = await Promise.all([
       mcp === undefined ? noMcp() : host(() => mcp.modes()).then((value): MainAnswer<ModeSettings> => ({ ok: true, ...value })),
+      kitAnswer(),
       mcp === undefined ? noMcp() : host(() => mcp.port()).then((value): MainAnswer<PortSetting> => ({ ok: true, ...value })),
       askLoginItem(loginCalls, null).then(loginItemResult),
     ])
-    return { modes, port, loginItem }
+    return { modes, kit, port, loginItem }
+  }
+
+  /** The kit section for a host with no service `kit` (`kit.pane.actions`), as {@link noMcp} for the MCP sections. */
+  const noKit = (): MainRefusal => ({ ok: false, code: 'unavailable', message: 'this host has no widget kit, so it has no kit section' })
+
+  /**
+   * kit.pane.actions: the part `kit`. It reads `snapshot()`, never `read()`: the kit start can wait up to 21 minutes for
+   * the lock of another process, and a wait here would time out the whole query, with each other section.
+   */
+  async function kitAnswer(): Promise<MainAnswer<MainKit>> {
+    const kit = ctx.get('kit')
+    if (kit === undefined) return noKit()
+    const mcp = ctx.get('mcpSettings')
+    const [state, refuseBuilds] = await Promise.all([
+      host(() => kit.snapshot()).then((value) => ({ ok: true as const, value }), (error: unknown) => ({ ok: false as const, error })),
+      mcp === undefined ? noMcp() : host(() => mcp.refuseBuilds()).then((result): MainAnswer<RefuseBuildsSetting> => result.ok ? { ok: true, ...result.setting } : result),
+    ])
+    // A kit folder that can not be read refuses this section only.
+    if (!state.ok) return { ok: false, code: 'kit-unavailable', message: `the widget kit could not be read: ${state.error instanceof Error ? state.error.message : String(state.error)}` }
+    return { ok: true, ...state.value, refuseBuilds }
+  }
+
+  /**
+   * kit.pane.actions: start one change of the kit, and answer at once with the change. The action does not wait for
+   * pnpm: the kit keeps the result in `last`, and the page reads it with the query `settings`. While the kit starts or
+   * is unavailable, it refuses with `kit-unavailable`, and while a change runs, with `kit-busy`. A change that the kit
+   * refuses before it starts, such as a core package, refuses with the code of the kit.
+   */
+  async function startKitChange(target: KitChangeTarget): Promise<{ started: KitChange }> {
+    const kit = ctx.get('kit')
+    if (kit === undefined) return refuse('kit-unavailable', noKit().message)
+    const before = await host(() => kit.snapshot())
+    if (before.status === 'starting') refuse('kit-unavailable', 'the widget kit starts now; try again when its status is ready')
+    if (before.status === 'unavailable') refuse('kit-unavailable', `the widget kit is unavailable: ${before.reason ?? 'the host log names the reason'}`)
+    if (before.change !== undefined) refuse('kit-busy', `the widget kit runs the change ${changeText(before.change)} now; try again when it ends`)
+    const startedAt = Date.now()
+    // The handlers go on the promise in the same turn: a refusal of the kit has already rejected it, and a rejection
+    // with no handler ends the host. The end of a change that started goes to `last`, where the page reads it.
+    const outcome = host(() => (target.kind === 'add' ? kit.add(target.spec) : kit.remove(target.name)).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    ))
+    // The kit takes a change before add or remove returns, and keeps it in `change` until it ends.
+    const after = await host(() => kit.snapshot())
+    if (after.change !== undefined) return { started: after.change }
+    // The kit took no change, so it refused at once, or the change already ended: the promise has settled.
+    const ended = await outcome
+    if (ended.ok) return { started: { ...target, startedAt } }
+    const failed = kitError(ended.error)
+    if (failed !== undefined) return refuse(failed.code, failed.message)
+    // A failure that is not a KitError is a defect: the call gives handler-error.
+    throw ended.error instanceof Error ? ended.error : new Error(String(ended.error))
+  }
+
+  /** kit.pane.actions: write `kit.refuseBuilds` through `mcpSettings`, which keeps each other key of the settings file. */
+  async function setRefuseBuilds(names: string[]): Promise<RefuseBuildsSetting> {
+    const mcp = ctx.get('mcpSettings')
+    if (mcp === undefined) return refuse('unavailable', noMcp().message)
+    const result = await host(() => mcp.setRefuseBuilds(names))
+    if (!result.ok) return refuse(result.code, result.message)
+    return result.setting
   }
 
   /** Turn a gated mode on or off in the settings file. The next MCP tool call reads it. */
@@ -501,6 +600,9 @@ export function apply(ctx: Context): void {
         timeoutMs: SETTINGS_TIMEOUT_MS,
         handler: ({ open }) => answer(() => setLoginItem(open)),
       },
+      { name: 'kitAdd', kind: 'mutation', args: kitAddInput, handler: ({ spec }) => answer(() => startKitChange({ kind: 'add', spec })) },
+      { name: 'kitRemove', kind: 'mutation', args: kitRemoveInput, handler: ({ name }) => answer(() => startKitChange({ kind: 'remove', name })) },
+      { name: 'setRefuseBuilds', kind: 'mutation', args: refuseBuildsInput, handler: ({ names }) => answer(() => setRefuseBuilds(names)) },
       {
         name: 'program',
         kind: 'query',

@@ -19,6 +19,9 @@
       "path": "../widgets/tsconfig.host.json"
     },
     {
+      "path": "../kit/tsconfig.host.json"
+    },
+    {
       "path": "../mcp/tsconfig.host.json"
     }
   ]

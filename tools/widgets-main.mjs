@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Host check of the main widget (unit main.runtime, spec main_widget).
+ * Host check of the main widget (unit main.runtime, spec main_widget) and of its kit section (unit kit.pane, spec kit).
  * It boots the CLI host (web profile) on a free loopback port. An MCP SDK client does the token handshake with the
  * proof check of mcp.json, installs a test widget with widget_install, then checks:
  * - main_widget.widget: widget_list does not list main; widget_describe and widget_call on main give the error of a
@@ -29,13 +29,26 @@
  *   next widget_install starts it as shown. Sample stays hidden across the next host start; then Show shows it.
  * - main_widget.widgets in safe mode: a second host start with DEEPWIDGETS_SAFE_MODE=1. An agent widget keeps the status
  *   safe-mode, and the field turnedOff follows Turn off and Turn on.
+ * - kit.pane: widget_call of kitAdd, kitRemove, and setRefuseBuilds of main gives unknown-widget. The part kit of the
+ *   query settings shows ready, the kit version, the 8 core packages, no extra, and an empty refuse list. kitAdd of
+ *   date-fns@^4 answers started in at most 1 s. Then the status is changing, a second kitAdd and a kitRemove give
+ *   kit-busy, and later the status is ready, with date-fns at an exact version and a last change with no error. A core
+ *   package gives in-core at once, and a spec that is not a package name gives not-found at once. setRefuseBuilds of
+ *   core-js keeps the key modes, and then kitAdd of core-js ends with a last change of install-failed that names
+ *   core-js. kitRemove removes date-fns. A bad name gives bad-name. A settings file that does not parse makes only the
+ *   refuse list a refusal. With the row of the kit off, the part kit is the refusal unavailable, and the modes still
+ *   show. These steps need the npm registry.
+ * - kit.pane.service: a fourth host start, while another live process holds the kit lock. The query settings answers in
+ *   at most 2 s, with the kit status starting and the modes, and kitAdd and kitRemove give kit-unavailable at once. A
+ *   fifth host start with a link current that names no kit version: the status is unavailable, and kitAdd and kitRemove
+ *   give kit-unavailable at once.
  * The calls of main go through POST /api/widgets/main/call with the host cookie, as the page of main calls them.
  * Prints `widgets-main: pass` and exits 0 only when every check passes.
  * Needs `corepack pnpm run build:artifacts` first. A run starts a host: take the machine lock of the smoke checks.
  */
 import { spawn } from 'node:child_process'
 import { createHmac, randomBytes } from 'node:crypto'
-import { createWriteStream, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { createWriteStream, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
@@ -455,6 +468,227 @@ async function windowPart(call, dir) {
     JSON.stringify({ removed: operatorRemoved.body?.result, installed: reinstalled.body?.error ?? reinstalled.body?.application, fresh: fresh?.window, hello: freshHello?.shown }))
 }
 
+/** The core of the kit (kit.terms), in the order of read(). */
+const KIT_CORE = ['react', 'react-dom', '@types/react', '@types/react-dom', '@openuidev/react-lang', 'zod', '@deepwidgets/widget-kit', '@deepwidgets/shell']
+/** The time that one change of the kit may take in this check. A change runs pnpm online. */
+const KIT_CHANGE_MS = 300_000
+
+/** The part kit of the query settings of main, or `{ queryError }` when the query failed. */
+async function kitSettings() {
+  const answer = await route('main', 'settings').catch((error) => ({ status: 0, body: { error: String(error) } }))
+  return answer.body?.ok === true ? answer.body.result?.kit : { queryError: answer.body ?? answer.status }
+}
+
+/** Poll the part kit until `test` holds, for at most `ms`. Gives the last part and each status that a poll saw, in order. */
+async function waitKit(test, ms) {
+  const seen = []
+  const note = (kit) => { if (typeof kit?.status === 'string' && seen.at(-1) !== kit.status) seen.push(kit.status) }
+  let kit = await kitSettings()
+  note(kit)
+  for (const until = Date.now() + ms; !test(kit) && Date.now() < until;) {
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    kit = await kitSettings()
+    note(kit)
+  }
+  return { kit, seen }
+}
+
+/** One action of main through its call route, with the time of the answer in ms. */
+async function timedRoute(action, args) {
+  const started = performance.now()
+  const answer = await route('main', action, args)
+  return { ...answer, ms: Math.round(performance.now() - started) }
+}
+
+const kitReady = (kit) => kit?.ok === true && kit.status === 'ready'
+const extraNames = (kit) => (kit?.extras ?? []).map((extra) => extra.name)
+/** The code of a refusal of main, or undefined for an answer that is not a refusal. */
+const refusedWith = (answer) => answer.body?.ok === true && answer.body.result?.ok === false ? answer.body.result.code : undefined
+
+/**
+ * kit.pane.actions: the actions of the kit section, with the kit of this host and the npm registry. The part kit of the
+ * query settings, kitAdd and kitRemove that answer at once while pnpm runs, the refusals in-core and kit-busy, and
+ * setRefuseBuilds with the refuse list of the kit (kit.settings). The settings file has the key modes from settingsPart.
+ */
+async function kitPart(call) {
+  const settingsFile = join(home, 'deepwidgets', 'settings.json')
+  for (const [action, args] of [['kitAdd', { spec: 'ms@^2' }], ['kitRemove', { name: 'ms' }], ['setRefuseBuilds', { names: [] }]]) {
+    const hidden = await call('widget_call', { slug: 'main', action, args })
+    check(`widget_call of the action ${action} of main gives unknown-widget`, hidden.isError && hidden.body?.error?.code === 'unknown-widget', JSON.stringify(hidden.body))
+  }
+
+  // ---- the part kit: ready, the version, the core, no extra ----
+  const first = (await waitKit(kitReady, 120_000)).kit
+  check('the part kit of the query settings shows the status ready, the kit version, the 8 core packages with their versions, no extra, and an empty refuse list',
+    kitReady(first) && Number.isInteger(first.version) && first.version >= 1 && first.available === true && first.change === undefined && first.last === undefined
+      && JSON.stringify(first.core?.map((item) => item.name)) === JSON.stringify(KIT_CORE) && first.core.every((item) => /^\d+\.\d+\.\d+/.test(item.version))
+      && Array.isArray(first.extras) && first.extras.length === 0
+      && first.refuseBuilds?.ok === true && first.refuseBuilds.file === settingsFile && JSON.stringify(first.refuseBuilds.names) === '[]',
+    JSON.stringify(first))
+
+  // ---- kitAdd answers at once; the status goes from changing to ready ----
+  const added = await timedRoute('kitAdd', { spec: 'date-fns@^4' })
+  const during = await kitSettings()
+  const busyAdd = await route('main', 'kitAdd', { spec: 'ms@^2' })
+  const busyRemove = await route('main', 'kitRemove', { name: 'date-fns' })
+  check('kitAdd of date-fns@^4 answers started in at most 1 s', added.body?.ok === true && added.body.result?.ok === true && added.body.result.started?.kind === 'add'
+    && added.body.result.started.spec === 'date-fns@^4' && typeof added.body.result.started.startedAt === 'number' && added.ms <= 1000,
+  JSON.stringify({ ms: added.ms, body: added.body }))
+  check('right after the answer, the status is changing, with the change date-fns@^4',
+    during?.ok === true && during.status === 'changing' && during.change?.kind === 'add' && during.change.spec === 'date-fns@^4', JSON.stringify(during))
+  check('a second kitAdd and a kitRemove while a change runs answer kit-busy', refusedWith(busyAdd) === 'kit-busy' && refusedWith(busyRemove) === 'kit-busy',
+    JSON.stringify({ add: busyAdd.body, remove: busyRemove.body }))
+  const addedEnd = await waitKit(kitReady, KIT_CHANGE_MS)
+  const dateFns = addedEnd.kit?.extras?.find((extra) => extra.name === 'date-fns')
+  check('the status goes from changing to ready, with date-fns as an extra at an exact version and a last change with no error',
+    kitReady(addedEnd.kit) && addedEnd.seen.includes('changing') && /^4\.\d+\.\d+$/.test(dateFns?.version ?? '') && addedEnd.kit.version === first.version + 1
+      && addedEnd.kit.change === undefined && addedEnd.kit.last?.kind === 'add' && addedEnd.kit.last.spec === 'date-fns@^4' && addedEnd.kit.last.error === undefined
+      && addedEnd.kit.last.version === first.version + 1 && typeof addedEnd.kit.last.endedAt === 'number',
+    JSON.stringify({ seen: addedEnd.seen, kit: addedEnd.kit }))
+
+  // ---- refusals before a change starts ----
+  const inCore = await timedRoute('kitAdd', { spec: 'react' })
+  const removeCore = await timedRoute('kitRemove', { name: 'zod' })
+  const badSpec = await timedRoute('kitAdd', { spec: 'Not A Spec' })
+  const afterRefusals = await kitSettings()
+  check('kitAdd and kitRemove of a core package answer in-core at once, and the kit takes no change',
+    refusedWith(inCore) === 'in-core' && refusedWith(removeCore) === 'in-core' && inCore.ms <= 1000 && removeCore.ms <= 1000
+      && kitReady(afterRefusals) && afterRefusals.last?.spec === 'date-fns@^4' && afterRefusals.version === addedEnd.kit.version,
+    JSON.stringify({ inCore: inCore.body, removeCore: removeCore.body, ms: [inCore.ms, removeCore.ms], last: afterRefusals?.last }))
+  check('kitAdd of a spec that is not a package name answers not-found at once, and the kit takes no change',
+    refusedWith(badSpec) === 'not-found' && badSpec.ms <= 1000 && kitReady(afterRefusals), JSON.stringify({ ms: badSpec.ms, body: badSpec.body }))
+
+  // ---- setRefuseBuilds keeps the key modes; a refused package ends with install-failed ----
+  const beforeFile = JSON.parse(readFileSync(settingsFile, 'utf8'))
+  const refuse = await route('main', 'setRefuseBuilds', { names: ['core-js', 'core-js'] })
+  const writtenFile = JSON.parse(readFileSync(settingsFile, 'utf8'))
+  const listed = await kitSettings()
+  check('setRefuseBuilds of core-js writes kit.refuseBuilds with each name once, keeps the key modes, and the part kit shows the list',
+    refuse.body?.result?.ok === true && JSON.stringify(refuse.body.result.names) === '["core-js"]' && refuse.body.result.file === settingsFile
+      && beforeFile.modes !== undefined && JSON.stringify(writtenFile.modes) === JSON.stringify(beforeFile.modes) && JSON.stringify(writtenFile.kit?.refuseBuilds) === '["core-js"]'
+      && listed?.refuseBuilds?.ok === true && JSON.stringify(listed.refuseBuilds.names) === '["core-js"]',
+    JSON.stringify({ refuse: refuse.body, beforeFile, writtenFile, list: listed?.refuseBuilds }))
+  const coreJs = await timedRoute('kitAdd', { spec: 'core-js' })
+  const coreJsEnd = await waitKit((kit) => kitReady(kit) && kit.last?.spec === 'core-js', KIT_CHANGE_MS)
+  const coreJsLast = coreJsEnd.kit?.last
+  check('with core-js refused, kitAdd of core-js answers started, and the change ends with a last change of install-failed that names core-js, and the kit stays',
+    coreJs.body?.result?.ok === true && coreJs.ms <= 1000 && kitReady(coreJsEnd.kit) && coreJsLast?.kind === 'add' && coreJsLast.error?.code === 'install-failed'
+      && (/^core-js(?:@|$)/.test(coreJsLast.error.package ?? '') || coreJsLast.error.message.includes('core-js'))
+      && coreJsEnd.kit.version === addedEnd.kit.version && !extraNames(coreJsEnd.kit).includes('core-js'),
+    JSON.stringify({ ms: coreJs.ms, started: coreJs.body, seen: coreJsEnd.seen, last: coreJsLast, version: coreJsEnd.kit?.version }))
+
+  // ---- kitRemove removes the extra ----
+  const removed = await timedRoute('kitRemove', { name: 'date-fns' })
+  const removedEnd = await waitKit((kit) => kitReady(kit) && kit.last?.kind === 'remove', KIT_CHANGE_MS)
+  check('kitRemove of date-fns answers started at once, and the change removes the extra',
+    removed.body?.result?.ok === true && removed.body.result.started?.kind === 'remove' && removed.body.result.started.name === 'date-fns' && removed.ms <= 1000
+      && kitReady(removedEnd.kit) && !extraNames(removedEnd.kit).includes('date-fns') && removedEnd.kit.last?.name === 'date-fns' && removedEnd.kit.last.error === undefined
+      && removedEnd.kit.version === addedEnd.kit.version + 1,
+    JSON.stringify({ ms: removed.ms, removed: removed.body, seen: removedEnd.seen, kit: removedEnd.kit }))
+
+  // ---- bad-name, and a settings file that does not parse ----
+  const kept = readFileSync(settingsFile, 'utf8')
+  const bad = await route('main', 'setRefuseBuilds', { names: ['core-js', 'Bad Name!'] })
+  check('setRefuseBuilds of a name that npm does not allow gives bad-name, and the file stays',
+    refusedWith(bad) === 'bad-name' && bad.body.result.message.includes('Bad Name!') && readFileSync(settingsFile, 'utf8') === kept, JSON.stringify(bad.body))
+  const broken = '{ "kit": { "refuseBuilds": '
+  writeFileSync(settingsFile, broken)
+  const brokenKit = await kitSettings()
+  const brokenSet = await route('main', 'setRefuseBuilds', { names: [] })
+  check('with a settings file that does not parse, only the refuse list of the part kit is a refusal, and setRefuseBuilds refuses with settings-unreadable and keeps the file',
+    kitReady(brokenKit) && brokenKit.core?.length === 8 && brokenKit.refuseBuilds?.ok === false && brokenKit.refuseBuilds.code === 'settings-unreadable'
+      && refusedWith(brokenSet) === 'settings-unreadable' && readFileSync(settingsFile, 'utf8') === broken,
+    JSON.stringify({ list: brokenKit?.refuseBuilds, status: brokenKit?.status, set: brokenSet.body }))
+  writeFileSync(settingsFile, kept)
+  const cleared = await route('main', 'setRefuseBuilds', { names: [] })
+  check('setRefuseBuilds of an empty list clears the list', cleared.body?.result?.ok === true && JSON.stringify(JSON.parse(readFileSync(settingsFile, 'utf8')).kit?.refuseBuilds) === '[]',
+    JSON.stringify(cleared.body))
+
+  // ---- a host with no service kit: the part kit is a refusal, and the other sections still show ----
+  const toggle = (enabled) => inHost(`
+    const manager = loader.ctx.get('pluginManager')
+    const hmr = loader.ctx.get('hmr')
+    const rows = (await manager.listPlugins()).filter((row) => row.moduleName === '@deepwidgets/kit')
+    if (rows.length !== 1) throw new Error('plugin rows of the kit: ' + rows.length)
+    const run = async () => (await manager.setPluginEnabled(rows[0].entryId, arg)).application
+    return hmr === undefined ? await run() : await hmr.executing.exit(run)`, enabled)
+  const off = await toggle(false)
+  const noKit = await route('main', 'settings')
+  const noKitAdd = await route('main', 'kitAdd', { spec: 'ms@^2' })
+  const on = await toggle(true)
+  const back = (await waitKit(kitReady, 120_000)).kit
+  check('with the row of the kit off, the part kit is a refusal unavailable, the modes still show, and kitAdd gives kit-unavailable',
+    off === 'applied' && noKit.body?.ok === true && noKit.body.result?.kit?.ok === false && noKit.body.result.kit.code === 'unavailable' && noKit.body.result.modes?.ok === true
+      && refusedWith(noKitAdd) === 'kit-unavailable',
+    JSON.stringify({ off, kit: noKit.body?.result?.kit, modes: noKit.body?.result?.modes?.ok, add: noKitAdd.body }))
+  check('with the row of the kit on again, the kit is ready, and its new start has no last change',
+    on === 'applied' && kitReady(back) && back.last === undefined && back.version === removedEnd.kit.version, JSON.stringify({ on, kit: back }))
+}
+
+/**
+ * kit.pane.service: another live process holds the lock of the kit at host start, so the kit start waits for it. The
+ * query settings reads snapshot(), so it answers in at most 2 s, with the kit status starting and the modes. kitAdd
+ * and kitRemove give kit-unavailable at once. When the holder ends, the start takes the lock over and the kit is ready.
+ */
+async function kitLockPart(port) {
+  await stopHost()
+  const lockFile = join(home, 'deepwidgets', 'kit', 'current.lock')
+  const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120_000)'], { stdio: 'ignore' })
+  writeFileSync(lockFile, `${String(holder.pid)}\n`)
+  try {
+    await startHost(port)
+    let up = await route('main', 'widgets').catch(() => undefined)
+    for (let i = 0; i < 100 && up?.body?.ok !== true; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      up = await route('main', 'widgets').catch(() => undefined)
+    }
+    const read = await timedRoute('settings', {})
+    const settings = read.body?.result
+    check('while another process holds the kit lock at host start, the query settings answers in at most 2 s, with the kit status starting and the modes',
+      read.status === 200 && read.body?.ok === true && read.ms <= 2000 && settings?.kit?.ok === true && settings.kit.status === 'starting' && settings.modes?.ok === true
+        && holder.exitCode === null,
+      JSON.stringify({ ms: read.ms, status: read.status, kit: settings?.kit, modes: settings?.modes?.ok, error: read.body?.error }))
+    const add = await timedRoute('kitAdd', { spec: 'ms@^2' })
+    const remove = await timedRoute('kitRemove', { name: 'ms' })
+    check('while the kit starts, kitAdd and kitRemove answer kit-unavailable at once',
+      refusedWith(add) === 'kit-unavailable' && refusedWith(remove) === 'kit-unavailable' && add.ms <= 1000 && remove.ms <= 1000,
+      JSON.stringify({ add: add.body, remove: remove.body, ms: [add.ms, remove.ms] }))
+    holder.kill('SIGKILL')
+    const ready = await waitKit(kitReady, 60_000)
+    check('when the holder of the lock ends, the kit start ends, and the kit is ready', kitReady(ready.kit) && ready.kit.change === undefined, JSON.stringify(ready))
+  } finally {
+    holder.kill('SIGKILL')
+    rmSync(lockFile, { force: true })
+  }
+}
+
+/**
+ * kit.service.start: the link `current` of the kit names no kit version, so the start makes the kit unavailable. The
+ * status is unavailable with the reason, and kitAdd and kitRemove answer kit-unavailable at once. A kit with no extra
+ * installs offline also with no store, so this part breaks the link, not the store.
+ */
+async function kitUnavailablePart(port) {
+  await stopHost()
+  const link = join(home, 'deepwidgets', 'kit', 'current')
+  const target = readlinkSync(link)
+  unlinkSync(link)
+  symlinkSync('versions/none', link, 'dir')
+  try {
+    await startHost(port)
+    const { kit } = await waitKit((value) => value?.ok === true && value.status !== 'starting', 60_000)
+    const add = await timedRoute('kitAdd', { spec: 'ms@^2' })
+    const remove = await timedRoute('kitRemove', { name: 'ms' })
+    check('with a link current that names no kit version, the kit status is unavailable with the reason, and kitAdd and kitRemove answer kit-unavailable at once',
+      kit?.ok === true && kit.status === 'unavailable' && kit.available === false && (kit.reason ?? '').includes('not a kit version')
+        && refusedWith(add) === 'kit-unavailable' && refusedWith(remove) === 'kit-unavailable' && add.ms <= 1000 && remove.ms <= 1000,
+      JSON.stringify({ kit: { status: kit?.status, reason: kit?.reason }, add: add.body, remove: remove.body, ms: [add.ms, remove.ms] }))
+  } finally {
+    // rmSync follows a link to a folder, so the link goes with unlink.
+    if (lstatSync(link, { throwIfNoEntry: false }) !== undefined) unlinkSync(link)
+    symlinkSync(target, link, 'dir')
+  }
+}
+
 /** main_widget.window_state: after a host start, sample is still hidden. Show shows it, and the hello gives shown again. */
 async function windowKeptPart() {
   const kept = (await waitRows((rows) => rows.get('sample')?.status?.kind === 'live')).get('sample')
@@ -661,12 +895,15 @@ async function hostPart() {
     JSON.stringify({ restarted, raw, tool: changes.body?.changes?.map((change) => change.slug) }))
 
   await settingsPart(call, dir)
+  await kitPart(call)
 
   const log = readFileSync(logPath, 'utf8')
   check('the host log has no refusal of the install records', !log.includes('can not use the install records') && !log.includes('can not run host code'), '')
   await client.close().catch(() => undefined)
   await safeModePart(port)
   await silentParentPart(port)
+  await kitLockPart(port)
+  await kitUnavailablePart(port)
 }
 
 /**
