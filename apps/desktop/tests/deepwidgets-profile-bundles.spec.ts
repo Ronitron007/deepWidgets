@@ -6,6 +6,8 @@ import { PROFILE_TEMPLATES } from '@deepseek-ai/dsh-official-bundles'
 import { addTemplateBundles, TEMPLATE_BEFORE_RECORD, TEMPLATE_RECORD, withTemplateBundles } from '../src/deepwidgets-profile-bundles.ts'
 
 const TEMPLATE = PROFILE_TEMPLATES.web!.bundles
+/** The template bundles that a profile with no record never had, in template order. */
+const NEW_SINCE_BASELINE = TEMPLATE.filter(name => !TEMPLATE_BEFORE_RECORD.includes(name))
 const MAIN = '@deepwidgets/widget-main'
 const SAMPLE = '@deepwidgets/widget-sample'
 
@@ -25,9 +27,9 @@ function recordOf(dir: string): string[] {
 }
 
 describe('template bundles of an existing profile (main_widget.menu_bar)', () => {
-  it('adds @deepwidgets/widget-main to a profile made before main.runtime, in its template place', () => {
+  it('adds each template bundle that a profile made before main.runtime never had, in its template place', () => {
     const dir = profile([...TEMPLATE_BEFORE_RECORD, 'plugin'])
-    expect(addTemplateBundles(dir, TEMPLATE)).toEqual([MAIN])
+    expect(addTemplateBundles(dir, TEMPLATE)).toEqual(NEW_SINCE_BASELINE)
     expect(bundlesOf(dir)).toEqual([...TEMPLATE, 'plugin'])
     expect((JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { dependencies: unknown }).dependencies).toEqual({ plugin: '1.0.0' })
     expect(recordOf(dir)).toEqual(expect.arrayContaining([...TEMPLATE]))
@@ -44,7 +46,7 @@ describe('template bundles of an existing profile (main_widget.menu_bar)', () =>
 
   it('does not add back a bundle of the old template that a profile with no record does not list', () => {
     const dir = profile([...TEMPLATE_BEFORE_RECORD.filter(name => name !== SAMPLE)])
-    expect(addTemplateBundles(dir, TEMPLATE)).toEqual([MAIN])
+    expect(addTemplateBundles(dir, TEMPLATE)).toEqual(NEW_SINCE_BASELINE)
     expect(bundlesOf(dir)).not.toContain(SAMPLE)
   })
 
@@ -68,7 +70,7 @@ describe('template bundles of an existing profile (main_widget.menu_bar)', () =>
     onTestFinished(() => { warn.mockRestore() })
     const dir = profile([...TEMPLATE_BEFORE_RECORD])
     writeFileSync(join(dir, TEMPLATE_RECORD), '{broken')
-    expect(addTemplateBundles(dir, TEMPLATE)).toEqual([MAIN])
+    expect(addTemplateBundles(dir, TEMPLATE)).toEqual(NEW_SINCE_BASELINE)
     expect(warn).toHaveBeenCalledOnce()
     expect(recordOf(dir)).toEqual(expect.arrayContaining([...TEMPLATE]))
   })
