@@ -1,6 +1,6 @@
 # Window manager: the design talk `wm_design`
 
-This document records the design talk about the window manager. It is not the spec. The operator decided the calls `wm_design.owner`, `wm_design.operations`, `wm_design.controls`, and `wm_design.persistence`. Other points follow from these answers (`wm_design.derived`). The spec comes after the operator gives the whole direction.
+This document records the design talk about the window manager. It is not the spec. The operator decided the calls `wm_design.owner`, `wm_design.operations`, `wm_design.controls`, and `wm_design.persistence`. Other points follow from these answers (`wm_design.derived`). The spec `window_manager` uses these decisions. The spec comes after the operator gives the whole direction.
 
 The facts are true on `main` at commit `938c8629b3`, on 2026-11-25.
 
@@ -293,9 +293,9 @@ The operator did not answer these points one by one. Each one follows from an an
 | The window tools that change a window | A new gated mode `window`, with tool names `window_*`. The Settings tab gets one switch for it. | `modes.names`, `main_widget.settings` |
 | An agent and a choice of the operator | An agent can change only a field that the operator never set. For a field that the operator set, the tool refuses and tells the agent to ask the operator. | "my choice stays" (`wm_design.persistence`), the stage `agents` (`wm_design.task`) |
 
-## Other open calls `wm_design.open`
+## The line in `CLAUDE.md` `wm_design.claude_md`
 
-- **A line in `CLAUDE.md`:** the session of `main_widget` asked for one line in `head.status` about the shown state. The line goes in only after the operator says yes.
+The session of `main_widget` asked for one line in `head.status` about the shown state. On 2026-11-26 the operator said yes. The first code unit adds it. The spec is `docs/specs/window-manager.md` (`window_manager`).
 
 ## Corrections in this talk `wm_design.corrections`
 
