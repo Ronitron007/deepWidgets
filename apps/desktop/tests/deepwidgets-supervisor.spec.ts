@@ -72,6 +72,36 @@ describe('DesktopHostSupervisor blame (widget_phase2.isolation.blame)', () => {
   })
 })
 
+describe('DesktopHostSupervisor disarm (supervisor.replacement_restart)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('drops a waiting restart, and owns no failure until the next Host is ready', async () => {
+    const { supervisor, restarts, fail } = fixture()
+    supervisor.ready()
+    expect(supervisor.failed(exitOf(600), false)).toBe(true)
+    expect(supervisor.recovering).toBe(true)
+    // Electron main starts the replacement Host itself.
+    supervisor.disarm()
+    expect(supervisor.recovering).toBe(false)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(restarts).toEqual([])
+    // The replacement Host can not boot: the fatal dialog takes over at once.
+    expect(await fail(601)).toBe(false)
+    expect(restarts).toEqual([])
+    // A ready Host arms the supervisor again.
+    supervisor.ready()
+    expect(await fail(602)).toBe(true)
+    expect(restarts).toHaveLength(1)
+  })
+})
+
 describe('DesktopHostSupervisor provisional record (widget_phase2.isolation.watchdog)', () => {
   beforeEach(() => {
     vi.useFakeTimers()

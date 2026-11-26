@@ -104,6 +104,7 @@ function messageOf(failure: unknown): string {
 /**
  * The restart policy for the Host child.
  * It owns a failure only after the first Host was ready, so a Host that cannot boot still fails loudly at once.
+ * After Electron main stops the Host on purpose, the next Host is owned only after it is ready ({@link disarm}).
  */
 export class DesktopHostSupervisor {
   private readonly policy = new HostCrashPolicy()
@@ -142,6 +143,19 @@ export class DesktopHostSupervisor {
   ready(): void {
     this.armed = true
     log('ready', { safeMode: this.safeMode })
+  }
+
+  /**
+   * Electron main stops the Host on purpose: the update preparation of `main.ts`. A waiting restart does not run, so no
+   * Host starts while the installer owns the quit. Until a Host is ready again, a failure is not the supervisor's: the
+   * replacement Host after a failed install fails loudly at once, as the first Host does (`supervisor.replacement_restart`).
+   */
+  disarm(): void {
+    this.armed = false
+    this.recoveringNow = false
+    clearTimeout(this.timer)
+    this.timer = undefined
+    log('disarm')
   }
 
   /**
