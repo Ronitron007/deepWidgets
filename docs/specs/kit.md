@@ -189,11 +189,11 @@ The main widget gets these actions. Each one calls the service `kit` through `wi
 
 - A change runs pnpm, and pnpm can take longer than the time limit of an action (5 s, and 10 s for a host call of `main`). Thus `kitAdd` and `kitRemove` start the change and do not wait for it.
 
-- While a change runs, the section reads the query `settings` again each second. When the status leaves `changing`, the section stops.
+- While the status is `starting` or `changing`, the section reads the query `settings` again each second. When the status is `ready` or `unavailable`, the section stops. Without the read during `starting`, a page that opens during the kit start shows `starting` after the kit is ready (the review of PR #156, verified by a run).
 
-- `kitAdd` and `kitRemove` answer `in-core`, `kit-busy`, or `kit-unavailable` at once when the change can not start. The other errors of `kit.service.errors` show in the part "Last change".
+- `kitAdd` and `kitRemove` answer `in-core`, `kit-busy`, or `kit-unavailable` at once when the change can not start. `kitAdd` also answers `not-found` at once for a spec that is not a registry name with an optional version or range, such as a path, a git URL, or a `file:` spec. The other errors of `kit.service.errors` show in the part "Last change".
 
-- `setRefuseBuilds` takes only valid npm package names. It refuses another name with `bad-name`.
+- `setRefuseBuilds` takes each name that npm accepts, also the names of old packages with capital letters, such as `JSONStream`. Such a package can reach the kit as a dependency of an extra. The check of a name is `validate-npm-package-name`, with `validForOldPackages`. It refuses another name with `bad-name`.
 
 - When the host has no service `kit`, the part `kit` is a refusal with the code `unavailable`, as the MCP sections give when the host has no MCP server. The section shows only that message.
 
