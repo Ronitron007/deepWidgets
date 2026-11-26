@@ -1,6 +1,6 @@
 # Window manager: the design talk `wm_design`
 
-This document records the design talk about the window manager. It is not the spec. The operator decided the calls `wm_design.owner`, `wm_design.operations`, and `wm_design.controls`. The other calls are open. The spec comes after the operator gives the whole direction.
+This document records the design talk about the window manager. It is not the spec. The operator decided the calls `wm_design.owner`, `wm_design.operations`, `wm_design.controls`, and `wm_design.persistence`. The other calls are open. The spec comes after the operator gives the whole direction.
 
 The facts are true on `main` at commit `938c8629b3`, on 2026-11-25.
 
@@ -265,15 +265,27 @@ These facts bear on the build:
 
 - A locked window still needs the bar, because the lock button unlocks it (inferred).
 
+## Call: what stays through what `wm_design.persistence`
+
+**Status: decided.** The operator gave this rule on 2026-11-26: "my choice stays, agent default only for new widgets".
+
+| Event | Hide | Position | Layer | Lock |
+|---|---|---|---|---|
+| A restart of the app or of the host | stays | stays | stays | stays |
+| Turn off, then Turn on | stays | stays | stays | stays |
+| An agent reinstall with the same slug | stays | stays | stays | stays |
+| An agent remove, then an install | stays | stays | stays | stays |
+| The Remove of `main` by the operator | goes | goes | goes | goes |
+
+- After the Remove of `main`, the next install is a new widget. It gets the defaults of the agent. I inferred this row from the rule and from the Hide rule. The operator did not object.
+
+- The defaults of the agent apply only to a new widget. A reinstall changes no window data. This also holds for a field that the operator never changed.
+
 ## Other open calls `wm_design.open`
 
 The operator did not answer these calls yet:
 
 - **Reset position:** the bar has no reset button. Where does the reset go.
-
-- **Persistence:** does a position stay through a restart and through a reinstall.
-
-- **The rule after a reinstall:** the operator wants to talk about the Hide rule again. The same question applies to a position.
 
 - **Agents:** what an agent can do with no question to the operator. Do the window tools get their own gated mode.
 
