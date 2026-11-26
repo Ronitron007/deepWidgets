@@ -1,6 +1,6 @@
 # Window manager: the design talk `wm_design`
 
-This document records the design talk about the window manager. It is not the spec. The operator decided the calls `wm_design.owner`, `wm_design.operations`, `wm_design.controls`, and `wm_design.persistence`. The other calls are open. The spec comes after the operator gives the whole direction.
+This document records the design talk about the window manager. It is not the spec. The operator decided the calls `wm_design.owner`, `wm_design.operations`, `wm_design.controls`, and `wm_design.persistence`. Other points follow from these answers (`wm_design.derived`). The spec comes after the operator gives the whole direction.
 
 The facts are true on `main` at commit `938c8629b3`, on 2026-11-25.
 
@@ -281,17 +281,19 @@ These facts bear on the build:
 
 - The defaults of the agent apply only to a new widget. A reinstall changes no window data. This also holds for a field that the operator never changed.
 
+## Points that follow from the answers `wm_design.derived`
+
+The operator did not answer these points one by one. Each one follows from an answer above or from a spec. The operator can change each one.
+
+| Point | Result | Follows from |
+|---|---|---|
+| Reset position | It is a control in the settings of each widget, in the panel. | The bar has no reset button (`wm_design.controls`). The stage `settings` puts the controls in the panel (`wm_design.task`). |
+| One desktop only | Not in scope now. | "only normal and always on top carry top priority" (`wm_design.operations`) |
+| The screenshot tool | It comes in the stage `agents`. It only reads, so it goes in the mode `interact`, as `widget_describe` does. | `modes.list`, `wm_design.operations.screenshot` |
+| The window tools that change a window | A new gated mode `window`, with tool names `window_*`. The Settings tab gets one switch for it. | `modes.names`, `main_widget.settings` |
+| An agent and a choice of the operator | An agent can change only a field that the operator never set. For a field that the operator set, the tool refuses and tells the agent to ask the operator. | "my choice stays" (`wm_design.persistence`), the stage `agents` (`wm_design.task`) |
+
 ## Other open calls `wm_design.open`
-
-The operator did not answer these calls yet:
-
-- **Reset position:** the bar has no reset button. Where does the reset go.
-
-- **Agents:** what an agent can do with no question to the operator. Do the window tools get their own gated mode.
-
-- **One desktop only:** the decision `widget.window_manager` says that the window manager chooses all desktops or the main desktop only. Is this in scope now.
-
-- **The screenshot tool:** is it in the agents stage, and in which mode.
 
 - **A line in `CLAUDE.md`:** the session of `main_widget` asked for one line in `head.status` about the shown state. The line goes in only after the operator says yes.
 
@@ -306,6 +308,8 @@ I made these mistakes in the talk. This section keeps them on record.
 - I wrote that the operator decided the Hide rule. The session of `main_widget` told me so. The record says that the operator or the lead session decided it.
 
 - I wrote that under A, the window units do not touch the runtime. The agents stage changes `deepwidgets/mcp` under A and under C. Thus the replays apply to it in both options.
+
+- I asked the operator a question that the rule "agent default only for new widgets" already answered. Then I drafted the opposite reading. The draft did not reach `main`.
 
 ## Sources `wm_design.sources`
 
