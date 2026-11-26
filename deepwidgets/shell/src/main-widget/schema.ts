@@ -72,6 +72,54 @@ export const PortAnswerSchema = z.union([
   RefusalSchema,
 ])
 
+/** The status of the widget kit (`kit.pane.view`). */
+export const KitStatusSchema = z.enum(['starting', 'ready', 'changing', 'unavailable'])
+export type KitStatus = z.infer<typeof KitStatusSchema>
+
+/** One package of the kit, with its version: the version of the app for the core, an exact version for an extra. */
+export const KitPackageSchema = z.object({ name: z.string(), version: z.string() })
+export type KitPackage = z.infer<typeof KitPackageSchema>
+
+/** The change that runs now: `add` with its spec or `remove` with its name, and its start time in ms since the epoch. */
+export const KitChangeSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('add'), spec: z.string(), startedAt: z.number() }),
+  z.object({ kind: z.literal('remove'), name: z.string(), startedAt: z.number() }),
+])
+export type KitChange = z.infer<typeof KitChangeSchema>
+
+/** Why a change failed: the code of the kit, its message, and the pnpm code and the package when pnpm names them. */
+const KitErrorSchema = z.object({ code: z.string(), message: z.string(), pnpmCode: z.string().optional(), package: z.string().optional() })
+
+/** The result of the last change: the kit version that it made, or its error. `endedAt` is in ms since the epoch. */
+export const KitLastSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('add'), spec: z.string(), endedAt: z.number(), version: z.number().optional(), error: KitErrorSchema.optional() }),
+  z.object({ kind: z.literal('remove'), name: z.string(), endedAt: z.number(), version: z.number().optional(), error: KitErrorSchema.optional() }),
+])
+export type KitLast = z.infer<typeof KitLastSchema>
+
+/** The names of `kit.refuseBuilds` and the settings file, as `setRefuseBuilds` gives them. */
+export const RefuseBuildsSchema = z.object({ file: z.string(), names: z.array(z.string()) })
+
+/**
+ * The part `kit` of the query `settings` (type `MainKit`). The refuse list is a refusal of its own when the host has
+ * no MCP settings or the settings file does not parse; the rest of the part still shows.
+ */
+export const KitSchema = z.object({
+  status: KitStatusSchema,
+  version: z.number().optional(),
+  available: z.boolean(),
+  reason: z.string().optional(),
+  change: KitChangeSchema.optional(),
+  last: KitLastSchema.optional(),
+  core: z.array(KitPackageSchema),
+  extras: z.array(KitPackageSchema),
+  refuseBuilds: z.union([RefuseBuildsSchema.extend({ ok: z.literal(true) }), RefusalSchema]),
+})
+export type Kit = z.infer<typeof KitSchema>
+
+/** The part `kit`, or a refusal when the host has no widget kit. */
+export const KitAnswerSchema = z.union([KitSchema.extend({ ok: z.literal(true) }), RefusalSchema])
+
 /** The status of the login item that macOS gives. */
 export const LoginStatusSchema = z.enum(['enabled', 'requires-approval', 'not-registered', 'not-found'])
 export type LoginStatus = z.infer<typeof LoginStatusSchema>

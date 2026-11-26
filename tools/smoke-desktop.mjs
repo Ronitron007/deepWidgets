@@ -49,8 +49,14 @@
  * note. A set of the login item through main refuses with dev-run, Electron main calls no setLoginItemSettings, and
  * macOS has no login item for the dev app. The switch of create turns create off: widget_install gives mode-off, and
  * settings.json has "create": false. On again, the install works. The check saves
- * $TMPDIR/deepwidgets-main-settings/settings.png. Before the second launch, the hidden panel shows the Settings tab, and
- * the second launch must open it on the Widgets tab.
+ * $TMPDIR/deepwidgets-main-settings/settings.png. Another live process holds the lock of the kit when the app starts.
+ * While the kit start waits for it, the section "Widget kit" (kit.pane.view) shows the status starting, and its controls
+ * are off. Then the holder ends, and the page must show ready within 5 s after the start ends, with 8 core rows and a
+ * lock mark on each. An add of date-fns@^4 through the page shows the change, then the row of date-fns. While an add
+ * runs, the controls are off, also the Remove button of date-fns. Remove takes the row of date-fns away. These changes
+ * run pnpm online. The check saves settings-kit.png in the same folder.
+ * Before the second launch, the hidden panel shows the Settings tab, and the second launch must open it on the Widgets
+ * tab.
  * During these page checks the panel does not hide on a loss of focus, so another app on the Mac can not close it.
  * With DSH_SMOKE_OLD_PROFILE=1, the run starts with the desktop profile of the web template before main.runtime, which
  * has no @deepwidgets/widget-main. The boot must add it in its template place and log the change. Run it with
@@ -236,6 +242,19 @@ if (process.env.DSH_SMOKE_OLD_PROFILE === '1') {
   writeFileSync(join(desktopProfile, 'package.json'), `${JSON.stringify({ name: 'dsh-profile-desktop', private: true, dependencies: {}, dsh: { profile: { bundles: OLD_PROFILE_BUNDLES } } }, undefined, 2)}\n`)
 }
 
+/**
+ * kit.pane.actions: with DSH_SMOKE_MAIN=1, another live process holds the lock of the kit when the app starts. The kit
+ * start of the host waits for it, so the panel page opens while the kit status is starting. checkMainKit ends the
+ * holder, and the page must then read the end of the start by itself.
+ */
+let kitLockHolder
+if (process.env.DSH_SMOKE_MAIN === '1') {
+  const kitDir = join(home, 'deepwidgets', 'kit')
+  await mkdir(kitDir, { recursive: true })
+  kitLockHolder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 900_000)'], { stdio: 'ignore' })
+  writeFileSync(join(kitDir, 'current.lock'), `${String(kitLockHolder.pid)}\n`)
+}
+
 const mainInspectPort = await freePort()
 const rendererPort = await freePort()
 const hostInspectPort = await freePort()
@@ -381,6 +400,7 @@ function finish(ok, reason) {
   if (groupWatcher !== undefined && groupWatcher.exitCode === null) {
     try { groupWatcher.kill('SIGKILL') } catch { /* already gone */ }
   }
+  if (kitLockHolder !== undefined && kitLockHolder.exitCode === null) kitLockHolder.kill('SIGKILL')
   const line = ok ? 'smoke-desktop: pass' : `smoke-desktop: fail: ${reason}`
   console.log(line)
   process.exit(ok ? 0 : 1)
@@ -2562,7 +2582,183 @@ async function checkMainSettings(target, deadline) {
   if (removed.isError) return `main settings: widget_remove of smoke-settings failed: ${JSON.stringify(removed.body?.error)}`
   const onShown = await pollSettings(target, soon(), (value) => create(value)?.checked === 'true' && value.problems.length === 0)
   if (!onShown.ok) return `main settings: the switch of create does not show on, or the tab shows a problem: ${JSON.stringify(onShown.value)}`
+  const kit = await checkMainKit(target, deadline)
+  if (kit !== undefined) return kit
   await pressMainTab(target, 0, deadline)
+  return undefined
+}
+
+/** Read the section "Widget kit" of the Settings tab (kit.pane.view), or null when the page has no such section. */
+function kitReadExpression() {
+  return `JSON.stringify((() => {
+  const section = document.querySelector('[data-dw=settings-kit]')
+  if (section === null) return null
+  const last = section.querySelector('[data-dw=kit-last]')
+  const off = (selector) => [...section.querySelectorAll(selector)].map((node) => node.disabled)
+  return {
+    status: section.querySelector('[data-dw=kit-status]')?.dataset.status ?? null,
+    version: section.querySelector('[data-dw=kit-version]')?.textContent ?? null,
+    core: [...section.querySelectorAll('[data-dw=kit-core]')].map((row) => ({ name: row.dataset.name, lock: row.querySelector('[data-dw=kit-lock]') !== null })),
+    extras: [...section.querySelectorAll('[data-dw=kit-extra]')].map((row) => row.dataset.name),
+    refuse: [...section.querySelectorAll('[data-dw=kit-refuse-row]')].map((row) => row.dataset.name),
+    change: section.querySelector('[data-dw=kit-change]')?.textContent ?? null,
+    last: last === null ? null : { kind: last.dataset.kind, ok: last.dataset.ok, code: last.dataset.code, text: last.textContent },
+    refuseNote: section.querySelector('[data-dw=kit-refuse-note]')?.textContent ?? null,
+    fields: { add: section.querySelector('[data-dw=kit-add-field]')?.value ?? null, refuse: section.querySelector('[data-dw=kit-refuse-add-field]')?.value ?? null },
+    addOff: section.querySelector('[data-dw=kit-add]')?.disabled ?? null,
+    refuseAddOff: section.querySelector('[data-dw=kit-refuse-add]')?.disabled ?? null,
+    removeOff: off('[data-dw=kit-remove]'),
+    refuseRemoveOff: off('[data-dw=kit-refuse-remove]'),
+    problems: [...section.querySelectorAll('[data-dw=main-problem], [data-dw=control-error], [data-dw=kit-refuse-error], [data-dw=kit-unavailable]')].map((node) => node.textContent),
+  }
+})())`
+}
+
+/** Poll the section "Widget kit" until `accept` takes the read value. */
+async function pollKit(target, until, accept) {
+  let last
+  while (Date.now() < until) {
+    try {
+      last = JSON.parse(String(await evaluate(target.webSocketDebuggerUrl, kitReadExpression(), until)))
+      if (accept(last)) return { value: last, ok: true }
+    } catch (error) {
+      last = { error: error instanceof Error ? error.message : 'evaluate failed' }
+    }
+    await delay(250)
+  }
+  return { value: last, ok: false }
+}
+
+/** Type `text` into the field at `selector` of the kit section, as a key press does: React reads the input event. */
+function typeKitField(target, selector, text, deadline) {
+  return evaluate(target.webSocketDebuggerUrl, `(() => {
+    const input = document.querySelector(${JSON.stringify(selector)})
+    if (input === null) return false
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(text)})
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  })()`, deadline)
+}
+
+/** Call the action `action` of main from its page, as a control does. Gives the HTTP status and the body. */
+async function callMain(target, action, args, deadline) {
+  return JSON.parse(String(await evaluate(target.webSocketDebuggerUrl, `(async () => {
+    const answer = await fetch('/api/widgets/main/call', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify({ action, args }))} })
+    return JSON.stringify({ status: answer.status, body: await answer.json() })
+  })()`, deadline, true)))
+}
+
+/**
+ * kit.pane.view: put text into the Add field and the refuse field, then read the section. A control that does nothing
+ * keeps its button off also with text in its field.
+ */
+async function readKitControls(target, deadline) {
+  await typeKitField(target, '[data-dw=kit-add-field]', 'ms@^2', deadline)
+  await typeKitField(target, '[data-dw=kit-refuse-add-field]', 'core-js', deadline)
+  await delay(150)
+  return JSON.parse(String(await evaluate(target.webSocketDebuggerUrl, kitReadExpression(), deadline)))
+}
+
+/**
+ * True when each control of the kit section is off, with text in both fields: Add, each Remove, and the refuse list. A
+ * function declaration, because the checks run before the module reaches a const of this part.
+ */
+function kitControlsOff(kit) {
+  return kit?.fields?.add === 'ms@^2' && kit.fields.refuse === 'core-js' && kit.addOff === true && kit.refuseAddOff === true
+    && kit.removeOff.every(Boolean) && kit.refuseRemoveOff.every(Boolean)
+}
+
+/**
+ * kit.pane.actions: the panel page opened while the kit start waits for the lock of kitLockHolder. The section shows
+ * the status starting, and its controls do nothing, also the Remove button of a name in the refuse list. Then the
+ * holder ends, and the page must show ready within 5 s after the start ends. No event tells the page about the end of
+ * the start, so only its read of the query settings each second can show it.
+ */
+async function checkMainKitStart(target, deadline) {
+  if (kitLockHolder === undefined) return 'main kit: no process holds the kit lock'
+  // The action writes the refuse list also during the start. Only the controls of the page do nothing.
+  const listed = await callMain(target, 'setRefuseBuilds', { names: ['left-pad'] }, deadline)
+  if (listed.body?.result?.ok !== true) return `main kit: setRefuseBuilds during the kit start failed: ${JSON.stringify(listed)}`
+  const starting = await pollKit(target, Math.min(deadline, Date.now() + 15_000), (kit) => kit?.status === 'starting' && kit.refuse.includes('left-pad'))
+  if (!starting.ok) return `main kit: while the kit start waits for the lock, the section does not show starting with the refuse list: ${JSON.stringify(starting.value)}`
+  const controls = await readKitControls(target, deadline)
+  note(`main kit starting controls=${JSON.stringify(controls)}`)
+  if (controls.status !== 'starting' || !kitControlsOff(controls) || controls.refuseRemoveOff.length === 0) return `main kit: while the kit starts, a control of the section is on: ${JSON.stringify(controls)}`
+  const logFrom = readFileSync(logPath, 'utf8').length
+  kitLockHolder.kill('SIGKILL')
+  // The start takes the lock over and makes kit version 1. Its log line in the output of the app marks the end of the start.
+  let endedAt
+  for (const until = Math.min(deadline, Date.now() + 60_000); endedAt === undefined && Date.now() < until; await delay(100)) {
+    if (/kit: (?:made kit version 1|kit version \d+ is ready)/u.test(readFileSync(logPath, 'utf8').slice(logFrom))) endedAt = Date.now()
+  }
+  if (endedAt === undefined) return 'main kit: the kit start did not end after the holder of the lock ended'
+  const ready = await pollKit(target, Math.min(deadline, endedAt + 5_000), (kit) => kit?.status === 'ready' && kit.core.length === 8)
+  note(`main kit ready ${String(Date.now() - endedAt)} ms after the start ended=${JSON.stringify(ready.value)}`)
+  if (!ready.ok) return `main kit: the page does not show ready within 5 s after the kit start ended: ${JSON.stringify(ready.value)}`
+  return undefined
+}
+
+/**
+ * The section "Widget kit" of the Settings tab (kit.pane.view). After the start (checkMainKitStart), the section shows
+ * the status ready, and 8 core rows, each with a lock mark. An add of date-fns@^4 through the page shows the status
+ * changing, then its row. While a change runs, each control of the section is off: an add of ms@^2 runs while date-fns
+ * has its Remove button. Remove in the row of date-fns takes it away, and the remove button of left-pad empties the
+ * refuse list. Each change runs pnpm online. The check saves $TMPDIR/deepwidgets-main-settings/settings-kit.png with
+ * the row of date-fns.
+ */
+async function checkMainKit(target, deadline) {
+  const start = await checkMainKitStart(target, deadline)
+  if (start !== undefined) return start
+  const change = () => Math.min(deadline, Date.now() + 120_000)
+  const first = await pollKit(target, change(), (kit) => kit?.status === 'ready' && kit.core.length === 8)
+  note(`main kit first=${JSON.stringify(first.value)}`)
+  if (!first.ok) return `main kit: the section Widget kit does not show the status ready with 8 core rows: ${JSON.stringify(first.value)}`
+  if (!first.value.core.every((row) => row.lock)) return `main kit: a core row has no lock mark: ${JSON.stringify(first.value.core)}`
+  if (first.value.extras.length > 0 || first.value.problems.length > 0) return `main kit: the section starts with an extra or a problem: ${JSON.stringify(first.value)}`
+  if (first.value.refuseNote === null || !first.value.refuseNote.includes('whole package')) return `main kit: no note of the refuse list: ${String(first.value.refuseNote)}`
+
+  // An add through the page. While it runs, the controls are off.
+  const add = async (spec) => {
+    if (await typeKitField(target, '[data-dw=kit-add-field]', spec, deadline) !== true) return { problem: 'no Add field' }
+    await delay(200)
+    if (await clickMain(target, '[data-dw=kit-add]', deadline) !== true) return { problem: 'no Add button' }
+    const started = await pollKit(target, Math.min(deadline, Date.now() + 15_000), (kit) => kit?.status === 'changing' || kit?.extras?.includes(spec.split('@')[0]) === true)
+    const controls = await readKitControls(target, deadline)
+    const added = await pollKit(target, change(), (kit) => kit?.status === 'ready' && kit.extras.includes(spec.split('@')[0]))
+    note(`main kit add ${spec} started=${JSON.stringify(started.value)} controls=${JSON.stringify(controls)} added=${JSON.stringify(added.value)}`)
+    return { started, controls, added }
+  }
+  const dateFns = await add('date-fns@^4')
+  if (dateFns.problem !== undefined) return `main kit: ${dateFns.problem}`
+  if (!dateFns.started.ok || dateFns.started.value.status !== 'changing' || dateFns.started.value.change === null) return `main kit: after Add, the section does not show the change: ${JSON.stringify(dateFns.started.value)}`
+  if (dateFns.controls.status !== 'changing' || !kitControlsOff(dateFns.controls)) return `main kit: while the add of date-fns runs, a control of the section is on: ${JSON.stringify(dateFns.controls)}`
+  if (!dateFns.added.ok) return `main kit: after Add, the row of date-fns does not show with the status ready: ${JSON.stringify(dateFns.added.value)}`
+  if (dateFns.added.value.last?.kind !== 'add' || dateFns.added.value.last.ok !== 'true' || dateFns.added.value.problems.length > 0) return `main kit: the last change of the add is not clean: ${JSON.stringify(dateFns.added.value)}`
+  // The screenshot shows the fields empty, not the text of the control reads.
+  await typeKitField(target, '[data-dw=kit-add-field]', '', deadline)
+  await typeKitField(target, '[data-dw=kit-refuse-add-field]', '', deadline)
+  await evaluate(target.webSocketDebuggerUrl, "(() => { document.querySelector('[data-dw=kit-extra][data-name=\"date-fns\"]')?.scrollIntoView({ block: 'center' }); return true })()", deadline)
+  await delay(300)
+  await shootMain('settings-kit.png', deadline, SETTINGS_SHOTS)
+
+  // While a second add runs, the Remove button of date-fns is off too.
+  const ms = await add('ms@^2')
+  if (ms.problem !== undefined) return `main kit: ${ms.problem}`
+  if (ms.controls.status !== 'changing' || !kitControlsOff(ms.controls) || ms.controls.removeOff.length === 0) return `main kit: while the add of ms runs, a control of the section is on: ${JSON.stringify(ms.controls)}`
+  if (!ms.added.ok) return `main kit: after Add, the row of ms does not show with the status ready: ${JSON.stringify(ms.added.value)}`
+
+  if (await clickMain(target, '[data-dw=kit-remove][data-name="date-fns"]', deadline) !== true) return 'main kit: no Remove in the row of date-fns'
+  const removed = await pollKit(target, change(), (kit) => kit?.status === 'ready' && !kit.extras.includes('date-fns') && kit.last?.kind === 'remove')
+  note(`main kit removed=${JSON.stringify(removed.value)}`)
+  if (!removed.ok) return `main kit: after Remove, the row of date-fns is still there: ${JSON.stringify(removed.value)}`
+  if (removed.value.last.ok !== 'true' || removed.value.problems.length > 0) return `main kit: the last change of the remove is not clean: ${JSON.stringify(removed.value)}`
+
+  if (await clickMain(target, '[data-dw=kit-refuse-remove][data-name="left-pad"]', deadline) !== true) return 'main kit: no remove button in the row of left-pad'
+  const cleared = await pollKit(target, Math.min(deadline, Date.now() + 15_000), (kit) => kit?.refuse?.length === 0 && kit.problems.length === 0)
+  if (!cleared.ok) return `main kit: the remove button of left-pad did not empty the refuse list: ${JSON.stringify(cleared.value)}`
+  await typeKitField(target, '[data-dw=kit-add-field]', '', deadline)
+  await typeKitField(target, '[data-dw=kit-refuse-add-field]', '', deadline)
+  await evaluate(target.webSocketDebuggerUrl, "(() => { window.scrollTo(0, 0); return true })()", deadline)
   return undefined
 }
 

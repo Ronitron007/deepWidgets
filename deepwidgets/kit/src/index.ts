@@ -13,7 +13,7 @@
  * in `core/` at the folder of the core package in the app, and installs a missing `node_modules` offline from the store
  * with the frozen lockfile and `trust-lockfile`. When that fails, the kit is unavailable and the host goes on:
  * `folders()` then refuses with `kit-unavailable`, and the page gates of `@deepwidgets/mcp` refuse each page. The start
- * runs after the service is registered, and each call waits for it.
+ * runs after the service is registered. Each call waits for it, except `folders()` and `snapshot()`.
  *
  * A change (`add`, `remove`) copies the current version to the next number, at the same depth, runs pnpm there, and
  * then points `current` at the copy (`kit.service.calls`). The copy goes when a step fails, so the current version does
@@ -21,6 +21,10 @@
  *
  * Two processes can use one DSH home, such as the dev app and a CLI host. Each change and each start holds the file lock
  * of the kit (`kit.service.lock`), so a change of one process never meets a change or a start of another.
+ *
+ * For the kit section of the settings (`kit.pane.service`), the service keeps in memory the change that runs now and the
+ * result of the last change. `read()` and `snapshot()` give both. `read()` waits for the start, and `snapshot()` never
+ * waits: while the start runs, its status is `starting`. A new host start begins with neither value.
  *
  * The kit runs pnpm with the command that the app gives the host (`profileContext.packageManager`), as the plugin
  * manager does. A host with no such command runs the pnpm of the repository, 11.28.5. The kit runs only pnpm 11: at
@@ -112,13 +116,47 @@ export interface KitPackage {
   version: string
 }
 
-/** What `read()` gives. */
+/**
+ * The status of the kit in the kit section of the settings (`kit.pane.view`). `starting` comes only from `snapshot()`,
+ * because `read()` waits for the end of the start. `changing` wins over `unavailable`: a change can make a kit whole.
+ */
+export type KitStatus = 'starting' | 'ready' | 'changing' | 'unavailable'
+
+/** What one change does: `add` with its spec, such as `date-fns@^4`, or `remove` with the name of an extra. */
+export type KitChangeTarget = { kind: 'add', spec: string } | { kind: 'remove', name: string }
+
+/**
+ * The change that runs now (`kit.pane.service`). It can also wait for the start or for the lock of another process.
+ * `startedAt` is in milliseconds since the epoch: the time when the change before it ended, or when the kit took it.
+ */
+export type KitChange = KitChangeTarget & { startedAt: number }
+
+/** Why a change failed: the code of `kit.service.errors`, and the pnpm code and the package when pnpm names them. */
+export interface KitChangeError {
+  code: KitErrorCode
+  message: string
+  pnpmCode?: string
+  package?: string
+}
+
+/**
+ * The result of the last change (`kit.pane.service`), with its end time in milliseconds since the epoch. A change that
+ * passed gives the kit version that it made. A change that failed gives its error, and the current version stayed.
+ */
+export type KitLastChange = KitChangeTarget & { endedAt: number } & ({ version: number } | { error: KitChangeError })
+
+/** What `read()` and `snapshot()` give. */
 export interface KitState {
   /** The current kit version, or undefined when the kit has no version. */
   version: number | undefined
   /** False when the current version can not be made whole offline (`kit.service.start`). `reason` then tells why. */
   available: boolean
   reason?: string
+  status: KitStatus
+  /** The change that runs now. Absent when no change runs. */
+  change?: KitChange
+  /** The result of the last change of this host start. Absent before the first change ends. */
+  last?: KitLastChange
   /** The core, with the version of the copy in the app. */
   core: KitPackage[]
   /** The extras, with their exact versions. */
@@ -138,6 +176,24 @@ type Availability = { available: true } | { available: false, reason: string }
 const settingsSchema = z.object({ kit: z.object({ refuseBuilds: z.array(z.string()).optional() }).optional() })
 
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error)
+
+/**
+ * The error of a failed change for `last`. A failure that is not a {@link KitError}, such as a disk error or the end of
+ * the wait for the lock, gives `install-failed` with its message: the change did not commit, so the current version
+ * stayed.
+ */
+function changeErrorOf(error: unknown): KitChangeError {
+  if (!(error instanceof KitError)) return { code: 'install-failed', message: errorText(error) }
+  return {
+    code: error.code,
+    message: error.message,
+    ...(error.pnpmCode === undefined ? {} : { pnpmCode: error.pnpmCode }),
+    ...(error.package === undefined ? {} : { package: error.package }),
+  }
+}
+
+/** A change for people and for the host log: `add date-fns@^4` or `remove date-fns`. */
+const targetText = (target: KitChangeTarget): string => target.kind === 'add' ? `add ${target.spec}` : `remove ${target.name}`
 
 /** The dependencies of the `package.json` of a kit version. */
 async function manifestDependencies(dir: string): Promise<Record<string, string>> {
@@ -163,6 +219,13 @@ export class KitService extends Service {
   private startDone = false
   /** The changes, one at a time. */
   private queue: Promise<unknown> = Promise.resolve()
+  /**
+   * kit.pane.service: each change that `add` or `remove` took and that did not end, in the order of {@link queue}. The
+   * kit takes a change at once, so the main widget sees it in a snapshot right after the call. The first one runs now.
+   */
+  private readonly taken: { target: KitChangeTarget, startedAt: number }[] = []
+  /** kit.pane.service: the result of the last change of this host start. */
+  private lastChange: KitLastChange | undefined
 
   constructor(ctx: Context, options: { dir: string, settingsFile: string, pnpm: PnpmCommand | Error }) {
     super(ctx, 'kit')
@@ -424,18 +487,56 @@ export class KitService extends Service {
   /**
    * One change (`kit.service.calls`): copy the current version to the next number, run `edit` there, and point
    * `current` at the copy. When a step fails, the copy goes and the current version stays.
+   *
+   * kit.pane.service: the change is in {@link taken} from this call until it ends, and its end sets {@link lastChange}.
+   * The end comes after `current` moved, so a snapshot that shows the end also shows the new version.
    */
-  private change(edit: (dir: string) => Promise<string>): Promise<KitState> {
+  private change(target: KitChangeTarget, edit: (dir: string) => Promise<string>): Promise<KitState> {
+    const item = { target, startedAt: Date.now() }
+    this.taken.push(item)
     return this.serial(async () => {
-      await this.started
-      // A start that found no pnpm 11 or no core leaves the kit as it is: no change runs.
-      if (this.core === undefined || this.pnpmVersion === undefined) throw new KitError('kit-unavailable', `the widget kit is unavailable: ${this.unavailableReason()}`)
-      // kit.service.lock: another process can change the kit too, so `current` is read under the lock.
-      return this.locked(() => this.changeLocked(edit))
+      let ended = false
+      const end = (result: { version: number } | { error: unknown }): void => {
+        if (ended) return
+        ended = true
+        this.endChange(item, result)
+      }
+      try {
+        await this.started
+        // A start that found no pnpm 11 or no core leaves the kit as it is: no change runs.
+        if (this.core === undefined || this.pnpmVersion === undefined) throw new KitError('kit-unavailable', `the widget kit is unavailable: ${this.unavailableReason()}`)
+        // kit.service.lock: another process can change the kit too, so `current` is read under the lock.
+        return await this.locked(async () => {
+          end({ version: await this.changeLocked(edit) })
+          return this.readNow()
+        })
+      } catch (error) {
+        end({ error })
+        throw error
+      }
     })
   }
 
-  private async changeLocked(edit: (dir: string) => Promise<string>): Promise<KitState> {
+  /**
+   * The end of the change `item`: it leaves {@link taken}, its result becomes {@link lastChange}, and the next change
+   * starts its clock. A failure also goes to the host log, because the main widget does not wait for the promise.
+   */
+  private endChange(item: { target: KitChangeTarget, startedAt: number }, result: { version: number } | { error: unknown }): void {
+    const index = this.taken.indexOf(item)
+    if (index >= 0) this.taken.splice(index, 1)
+    const next = this.taken[0]
+    if (index === 0 && next !== undefined) next.startedAt = Date.now()
+    if ('version' in result) {
+      this.lastChange = { ...item.target, endedAt: Date.now(), version: result.version }
+      return
+    }
+    const error = changeErrorOf(result.error)
+    this.lastChange = { ...item.target, endedAt: Date.now(), error }
+    this.ctx.logger.warn(`kit: the change ${targetText(item.target)} failed with ${error.code}, so the kit did not change: ${error.message}`)
+  }
+
+  /** Make the next kit version with `edit`, and point `current` at it. Gives the number of the new version. */
+  private async changeLocked(edit: (dir: string) => Promise<string>): Promise<number> {
     const current = await this.currentVersion().catch(() => undefined)
     if (current === undefined) throw new KitError('kit-unavailable', `the widget kit has no version: ${this.unavailableReason()}`)
     const refused = await this.refusedBuilds()
@@ -464,7 +565,7 @@ export class KitService extends Service {
     this.ctx.logger.info(`kit: kit version ${String(next)} ${done}`)
     // The change is committed: a failed prune does not undo it.
     await this.prune().catch((error: unknown) => { this.ctx.logger.warn('kit: the old kit versions were not pruned', error) })
-    return this.readNow()
+    return next
   }
 
   private unavailableReason(): string {
@@ -474,17 +575,23 @@ export class KitService extends Service {
   /**
    * Add one extra. `spec` is a package name with an optional version or range, such as `date-fns@^4`. The kit saves the
    * exact version that pnpm picked, the newest one that is older than 24 hours.
+   *
+   * kit.pane.service: unless the call refuses at once, the kit takes the change before the call returns. From then until
+   * the change ends, `change` of a snapshot names it, and its end sets `last`. The kit handles a rejection of the promise
+   * of a change that it took, so a caller may drop that promise. A refusal at once gives a promise that is already
+   * rejected, and a caller must handle it in the same turn: a rejection with no handler ends the host.
    * @returns the kit after the change.
    * @throws {KitError} `in-core` for a core package, `not-found` for a spec that is not an npm package name with an
    * optional version or range and for a package or version that npm does not have, `install-failed` with the pnpm code
    * and the package, or `kit-unavailable` when the kit has no version. A refusal leaves the current version as it was.
+   * `in-core` and the `not-found` of a spec refuse at once: the kit takes no change, and `last` stays.
    */
   add(spec: string): Promise<KitState> {
     const match = SPEC.exec(spec)
     const name = match?.[1]
     if (name === undefined || spec.length > 300) return Promise.reject(new KitError('not-found', `${JSON.stringify(spec)} is not an npm package name with an optional version or range`, { package: spec }))
     if (isCore(name)) return Promise.reject(new KitError('in-core', `${name} is in the core of the kit, which only an app update changes`, { package: name }))
-    return this.change(async (dir) => {
+    return this.change({ kind: 'add', spec }, async (dir) => {
       const run = await this.pnpmIn(dir, ['add', '--save-exact', spec], CHANGE_LIMIT_MS)
       if (!passed(run)) throw this.changeError(run, name)
       // pnpm keeps a range of the spec in package.json, also with --save-exact. A second run saves the exact
@@ -502,15 +609,16 @@ export class KitService extends Service {
   }
 
   /**
-   * Remove one extra.
+   * Remove one extra. The kit takes the change as {@link add} does.
    * @returns the kit after the change.
    * @throws {KitError} `in-core` for a core package, `not-found` when the kit has no such extra, `install-failed`, or
-   * `kit-unavailable`. A refusal leaves the current version as it was.
+   * `kit-unavailable`. A refusal leaves the current version as it was. `in-core` and the `not-found` of a name that npm
+   * does not allow refuse at once, with no change.
    */
   remove(name: string): Promise<KitState> {
     if (isCore(name)) return Promise.reject(new KitError('in-core', `${name} is in the core of the kit, which only an app update changes`, { package: name }))
     if (!NAME.test(name)) return Promise.reject(new KitError('not-found', `${JSON.stringify(name)} is not an npm package name`, { package: name }))
-    return this.change(async (dir) => {
+    return this.change({ kind: 'remove', name }, async (dir) => {
       if ((await manifestDependencies(dir))[name] === undefined) throw new KitError('not-found', `the kit has no extra ${name}`, { package: name })
       const run = await this.pnpmIn(dir, ['remove', name], CHANGE_LIMIT_MS)
       if (!passed(run)) throw this.changeError(run, name)
@@ -518,14 +626,36 @@ export class KitService extends Service {
     })
   }
 
-  /** The kit version, the core with the versions of the app, and the extras with their versions. */
+  /**
+   * The kit version, the core with the versions of the app, the extras with their versions, and the status with the
+   * change that runs now and the last change (`kit.pane.service`). It waits for the end of the start, which can wait up to
+   * {@link LOCK_WAIT_MS} for the lock of another process. Thus its status is never `starting`.
+   */
   async read(): Promise<KitState> {
     await this.started
     return this.readNow()
   }
 
+  /**
+   * kit.pane.service: the answer of {@link read} at once. It never waits for the start, for the lock, or for a change,
+   * so the query `settings` of the main widget stays inside its time limit. While the start runs, the status is
+   * `starting`, and the version and the extras are those on disk at that moment.
+   */
+  snapshot(): Promise<KitState> {
+    return this.readNow()
+  }
+
   private async readNow(): Promise<KitState> {
-    const status = this.availability.available ? { available: true } : { available: false, reason: this.availability.reason }
+    // The values in memory come first. A change moves `current` before it ends, so a state that shows its end also shows
+    // its version.
+    const head = this.taken[0]
+    const status: KitStatus = !this.startDone ? 'starting' : head !== undefined ? 'changing' : this.availability.available ? 'ready' : 'unavailable'
+    const memory = {
+      ...(this.availability.available ? { available: true } : { available: false, reason: this.availability.reason }),
+      status,
+      ...(head === undefined ? {} : { change: { ...head.target, startedAt: head.startedAt } }),
+      ...(this.lastChange === undefined ? {} : { last: this.lastChange }),
+    }
     const version = await this.currentVersion().catch(() => undefined)
     const core: KitPackage[] = []
     for (const name of CORE) {
@@ -539,7 +669,7 @@ export class KitService extends Service {
         if (!isCore(name)) extras.push({ name, version: spec })
       }
     }
-    return { version, ...status, core, extras }
+    return { version, ...memory, core, extras }
   }
 
   /**
