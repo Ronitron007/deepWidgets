@@ -1,6 +1,6 @@
 # Window manager: the design talk `wm_design`
 
-This document records the design talk about the window manager. It is not the spec. The operator decided one call, `wm_design.owner`. The other calls are open. The spec comes after the operator gives the whole direction.
+This document records the design talk about the window manager. It is not the spec. The operator decided the calls `wm_design.owner` and `wm_design.operations`. The other calls are open. The spec comes after the operator gives the whole direction.
 
 The facts are true on `main` at commit `938c8629b3`, on 2026-11-25.
 
@@ -206,23 +206,53 @@ The two options differ in when the cost comes:
 
 Thus the deciding question is how much the window code changes after the user stage. A lot of change favors A. Little change favors C. This is a call for the operator, because it depends on the roadmap.
 
+## Call: the operations `wm_design.operations`
+
+**Status: decided, with two open points.** The operator gave these answers on 2026-11-25 and 2026-11-26.
+
+| Operation | Decision |
+|---|---|
+| Show and Hide | They exist (`main_widget.window_state`). |
+| Move | Yes. |
+| Resize | Yes. The agent decides at build time if a widget is resizable. The default is not resizable. |
+| Size | The agent can set the size at build time. Without it, the widget gets the default size, 320 by 300 pixels today. |
+| Layer | Two layers: always on top, and normal. Each layer has its own default position. |
+| Reset position | It moves the window to the default position of its layer. |
+| Display | One default place for now. |
+| Snap to edges or a grid | Deferred. |
+| Opacity | Deferred. |
+| Desktop level | Not needed. |
+| Click-through | Not needed. |
+
+The two open points:
+
+- **Lock:** a locked window can not move, but it still takes clicks. The operator did not answer yet.
+
+- **Who chooses the layer:** the agent at build time, the operator, or both.
+
+These facts helped the call:
+
+- A normal window lets other app windows cover it. A click brings it to the front (inferred).
+
+- A window of the type `desktop` gets no focus, no key events, and no mouse events (verified, Electron docs, `BaseWindowOptions`).
+
+### A screenshot for the agent `wm_design.operations.screenshot`
+
+The operator asked if a tool can send a screenshot of a widget window to the agent.
+
+- No such tool exists today. Only the smoke check calls `webContents.capturePage()` (verified, `git grep capturePage`).
+
+- Electron main can capture the page of a widget window with `webContents.capturePage()`. The image holds only the page, not the screen around it (inferred from the API).
+
+- An MCP tool result can carry an image. The MCP core 2.2.0 of the server has `ImageContentSchema` (verified, read the package).
+
+- A capture of a hidden window can give an empty image (not checked).
+
+- The host must ask Electron main for the capture, as it asks for the render check today (verified, `deepwidgets-render-check.ts`).
+
 ## Other open calls `wm_design.open`
 
 The operator did not answer these calls yet:
-
-- **Operations:** which ones. Show and Hide exist. The candidates are:
-
-  - move, resize, and reset position
-
-  - snap to edges or a grid
-
-  - always on top or normal
-
-  - opacity and click-through
-
-  - display, and one desktop only
-
-  - lock
 
 - **How the operator operates a window:** a drag area or a title bar, a right-click menu, or keyboard shortcuts.
 
@@ -233,6 +263,8 @@ The operator did not answer these calls yet:
 - **Agents:** what an agent can do with no question to the operator. Do the window tools get their own gated mode.
 
 - **One desktop only:** the decision `widget.window_manager` says that the window manager chooses all desktops or the main desktop only. Is this in scope now.
+
+- **The screenshot tool:** is it in the agents stage, and in which mode.
 
 - **A line in `CLAUDE.md`:** the session of `main_widget` asked for one line in `head.status` about the shown state. The line goes in only after the operator says yes.
 
