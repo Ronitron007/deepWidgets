@@ -232,8 +232,9 @@ function KitField({ value, setValue, placeholder, label, button, dw, disabled, o
 /**
  * The widget kit (`kit.pane.view`): the status, the kit version, the core with a lock mark, the extras with Remove, the
  * Add field, the last change, and the refused install scripts. Add, Remove, and the refuse list do nothing unless the
- * status is `ready`. While a change runs, the section reads the query `settings` again each second, and it stops when the
- * status leaves `changing` (`kit.pane.actions`).
+ * status is `ready`. While the status is `starting` or `changing`, the section reads the query `settings` again each
+ * second, and it stops at `ready` or `unavailable` (`kit.pane.actions`). No event tells the page that the kit start
+ * ended, so a page that opens during the start sees `ready` only through this read.
  */
 export function WidgetKitView({ kit, refresh }: { kit: unknown, refresh: () => void }) {
   const change = useSwitchCall()
@@ -244,18 +245,18 @@ export function WidgetKitView({ kit, refresh }: { kit: unknown, refresh: () => v
   const [now, setNow] = useState(() => Date.now())
   const parsed = kit === null || kit === undefined ? undefined : KitAnswerSchema.safeParse(kit)
   const status = parsed?.success === true && parsed.data.ok ? parsed.data.status : undefined
-  const changing = status === 'changing'
+  const polling = status === 'starting' || status === 'changing'
   const latestRefresh = useRef(refresh)
   useEffect(() => { latestRefresh.current = refresh })
   useEffect(() => {
-    if (!changing) return
+    if (!polling) return
     setNow(Date.now())
     const timer = setInterval(() => {
       setNow(Date.now())
       latestRefresh.current()
     }, 1000)
     return () => { clearInterval(timer) }
-  }, [changing])
+  }, [polling])
   const extra = { 'data-done': String(change.done + refuse.done), 'data-busy': change.busy || refuse.busy ? 'true' : 'false', 'data-status': status ?? '' }
   if (parsed === undefined) return <Section title="Widget kit" dw="settings-kit" extra={extra}><Loading /></Section>
   if (!parsed.success) return <Section title="Widget kit" dw="settings-kit" extra={extra}><SectionProblem text={`The host gave the kit in a shape that the page can not read: ${z.prettifyError(parsed.error)}`} /></Section>

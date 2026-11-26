@@ -49,9 +49,11 @@
  * note. A set of the login item through main refuses with dev-run, Electron main calls no setLoginItemSettings, and
  * macOS has no login item for the dev app. The switch of create turns create off: widget_install gives mode-off, and
  * settings.json has "create": false. On again, the install works. The check saves
- * $TMPDIR/deepwidgets-main-settings/settings.png. Then the section "Widget kit" (kit.pane.view) shows the status ready
- * and 8 core rows with a lock mark. An add of date-fns@^4 through the page shows the change, then the row of date-fns,
- * and Remove takes the row away. These two changes run pnpm online. The check saves settings-kit.png in the same folder.
+ * $TMPDIR/deepwidgets-main-settings/settings.png. Another live process holds the lock of the kit when the app starts.
+ * While the kit start waits for it, the section "Widget kit" (kit.pane.view) shows the status starting. Then the holder
+ * ends, and the page must show ready within 5 s after the start ends, with 8 core rows and a lock mark on each. An add
+ * of date-fns@^4 through the page shows the change, then the row of date-fns, and Remove takes the row away. These two
+ * changes run pnpm online. The check saves settings-kit.png in the same folder.
  * Before the second launch, the hidden panel shows the Settings tab, and the second launch must open it on the Widgets
  * tab.
  * During these page checks the panel does not hide on a loss of focus, so another app on the Mac can not close it.
@@ -239,6 +241,19 @@ if (process.env.DSH_SMOKE_OLD_PROFILE === '1') {
   writeFileSync(join(desktopProfile, 'package.json'), `${JSON.stringify({ name: 'dsh-profile-desktop', private: true, dependencies: {}, dsh: { profile: { bundles: OLD_PROFILE_BUNDLES } } }, undefined, 2)}\n`)
 }
 
+/**
+ * kit.pane.actions: with DSH_SMOKE_MAIN=1, another live process holds the lock of the kit when the app starts. The kit
+ * start of the host waits for it, so the panel page opens while the kit status is starting. checkMainKit ends the
+ * holder, and the page must then read the end of the start by itself.
+ */
+let kitLockHolder
+if (process.env.DSH_SMOKE_MAIN === '1') {
+  const kitDir = join(home, 'deepwidgets', 'kit')
+  await mkdir(kitDir, { recursive: true })
+  kitLockHolder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 900_000)'], { stdio: 'ignore' })
+  writeFileSync(join(kitDir, 'current.lock'), `${String(kitLockHolder.pid)}\n`)
+}
+
 const mainInspectPort = await freePort()
 const rendererPort = await freePort()
 const hostInspectPort = await freePort()
@@ -384,6 +399,7 @@ function finish(ok, reason) {
   if (groupWatcher !== undefined && groupWatcher.exitCode === null) {
     try { groupWatcher.kill('SIGKILL') } catch { /* already gone */ }
   }
+  if (kitLockHolder !== undefined && kitLockHolder.exitCode === null) kitLockHolder.kill('SIGKILL')
   const line = ok ? 'smoke-desktop: pass' : `smoke-desktop: fail: ${reason}`
   console.log(line)
   process.exit(ok ? 0 : 1)
@@ -2617,12 +2633,38 @@ function typeKitSpec(target, text, deadline) {
 }
 
 /**
- * The section "Widget kit" of the Settings tab (kit.pane.view): the status ready, and 8 core rows, each with a lock
- * mark. An add of date-fns@^4 through the page shows the status changing, then its row, and Remove in that row takes it
- * away. Each change runs pnpm online. The check saves $TMPDIR/deepwidgets-main-settings/settings-kit.png with the row
- * of date-fns.
+ * kit.pane.actions: the panel page opened while the kit start waits for the lock of kitLockHolder, so the section shows
+ * the status starting. Then the holder ends, and the page must show ready within 5 s after the start ends. No event
+ * tells the page about the end of the start, so only its read of the query settings each second can show it.
+ */
+async function checkMainKitStart(target, deadline) {
+  if (kitLockHolder === undefined) return 'main kit: no process holds the kit lock'
+  const starting = await pollKit(target, Math.min(deadline, Date.now() + 15_000), (kit) => kit?.status === 'starting')
+  note(`main kit starting=${JSON.stringify(starting.value)}`)
+  if (!starting.ok) return `main kit: while the kit start waits for the lock, the section does not show starting: ${JSON.stringify(starting.value)}`
+  const logFrom = readFileSync(logPath, 'utf8').length
+  kitLockHolder.kill('SIGKILL')
+  // The start takes the lock over and makes kit version 1. Its log line in the output of the app marks the end of the start.
+  let endedAt
+  for (const until = Math.min(deadline, Date.now() + 60_000); endedAt === undefined && Date.now() < until; await delay(100)) {
+    if (/kit: (?:made kit version 1|kit version \d+ is ready)/u.test(readFileSync(logPath, 'utf8').slice(logFrom))) endedAt = Date.now()
+  }
+  if (endedAt === undefined) return 'main kit: the kit start did not end after the holder of the lock ended'
+  const ready = await pollKit(target, Math.min(deadline, endedAt + 5_000), (kit) => kit?.status === 'ready' && kit.core.length === 8)
+  note(`main kit ready ${String(Date.now() - endedAt)} ms after the start ended=${JSON.stringify(ready.value)}`)
+  if (!ready.ok) return `main kit: the page does not show ready within 5 s after the kit start ended: ${JSON.stringify(ready.value)}`
+  return undefined
+}
+
+/**
+ * The section "Widget kit" of the Settings tab (kit.pane.view). After the start (checkMainKitStart), the section shows
+ * the status ready, and 8 core rows, each with a lock mark. An add of date-fns@^4 through the page shows the status
+ * changing, then its row, and Remove in that row takes it away. Each change runs pnpm online. The check saves
+ * $TMPDIR/deepwidgets-main-settings/settings-kit.png with the row of date-fns.
  */
 async function checkMainKit(target, deadline) {
+  const start = await checkMainKitStart(target, deadline)
+  if (start !== undefined) return start
   const change = () => Math.min(deadline, Date.now() + 120_000)
   const first = await pollKit(target, change(), (kit) => kit?.status === 'ready' && kit.core.length === 8)
   note(`main kit first=${JSON.stringify(first.value)}`)
