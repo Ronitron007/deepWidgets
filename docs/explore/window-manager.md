@@ -1,6 +1,6 @@
 # Window manager: the design talk `wm_design`
 
-This document records the design talk about the window manager. It is not the spec. The operator decided the calls `wm_design.owner` and `wm_design.operations`. The other calls are open. The spec comes after the operator gives the whole direction.
+This document records the design talk about the window manager. It is not the spec. The operator decided the calls `wm_design.owner`, `wm_design.operations`, and `wm_design.controls`. The other calls are open. The spec comes after the operator gives the whole direction.
 
 The facts are true on `main` at commit `938c8629b3`, on 2026-11-25.
 
@@ -208,7 +208,7 @@ Thus the deciding question is how much the window code changes after the user st
 
 ## Call: the operations `wm_design.operations`
 
-**Status: decided, with two open points.** The operator gave these answers on 2026-11-25 and 2026-11-26.
+**Status: decided.** The operator gave these answers on 2026-11-25 and 2026-11-26.
 
 | Operation | Decision |
 |---|---|
@@ -216,19 +216,14 @@ Thus the deciding question is how much the window code changes after the user st
 | Move | Yes. |
 | Resize | Yes. The agent decides at build time if a widget is resizable. The default is not resizable. |
 | Size | The agent can set the size at build time. Without it, the widget gets the default size, 320 by 300 pixels today. |
-| Layer | Two layers: always on top, and normal. Each layer has its own default position. |
+| Layer | Two layers: always on top, and normal. Each layer has its own default position. The agent sets the layer at build time. The operator can change it. |
+| Lock | Yes. A locked window can not move, but it still takes clicks. |
 | Reset position | It moves the window to the default position of its layer. |
 | Display | One default place for now. |
 | Snap to edges or a grid | Deferred. |
 | Opacity | Deferred. |
 | Desktop level | Not needed. |
 | Click-through | Not needed. |
-
-The two open points:
-
-- **Lock:** a locked window can not move, but it still takes clicks. The operator did not answer yet.
-
-- **Who chooses the layer:** the agent at build time, the operator, or both.
 
 These facts helped the call:
 
@@ -250,11 +245,31 @@ The operator asked if a tool can send a screenshot of a widget window to the age
 
 - The host must ask Electron main for the capture, as it asks for the render check today (verified, `deepwidgets-render-check.ts`).
 
+## Call: how the operator operates a window `wm_design.controls`
+
+**Status: decided.** The operator gave these answers on 2026-11-26.
+
+- A bar shows when the mouse is over a widget window.
+
+- The bar has three controls: a drag handle, a layer button, and a lock button.
+
+- The bar has no Hide button. Hide stays in the panel.
+
+- A resizable widget resizes from the edges of its window. I proposed this, and the operator did not object.
+
+These facts bear on the build:
+
+- Agents write the pages. Thus the bar can not come from agent code. Our code must add it (inferred).
+
+- Two ways can add the bar. A view inside the window can lie over the page, or Electron main can add a script to each page. Nobody checked either one yet.
+
+- A locked window still needs the bar, because the lock button unlocks it (inferred).
+
 ## Other open calls `wm_design.open`
 
 The operator did not answer these calls yet:
 
-- **How the operator operates a window:** a drag area or a title bar, a right-click menu, or keyboard shortcuts.
+- **Reset position:** the bar has no reset button. Where does the reset go.
 
 - **Persistence:** does a position stay through a restart and through a reinstall.
 
