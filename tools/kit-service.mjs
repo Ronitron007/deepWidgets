@@ -21,6 +21,8 @@
  * - kit.service.lock: the host and another process (tools/fixtures/kit-process.mjs) change the kit at once, and both
  *   changes finish. A start of another process during a change of the host waits, and leaves the change whole. While
  *   another process holds the lock, a page install gives kit-unavailable at once, and an install with no page/ applies.
+ *   While the kit start of the host waits for the lock of another process, a page install gives kit-unavailable at once,
+ *   an install with no page/ applies, and after the start a page install applies.
  * - kit.folder: with core/react pointed at another real folder, an offline frozen install passes and uses that folder.
  *   The next host start points core/react at the app again.
  * - kit.gates: with the registry at an address that does not answer and no node_modules, the host start installs the
@@ -456,6 +458,45 @@ async function waitUntil(test, ms) {
   return false
 }
 
+/**
+ * kit.service.lock: the page gates never wait for the start of the kit. Another process that is alive holds the lock
+ * when the host starts, so the kit start of the host waits for it. While the start waits, a page install gives
+ * kit-unavailable at once from the branch of the start, and an install with no page/ applies. When the holder ends, the
+ * start takes the lock over and ends, and a page install applies.
+ */
+async function slowStartHost(port) {
+  const lockFile = join(kitDir, 'current.lock')
+  const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120_000)'], { stdio: 'ignore' })
+  writeFileSync(lockFile, `${String(holder.pid)}\n`)
+  try {
+    await startHost(port)
+    const call = await connect()
+    const asked = (args) => bounded(call('widget_install', args), lateAnswer('widget_install')).catch((error) => ({ isError: true, body: { error: { code: 'client-error', message: String(error) } } }))
+    const thisStart = () => { const log = readFileSync(logPath, 'utf8'); return log.slice(log.lastIndexOf('==== host start')) }
+    const startEnded = () => /kit: (?:kit version \d+ is ready|made kit version 1|the widget kit is unavailable)/.test(thisStart())
+    const sent = performance.now()
+    const early = await asked({ dir: pageDir })
+    const earlyMs = Math.round(performance.now() - sent)
+    // The proof that the install hit the window: the start had not ended when the answer came, and the holder is alive.
+    const inWindow = !startEnded() && holder.exitCode === null
+    const plain = await asked({ dir: plainDir })
+    check('while the kit start of the host waits, a page install gives kit-unavailable from the start in at most 5 s with a next step to try again, and an install with no page/ applies',
+      inWindow && early.isError && early.body?.error?.code === 'kit-unavailable' && /its start runs/.test(early.body.error.message ?? '')
+        && /again/.test(early.body.error.nextStep ?? '') && earlyMs <= 5000 && !plain.isError && plain.body?.application === 'applied',
+      brief({ inWindow, earlyMs, early: early.body?.error ?? early.body?.application, plain: plain.body?.error ?? plain.body?.application }))
+    holder.kill('SIGKILL')
+    const ended = await waitUntil(startEnded, 60_000)
+    const late = await asked({ dir: pageDir })
+    check('after the kit start ends, a page install applies',
+      ended && /kit: kit version \d+ is ready/.test(thisStart()) && !late.isError && late.body?.application === 'applied',
+      brief({ ended, late: late.body?.error ?? late.body?.application }))
+  } finally {
+    holder.kill('SIGKILL')
+    rmSync(lockFile, { force: true })
+    await stopHost()
+  }
+}
+
 /** kit.service.lock: another process changes the kit while this host changes it, or starts while it changes. */
 async function lockHost(port) {
   await startHost(port)
@@ -596,6 +637,7 @@ try {
     ['the first host', () => firstHost(port, core)],
     ['the start after remove', () => afterRemoveHost(port)],
     ['the lock steps', () => lockHost(port)],
+    ['the slow kit start', () => slowStartHost(port)],
     ['the core link to another folder', () => relinkPart(core)],
     ['the registry that does not answer', () => deadRegistryHost(port, core)],
     ['pnpm 10', () => pnpm10Host(port)],
