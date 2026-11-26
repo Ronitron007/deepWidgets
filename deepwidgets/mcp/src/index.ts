@@ -42,6 +42,7 @@ import { localhostHostValidation, toNodeHandler } from '@modelcontextprotocol/no
 import type { NodeIncomingMessageLike } from '@modelcontextprotocol/node'
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import type { CallToolResult, StandardSchemaWithJSON } from '@modelcontextprotocol/server'
+import validatePackageName from 'validate-npm-package-name'
 import { z } from 'zod'
 import { CreationError, pageTemplateFiles, templateFiles, widgetTypesText, WidgetInstaller } from './creation.ts'
 import type { CreationErrorCode, GateName, InstallOutcome, PageState } from './creation.ts'
@@ -208,12 +209,15 @@ async function loadSettingsFile(file: string): Promise<SettingsFile> {
 const kitSettingsSchema = z.object({ kit: z.object({ refuseBuilds: z.array(z.string()).optional() }).optional() })
 
 /**
- * A package name that the refuse list takes (`kit.pane.actions`): the rule of `NAME` in `@deepwidgets/kit`, which
- * `remove` of the kit uses. A scope is optional. The name has lowercase letters, digits, `.`, `_`, `~`, and `-`, with a
- * letter or a digit first. npm allows at most 214 characters.
+ * kit.pane.actions: the reason that npm does not accept `name`, or undefined for a name that npm accepts. The refuse
+ * list takes the names of old packages too, such as `JSONStream`: such a package can reach the kit as a dependency of
+ * an extra, and the hook of the kit compares exact names (`kit.settings`).
  */
-const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/
-const PACKAGE_NAME_MAX = 214
+function badPackageName(name: string): string | undefined {
+  const checked = validatePackageName(name)
+  if (checked.validForNewPackages || checked.validForOldPackages) return undefined
+  return checked.errors.join(', ')
+}
 
 /**
  * The settings file with its refuse list: the parsed JSON with each key that it has, and the names of
@@ -734,14 +738,18 @@ export class McpSettingsService extends Service {
   /**
    * kit.pane.actions: set `kit.refuseBuilds` to `names`, in the order given, with each name once. The next change of the
    * kit reads the list; a change that runs now keeps the list that it read.
-   * @returns the list after the write, or a refusal: `bad-name` for a name that is not an npm package name
-   *   (`PACKAGE_NAME`), `settings-unreadable` for a file that does not parse, or `write-failed`. A refusal writes nothing.
+   * @returns the list after the write, or a refusal: `bad-name` for a name that npm does not accept, also not for an
+   *   old package (`validate-npm-package-name`), `settings-unreadable` for a file that does not parse, or
+   *   `write-failed`. A refusal writes nothing.
    */
   setRefuseBuilds(names: readonly string[]): Promise<SetRefuseBuildsResult> {
     const run = async (): Promise<SetRefuseBuildsResult> => {
-      const bad = names.filter((name) => name.length > PACKAGE_NAME_MAX || !PACKAGE_NAME.test(name))
+      const bad = names.flatMap((name) => {
+        const reason = badPackageName(name)
+        return reason === undefined ? [] : [`${JSON.stringify(name)} (${reason})`]
+      })
       if (bad.length > 0) {
-        return { ok: false, code: 'bad-name', message: `the refuse list takes only npm package names, and ${bad.map((name) => JSON.stringify(name)).join(', ')} ${bad.length === 1 ? 'is not one' : 'are not'}. A name has lowercase letters, digits, ".", "_", "~", and "-", with a letter or a digit first and an optional scope, such as @scope/name. The list did not change.` }
+        return { ok: false, code: 'bad-name', message: `the refuse list takes only names that npm accepts, and npm does not accept ${bad.join(', ')}. The list did not change.` }
       }
       const loaded = await loadRefuseBuilds(this.settingsFile)
       if ('error' in loaded) return { ok: false, code: 'settings-unreadable', message: `${loaded.error}. The refuse list did not change. Fix or remove ${this.settingsFile}.` }

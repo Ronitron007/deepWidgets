@@ -35,8 +35,8 @@
  *   kit-busy, and later the status is ready, with date-fns at an exact version and a last change with no error. A core
  *   package gives in-core at once, and a spec that is not a package name gives not-found at once. setRefuseBuilds of
  *   core-js keeps the key modes, and then kitAdd of core-js ends with a last change of install-failed that names
- *   core-js. kitRemove removes date-fns. A bad name gives bad-name. A settings file that does not parse makes only the
- *   refuse list a refusal. With the row of the kit off, the part kit is the refusal unavailable, and the modes still
+ *   core-js. kitRemove removes date-fns. A name that npm does not accept gives bad-name, and the old name JSONStream is
+ *   written. A settings file that does not parse makes only the refuse list a refusal. With the row of the kit off, the part kit is the refusal unavailable, and the modes still
  *   show. These steps need the npm registry.
  * - kit.pane.service: a fourth host start, while another live process holds the kit lock. The query settings answers in
  *   at most 2 s, with the kit status starting and the modes, and kitAdd and kitRemove give kit-unavailable at once. A
@@ -589,8 +589,14 @@ async function kitPart(call) {
   // ---- bad-name, and a settings file that does not parse ----
   const kept = readFileSync(settingsFile, 'utf8')
   const bad = await route('main', 'setRefuseBuilds', { names: ['core-js', 'Bad Name!'] })
-  check('setRefuseBuilds of a name that npm does not allow gives bad-name, and the file stays',
+  check('setRefuseBuilds of a name that npm does not accept gives bad-name, and the file stays',
     refusedWith(bad) === 'bad-name' && bad.body.result.message.includes('Bad Name!') && readFileSync(settingsFile, 'utf8') === kept, JSON.stringify(bad.body))
+  // kit.pane.actions: an old package with capital letters can reach the kit as a dependency of an extra.
+  const legacy = await route('main', 'setRefuseBuilds', { names: ['JSONStream'] })
+  check('setRefuseBuilds of the old npm name JSONStream writes the name',
+    legacy.body?.result?.ok === true && JSON.stringify(legacy.body.result.names) === '["JSONStream"]'
+      && JSON.stringify(JSON.parse(readFileSync(settingsFile, 'utf8')).kit?.refuseBuilds) === '["JSONStream"]',
+    JSON.stringify(legacy.body))
   const broken = '{ "kit": { "refuseBuilds": '
   writeFileSync(settingsFile, broken)
   const brokenKit = await kitSettings()
