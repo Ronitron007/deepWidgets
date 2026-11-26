@@ -146,6 +146,8 @@ export function createElectronBuilderConfig(
       'lib/preload-platform-account.cjs',
       'lib/preload-update-dialog.cjs',
       'lib/preload-welcome.cjs',
+      // deepwidgets-trim: window_manager.bar. The preload of the bar of each widget window; added line.
+      'lib/preload-widget-bar.cjs',
       'renderer/**/*',
       'package.json',
       '!node_modules/**/*.{js,cjs,mjs,ts,cts,mts,css}.map',

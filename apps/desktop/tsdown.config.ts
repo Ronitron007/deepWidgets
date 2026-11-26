@@ -96,7 +96,9 @@ export default defineConfig([
     clean: false,
     deps: { neverBundle: ['electron'] },
   },
-  ...(['preload-app', 'preload-welcome', 'preload-platform-account', 'preload-mandatory', 'preload-update-dialog'] as const).map(name => ({
+  // deepwidgets-trim: window_manager.bar. The bar of each widget window has its own sandboxed preload.
+  // ...(['preload-app', 'preload-welcome', 'preload-platform-account', 'preload-mandatory', 'preload-update-dialog'] as const).map(name => ({
+  ...(['preload-app', 'preload-welcome', 'preload-platform-account', 'preload-mandatory', 'preload-update-dialog', 'preload-widget-bar'] as const).map(name => ({
     // Sandboxed Electron preloads run as CommonJS even though the application package is ESM.
     entry: { [name]: `lib/types/${name}.js` },
     plugins: [packagedImportsPlugin(preloadImports)],

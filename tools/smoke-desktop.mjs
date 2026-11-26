@@ -60,6 +60,14 @@
  * kills the host, and after the hello of the new host the window is still hidden. Turn off and Turn on give sample a
  * new window, and it stays hidden. The action show shows it again.
  * It turns the sample row off through the host plugin manager and finds that window closed.
+ * With DSH_SMOKE_WM=1, the check reads the bar of the window of sample (window_manager.bar, window_manager.move). The
+ * window has a bar view over its page, in another renderer, and does not resize. The hover hook of the check replaces
+ * the mouse reader of the bars in Electron main. With the hook point outside each window, the bar is hidden. With the
+ * hook point in the window, the bar shows. Clicks in the bar view (mouse events of webContents.sendInputEvent) work
+ * the buttons: the lock button makes isMovable() false, then true again. The layer button makes isAlwaysOnTop() false
+ * and moves the undragged window to the column at the right edge, then back. A drag on the handle (mouse down and up
+ * in the bar view, with the hook point moved between them) moves the window by the move of the hook point. With the
+ * lock on, the same drag does not move it. A script in the page of sample finds no bar element.
  * With DSH_SMOKE_HOST_RESTART=1, the check kills the host once. The sample widget page must be live again
  * (count readable, an add shows, its stream did not close), and the main window must load again for the new host.
  * Then it kills the host again and quits the app while the restart waits; the app must exit with no kill.
@@ -499,6 +507,7 @@ try {
         if (failed === undefined && (process.env.DSH_SMOKE_ROWS ?? '') !== '') failed = await checkRows(page, deadline)
         if (failed === undefined && (process.env.DSH_SMOKE_INSTALL ?? '') !== '') failed = await checkInstall(deadline)
         if (failed === undefined && (process.env.DSH_SMOKE_WIDGET ?? '') !== '') failed = await checkWidget(page, deadline)
+        if (failed === undefined && process.env.DSH_SMOKE_WM === '1') failed = await checkWm(deadline)
         // Before the windows check: that check ends with the sample row off, and this one needs the sample window.
         if (failed === undefined && process.env.DSH_SMOKE_MAIN === '1') failed = await checkMain(deadline)
         if (failed === undefined && process.env.DSH_SMOKE_WINDOWS === '1') failed = await checkWindows(deadline)
@@ -980,6 +989,176 @@ async function checkWindows(deadline) {
   failed = await waitHello(hellos, soon())
   if (failed !== undefined) return failed
   return waitPages(url, 0, soon(), 'after hello without sample')
+}
+
+/**
+ * Run `body` in Electron main for the window of sample (window_manager.bar), in one inspector call: each call finds the
+ * instance with Runtime.queryObjects, which is slow. The body gets these helpers:
+ * `read()` gives the window and its bar; `right` and `left` are the default positions of the layers `normal` and `top`
+ * for the row of the window, and `dragging` is true while a drag of the handle lasts.
+ * `until(test, ms)` polls `read()` every 50 ms. `hover(point)` is the hover hook: the mouse reader of the bars gives
+ * `point`. `input(events)` sends mouse events to the bar view with webContents.sendInputEvent. `rect(name)` gives the
+ * client rectangle of one control of the bar, from a script in the bar view. `click(name)` puts the hook point in the
+ * window, waits for the bar, and sends a mouse down and up at the center of the control. `drag(delta)` puts the hook
+ * point on the handle, sends a mouse down, moves the hook point by `delta`, and sends a mouse up.
+ */
+function wmMain(deadline, body) {
+  return withWidgetWindows(deadline, `async function () {
+    const entry = this.windows.get('sample')
+    if (entry === undefined || entry.window.isDestroyed()) return { error: 'sample has no window' }
+    const { window, bar } = entry
+    const contents = bar.view.webContents
+    const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms) })
+    const read = () => {
+      const data = this.data.get('sample')
+      const children = window.contentView.children
+      return {
+        visible: window.isVisible(), loaded: entry.loaded === true,
+        barView: children.includes(bar.view) && children.at(-1) === bar.view, barShown: bar.view.getVisible(),
+        barLoaded: !contents.isLoading() && contents.getURL().startsWith('data:text/html'),
+        ownRenderer: contents.getOSProcessId() !== window.webContents.getOSProcessId(),
+        bounds: window.getBounds(), barBounds: bar.view.getBounds(),
+        movable: window.isMovable(), top: window.isAlwaysOnTop(), resizable: window.isResizable(),
+        right: this.placeOf({ ...data, layer: 'normal', position: undefined }, entry.row),
+        left: this.placeOf({ ...data, layer: 'top', position: undefined }, entry.row),
+        dragging: [...this.bars.bars.values()].some((item) => item.slug === 'sample' && item.drag !== undefined),
+      }
+    }
+    const until = async (test, ms) => {
+      const end = Date.now() + ms
+      for (;;) {
+        const value = read()
+        if (test(value)) return { ok: true, value }
+        if (Date.now() > end) return { ok: false, value }
+        await sleep(50)
+      }
+    }
+    const hover = (point) => {
+      if (this.__smokeCursor === undefined) this.__smokeCursor = this.bars.cursorPoint
+      this.bars.cursorPoint = () => point
+    }
+    const input = (events) => { for (const event of events) contents.sendInputEvent(event) }
+    const rect = async (name) => JSON.parse(await contents.executeJavaScript('JSON.stringify(document.querySelector(\\'[data-bar="' + name + '"]\\')?.getBoundingClientRect() ?? null)'))
+    const hoverWindow = async () => {
+      const { bounds } = read()
+      hover({ x: bounds.x + Math.round(bounds.width / 2), y: bounds.y + Math.round(bounds.height / 2) })
+      return until((wm) => wm.barShown, 5000)
+    }
+    const click = async (name) => {
+      if (!(await hoverWindow()).ok) return 'the bar does not show with the hook point in the window'
+      const box = await rect(name)
+      if (box === null) return 'the bar has no control ' + name
+      const point = { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) }
+      input([{ type: 'mouseMove', ...point }, { type: 'mouseDown', ...point, button: 'left', clickCount: 1 }, { type: 'mouseUp', ...point, button: 'left', clickCount: 1 }])
+      return undefined
+    }
+    const drag = async (delta) => {
+      const hovered = await hoverWindow()
+      if (!hovered.ok) return 'the bar does not show with the hook point in the window'
+      const box = await rect('handle')
+      if (box === null) return 'the bar has no handle'
+      const local = { x: Math.round(box.x + 20), y: Math.round(box.y + box.height / 2) }
+      const before = hovered.value.bounds
+      const start = { x: before.x + local.x, y: before.y + local.y }
+      hover(start)
+      input([{ type: 'mouseMove', ...local }, { type: 'mouseDown', ...local, button: 'left', clickCount: 1 }])
+      // Electron main reads the hook point when the drag starts. Move the point only after that, or after 1 s.
+      const started = await until((wm) => wm.dragging, 1000)
+      hover({ x: start.x + delta.x, y: start.y + delta.y })
+      input([{ type: 'mouseMove', ...local, modifiers: ['leftButtonDown'] }])
+      await sleep(300)
+      input([{ type: 'mouseUp', ...local, button: 'left', clickCount: 1 }])
+      const ended = await until((wm) => !wm.dragging, 3000)
+      await sleep(200)
+      return { before, after: read().bounds, started: started.ok, ended: ended.ok }
+    }
+    ${body}
+  }`)
+}
+
+/** Put the real mouse reader of the bars back. */
+function wmUnhover() {
+  return 'function () { if (this.__smokeCursor !== undefined) this.bars.cursorPoint = this.__smokeCursor; delete this.__smokeCursor; return true }'
+}
+
+/** The checks of DSH_SMOKE_WM (window_manager.bar, window_manager.move). */
+async function checkWm(deadline) {
+  try {
+    return await checkWmSteps(deadline)
+  } finally {
+    await withWidgetWindows(deadline, wmUnhover()).catch(() => undefined)
+  }
+}
+
+async function checkWmSteps(deadline) {
+  const ready = await wmMain(deadline, 'return until((wm) => wm.visible && wm.loaded && wm.barLoaded, 60000)')
+  if (ready?.ok !== true) return `wm: the window of sample with its bar did not load: ${JSON.stringify(ready)}`
+  // The hook point outside each window: the bar must be hidden. The real mouse can be anywhere.
+  const start = await wmMain(deadline, 'hover({ x: -100000, y: -100000 }); await sleep(500); return read()')
+  note(`wm start: ${JSON.stringify(start)}`)
+  if (start?.barView !== true) return `wm: the window of sample has no bar view over its page: ${JSON.stringify(start)}`
+  if (!start.ownRenderer) return 'wm: the bar view shares the renderer of the page'
+  if (start.barShown) return 'wm: the bar shows with the mouse outside the window'
+  if (start.barBounds.height !== 24 || start.barBounds.width !== start.bounds.width || start.barBounds.x !== 0 || start.barBounds.y !== 0) {
+    return `wm: the bar is not 24 points high at the top of the window: ${JSON.stringify(start.barBounds)}`
+  }
+  if (start.resizable) return 'wm: the window of sample resizes, and its window data says resizable false'
+  if (!start.movable || !start.top) return `wm: a new window must be movable and on top: ${JSON.stringify(start)}`
+  if (start.bounds.x !== start.left.x || start.bounds.y !== start.left.y) return `wm: the window of sample is not at the default position of top: ${JSON.stringify(start)}`
+  const hovered = await wmMain(deadline, 'return hoverWindow()')
+  note(`wm hover: ${JSON.stringify({ ok: hovered?.ok, barShown: hovered?.value?.barShown })}`)
+  if (hovered?.ok !== true) return `wm: the bar does not show with the hook point in the window: ${JSON.stringify(hovered)}`
+  // Each click goes to the bar view as mouse events. The lock button sets isMovable(), the layer button isAlwaysOnTop().
+  const buttons = await wmMain(deadline, `
+    const steps = []
+    for (const want of [false, true]) {
+      const failed = await click('lock')
+      if (failed !== undefined) return { failed }
+      const polled = await until((wm) => wm.movable === want, 5000)
+      steps.push({ control: 'lock', want, movable: polled.value.movable, ok: polled.ok })
+    }
+    for (const [want, column] of [[false, 'right'], [true, 'left']]) {
+      const failed = await click('layer')
+      if (failed !== undefined) return { failed }
+      const polled = await until((wm) => wm.top === want && wm.bounds.x === wm[column].x && wm.bounds.y === wm[column].y, 5000)
+      steps.push({ control: 'layer', want, column, top: polled.value.top, bounds: polled.value.bounds, ok: polled.ok })
+    }
+    return { steps }`)
+  note(`wm buttons: ${JSON.stringify(buttons)}`)
+  if (buttons?.failed !== undefined) return `wm: ${String(buttons.failed)}`
+  const wrong = buttons?.steps?.find((step) => !step.ok)
+  if (buttons?.steps?.length !== 4 || wrong !== undefined) {
+    return wrong?.control === 'lock'
+      ? `wm: after a click of the lock button, isMovable() is not ${String(wrong.want)}`
+      : `wm: after a click of the layer button, isAlwaysOnTop() is not ${String(wrong?.want)}, or the undragged window is not in the ${String(wrong?.column)} column: ${JSON.stringify(buttons)}`
+  }
+  // A drag on the handle moves the window by the move of the hook point. The same drag of a locked window does not.
+  const drags = await wmMain(deadline, `
+    const free = await drag({ x: 60, y: 45 })
+    if (typeof free === 'string') return { failed: free }
+    let failed = await click('lock')
+    if (failed !== undefined) return { failed }
+    const locked = await until((wm) => !wm.movable, 5000)
+    if (!locked.ok) return { failed: 'the lock button did not lock the window before the locked drag' }
+    const held = await drag({ x: 60, y: 45 })
+    if (typeof held === 'string') return { failed: held }
+    failed = await click('lock')
+    if (failed !== undefined) return { failed }
+    return { free, held, unlocked: (await until((wm) => wm.movable, 5000)).ok }`)
+  note(`wm drags: ${JSON.stringify(drags)}`)
+  if (drags?.failed !== undefined) return `wm: ${String(drags.failed)}`
+  const { free, held } = drags ?? {}
+  if (free?.started !== true || free.ended !== true) return `wm: the drag on the handle did not start and end: ${JSON.stringify(free)}`
+  if (free.after.x !== free.before.x + 60 || free.after.y !== free.before.y + 45) return `wm: the drag on the handle did not move the window by 60, 45: ${JSON.stringify(free)}`
+  if (held?.started !== false || held.after.x !== held.before.x || held.after.y !== held.before.y) return `wm: a drag of the locked window moved it: ${JSON.stringify(held)}`
+  if (drags.unlocked !== true) return 'wm: the lock button did not unlock the window after the locked drag'
+  // The page of sample is agent code. It must not reach the bar: the bar is in another view.
+  const page = await findWidgetPage('sample', Math.min(deadline, Date.now() + 15_000))
+  if (page === undefined) return 'wm: no renderer page for the window of sample'
+  const reach = JSON.parse(String(await evaluate(page.webSocketDebuggerUrl, "JSON.stringify({ bar: document.querySelector('[data-deepwidgets-bar], [data-bar]') !== null, frames: window.frames.length })", deadline)))
+  note(`wm page reach: ${JSON.stringify(reach)}`)
+  if (reach.bar !== false) return `wm: a script in the page of sample finds a bar element: ${JSON.stringify(reach)}`
+  return undefined
 }
 
 /** The `deepwidgets-supervisor {json}` lines of Electron main in the app log, from the time `since` on. */
