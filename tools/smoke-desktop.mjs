@@ -70,10 +70,16 @@
  * window has a bar view over its page, in another renderer, and does not resize. The hover hook of the check replaces
  * the mouse reader of the bars in Electron main. With the hook point outside each window, the bar is hidden. With the
  * hook point in the window, the bar shows. Clicks in the bar view (mouse events of webContents.sendInputEvent) work
- * the buttons: the lock button makes isMovable() false, then true again. The layer button makes isAlwaysOnTop() false
- * and moves the undragged window to the column at the right edge, then back. A drag on the handle (mouse down and up
- * in the bar view, with the hook point moved between them) moves the window by the move of the hook point. With the
- * lock on, the same drag does not move it. A script in the page of sample finds no bar element.
+ * the buttons: the lock button makes isMovable() false, then true again. The layer button makes isAlwaysOnTop() and
+ * isVisibleOnAllWorkspaces() false, then true again, and it does not move the window, also with the lock on. The Host
+ * gets each choice: the next frame has it (wm.store). A drag on the handle (mouse down and up in the bar view, with the
+ * hook point moved between them) moves the window by the move of the hook point, and the Host stores the position.
+ * With the lock on, the same drag does not move it. A drag to the top edge of the display stores the position that
+ * getPosition() gives, not the asked point. After a reset of the position through the route, a press and a release on
+ * the handle with no move store no position. A position, the layer normal, and the lock from the bar stay through Turn
+ * off and Turn on: the new window of sample has them. The check kills the host and clicks the layer button in the gap:
+ * the choice waits in Electron main, reaches the next host, and the hello of that host does not undo it. A script in
+ * the page of sample finds no bar element, and its call of /api/widget-windows/sample gets 404.
  * With DSH_SMOKE_HOST_RESTART=1, the check kills the host once. The sample widget page must be live again
  * (count readable, an add shows, its stream did not close), and the main window must load again for the new host.
  * Then it kills the host again and quits the app while the restart waits; the app must exit with no kill.
@@ -1014,13 +1020,15 @@ async function checkWindows(deadline) {
 /**
  * Run `body` in Electron main for the window of sample (window_manager.bar), in one inspector call: each call finds the
  * instance with Runtime.queryObjects, which is slow. The body gets these helpers:
- * `read()` gives the window and its bar; `right` and `left` are the default positions of the layers `normal` and `top`
- * for the row of the window, and `dragging` is true while a drag of the handle lasts.
+ * `read()` gives the window and its bar; `home` is the default position for the row of the window, for both layers
+ * (window_manager.provisional), and `dragging` is true while a drag of the handle lasts. `host` is the window data of
+ * sample in the last frame of the Host, with `position: null` for none, and `pending` the choices that wait for the Host.
  * `until(test, ms)` polls `read()` every 50 ms. `hover(point)` is the hover hook: the mouse reader of the bars gives
  * `point`. `input(events)` sends mouse events to the bar view with webContents.sendInputEvent. `rect(name)` gives the
  * client rectangle of one control of the bar, from a script in the bar view. `click(name)` puts the hook point in the
  * window, waits for the bar, and sends a mouse down and up at the center of the control. `drag(delta)` puts the hook
- * point on the handle, sends a mouse down, moves the hook point by `delta`, and sends a mouse up.
+ * point on the handle, sends a mouse down, moves the hook point by `delta`, and sends a mouse up. `post(change)` sends
+ * one change to POST /api/widget-windows/sample with the Host cookie of Electron main, as the bar does.
  */
 function wmMain(deadline, body) {
   return withWidgetWindows(deadline, `async function () {
@@ -1031,6 +1039,7 @@ function wmMain(deadline, body) {
     const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms) })
     const read = () => {
       const data = this.data.get('sample')
+      const host = this.host.get('sample')
       const children = window.contentView.children
       return {
         visible: window.isVisible(), loaded: entry.loaded === true,
@@ -1039,10 +1048,20 @@ function wmMain(deadline, body) {
         ownRenderer: contents.getOSProcessId() !== window.webContents.getOSProcessId(),
         bounds: window.getBounds(), barBounds: bar.view.getBounds(),
         movable: window.isMovable(), top: window.isAlwaysOnTop(), resizable: window.isResizable(),
-        right: this.placeOf({ ...data, layer: 'normal', position: undefined }, entry.row),
-        left: this.placeOf({ ...data, layer: 'top', position: undefined }, entry.row),
-        dragging: [...this.bars.bars.values()].some((item) => item.slug === 'sample' && item.drag !== undefined),
+        allSpaces: window.isVisibleOnAllWorkspaces(),
+        home: this.placeOf({ ...data, position: undefined }, entry.row),
+        // The top of the work area of the primary display: the default position of row 0 is 16 points below it.
+        areaTop: this.placeOf({ ...data, position: undefined, height: 1 }, 0).y - 16,
+        dragging: this.bars.dragging('sample'),
+        host: host === undefined ? null : { ...host, position: host.position ?? null },
+        pending: this.pending.get('sample') ?? null,
       }
+    }
+    const post = async (change) => {
+      const answer = await fetch(new URL('/api/widget-windows/sample', this.target.url), {
+        method: 'POST', headers: { 'content-type': 'application/json', cookie: this.target.cookie }, body: JSON.stringify(change),
+      })
+      return { status: answer.status, body: await answer.json().catch(() => null) }
     }
     const until = async (test, ms) => {
       const end = Date.now() + ms
@@ -1129,38 +1148,91 @@ async function checkWmSteps(deadline) {
   }
   if (start.resizable) return 'wm: the window of sample resizes, and its window data says resizable false'
   if (!start.movable || !start.top) return `wm: a new window must be movable and on top: ${JSON.stringify(start)}`
-  if (start.bounds.x !== start.left.x || start.bounds.y !== start.left.y) return `wm: the window of sample is not at the default position of top: ${JSON.stringify(start)}`
+  if (start.bounds.x !== start.home.x || start.bounds.y !== start.home.y) return `wm: the window of sample is not at the default position: ${JSON.stringify(start)}`
+  if (!start.allSpaces) return `wm: a new window of the layer top is not on all Spaces: ${JSON.stringify(start)}`
   const hovered = await wmMain(deadline, 'return hoverWindow()')
   note(`wm hover: ${JSON.stringify({ ok: hovered?.ok, barShown: hovered?.value?.barShown })}`)
   if (hovered?.ok !== true) return `wm: the bar does not show with the hook point in the window: ${JSON.stringify(hovered)}`
-  // Each click goes to the bar view as mouse events. The lock button sets isMovable(), the layer button isAlwaysOnTop().
+  const failed = await checkWmButtons(deadline)
+    ?? await checkWmDrags(deadline)
+    ?? await checkWmStoredPlace(deadline)
+    ?? await checkWmTurnOn(deadline)
+    ?? await checkWmHostDown(deadline)
+  if (failed !== undefined) return failed
+  // The page of sample is agent code. It must not reach the bar: the bar is in another view. It must not reach the
+  // window route of the operator either (window_manager.route): its widget origin gives 404.
+  const page = await findWidgetPage('sample', Math.min(deadline, Date.now() + 15_000))
+  if (page === undefined) return 'wm: no renderer page for the window of sample'
+  const reach = JSON.parse(String(await evaluate(page.webSocketDebuggerUrl, "JSON.stringify({ bar: document.querySelector('[data-deepwidgets-bar], [data-bar]') !== null, frames: window.frames.length })", deadline)))
+  note(`wm page reach: ${JSON.stringify(reach)}`)
+  if (reach.bar !== false) return `wm: a script in the page of sample finds a bar element: ${JSON.stringify(reach)}`
+  const fromPage = JSON.parse(String(await evaluate(page.webSocketDebuggerUrl,
+    "fetch('/api/widget-windows/sample', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ layer: 'normal' }) }).then((answer) => JSON.stringify({ status: answer.status }))",
+    deadline, true)))
+  const afterPage = await wmMain(deadline, 'await sleep(500); return read()')
+  note(`wm page route: ${JSON.stringify({ fromPage, host: afterPage?.host })}`)
+  if (fromPage.status !== 404 || afterPage?.host?.layer !== 'top') return `wm: a call of /api/widget-windows/sample from the page of sample did not get 404: ${JSON.stringify({ fromPage, host: afterPage?.host })}`
+  return undefined
+}
+
+/**
+ * The buttons of the bar (window_manager.bar, window_manager.move). Each click goes to the bar view as mouse events. The
+ * lock button sets isMovable(), and the Host gets the lock. The layer button sets isAlwaysOnTop() and
+ * isVisibleOnAllWorkspaces(): the layer normal stays on its one Space. A layer click does not move the window, also when
+ * it is locked, and the Host gets the layer.
+ */
+async function checkWmButtons(deadline) {
   const buttons = await wmMain(deadline, `
     const steps = []
     for (const want of [false, true]) {
       const failed = await click('lock')
       if (failed !== undefined) return { failed }
-      const polled = await until((wm) => wm.movable === want, 5000)
-      steps.push({ control: 'lock', want, movable: polled.value.movable, ok: polled.ok })
+      const polled = await until((wm) => wm.movable === want && wm.host?.locked === !want && wm.pending === null, 5000)
+      steps.push({ control: 'lock', want, movable: polled.value.movable, host: polled.value.host?.locked, ok: polled.ok })
     }
-    for (const [want, column] of [[false, 'right'], [true, 'left']]) {
-      const failed = await click('layer')
-      if (failed !== undefined) return { failed }
-      const polled = await until((wm) => wm.top === want && wm.bounds.x === wm[column].x && wm.bounds.y === wm[column].y, 5000)
-      steps.push({ control: 'layer', want, column, top: polled.value.top, bounds: polled.value.bounds, ok: polled.ok })
+    for (const locked of [false, true]) {
+      if (locked) {
+        const failed = await click('lock')
+        if (failed !== undefined) return { failed }
+        if (!(await until((wm) => !wm.movable, 5000)).ok) return { failed: 'the lock button did not lock the window before the locked layer clicks' }
+      }
+      for (const want of [false, true]) {
+        const before = read().bounds
+        const failed = await click('layer')
+        if (failed !== undefined) return { failed }
+        const polled = await until((wm) => wm.top === want && wm.allSpaces === want && wm.host?.layer === (want ? 'top' : 'normal') && wm.pending === null, 5000)
+        await sleep(300)
+        const after = read().bounds
+        const kept = after.x === before.x && after.y === before.y
+        steps.push({ control: 'layer', locked, want, top: polled.value.top, allSpaces: polled.value.allSpaces, host: polled.value.host?.layer, before, after, kept, ok: polled.ok && kept })
+      }
+      if (locked) {
+        const failed = await click('lock')
+        if (failed !== undefined) return { failed }
+        if (!(await until((wm) => wm.movable, 5000)).ok) return { failed: 'the lock button did not unlock the window after the locked layer clicks' }
+      }
     }
     return { steps }`)
   note(`wm buttons: ${JSON.stringify(buttons)}`)
   if (buttons?.failed !== undefined) return `wm: ${String(buttons.failed)}`
   const wrong = buttons?.steps?.find((step) => !step.ok)
-  if (buttons?.steps?.length !== 4 || wrong !== undefined) {
-    return wrong?.control === 'lock'
-      ? `wm: after a click of the lock button, isMovable() is not ${String(wrong.want)}`
-      : `wm: after a click of the layer button, isAlwaysOnTop() is not ${String(wrong?.want)}, or the undragged window is not in the ${String(wrong?.column)} column: ${JSON.stringify(buttons)}`
+  if (buttons?.steps?.length !== 6 || wrong !== undefined) {
+    if (wrong?.control === 'lock') return `wm: after a click of the lock button, isMovable() is not ${String(wrong.want)}, or the Host does not have the lock: ${JSON.stringify(wrong)}`
+    if (wrong?.kept === false) return `wm: a click of the layer button moved the ${wrong.locked ? 'locked' : 'unlocked'} window: ${JSON.stringify(wrong)}`
+    return `wm: after a click of the layer button, isAlwaysOnTop() or isVisibleOnAllWorkspaces() is not ${String(wrong?.want)}, or the Host does not have the layer: ${JSON.stringify(buttons)}`
   }
-  // A drag on the handle moves the window by the move of the hook point. The same drag of a locked window does not.
+  return undefined
+}
+
+/**
+ * A drag on the handle moves the window by the move of the hook point, and the Host stores the position that the window
+ * has. The same drag of a locked window does not move it.
+ */
+async function checkWmDrags(deadline) {
   const drags = await wmMain(deadline, `
     const free = await drag({ x: 60, y: 45 })
     if (typeof free === 'string') return { failed: free }
+    const stored = await until((wm) => wm.pending === null && wm.host?.position?.x === wm.bounds.x && wm.host?.position?.y === wm.bounds.y, 5000)
     let failed = await click('lock')
     if (failed !== undefined) return { failed }
     const locked = await until((wm) => !wm.movable, 5000)
@@ -1169,20 +1241,136 @@ async function checkWmSteps(deadline) {
     if (typeof held === 'string') return { failed: held }
     failed = await click('lock')
     if (failed !== undefined) return { failed }
-    return { free, held, unlocked: (await until((wm) => wm.movable, 5000)).ok }`)
+    return { free, stored: stored.ok, host: stored.value.host?.position, held, unlocked: (await until((wm) => wm.movable, 5000)).ok }`)
   note(`wm drags: ${JSON.stringify(drags)}`)
   if (drags?.failed !== undefined) return `wm: ${String(drags.failed)}`
   const { free, held } = drags ?? {}
   if (free?.started !== true || free.ended !== true) return `wm: the drag on the handle did not start and end: ${JSON.stringify(free)}`
   if (free.after.x !== free.before.x + 60 || free.after.y !== free.before.y + 45) return `wm: the drag on the handle did not move the window by 60, 45: ${JSON.stringify(free)}`
+  if (drags.stored !== true) return `wm: after the drag, the Host does not have the position of the window: ${JSON.stringify(drags)}`
   if (held?.started !== false || held.after.x !== held.before.x || held.after.y !== held.before.y) return `wm: a drag of the locked window moved it: ${JSON.stringify(held)}`
   if (drags.unlocked !== true) return 'wm: the lock button did not unlock the window after the locked drag'
-  // The page of sample is agent code. It must not reach the bar: the bar is in another view.
-  const page = await findWidgetPage('sample', Math.min(deadline, Date.now() + 15_000))
-  if (page === undefined) return 'wm: no renderer page for the window of sample'
-  const reach = JSON.parse(String(await evaluate(page.webSocketDebuggerUrl, "JSON.stringify({ bar: document.querySelector('[data-deepwidgets-bar], [data-bar]') !== null, frames: window.frames.length })", deadline)))
-  note(`wm page reach: ${JSON.stringify(reach)}`)
-  if (reach.bar !== false) return `wm: a script in the page of sample finds a bar element: ${JSON.stringify(reach)}`
+  return undefined
+}
+
+/**
+ * window_manager.move: a drag to the top edge of the display asks for a point above the work area. macOS puts the window
+ * at another place, and the Host must store that place, the value of getPosition() (stored_position_not_window_position).
+ * Then a reset deletes the position, and a press and a release on the handle with no move store no position
+ * (handle_click_stores_position).
+ */
+async function checkWmStoredPlace(deadline) {
+  const edge = await wmMain(deadline, `
+    const before = read()
+    const asked = { x: before.bounds.x, y: before.areaTop - 20 }
+    const moved = await drag({ x: 0, y: asked.y - before.bounds.y })
+    if (typeof moved === 'string') return { failed: moved }
+    const stored = await until((wm) => wm.pending === null && wm.host?.position?.x === wm.bounds.x && wm.host?.position?.y === wm.bounds.y, 5000)
+    const [x, y] = window.getPosition()
+    return { asked, areaTop: before.areaTop, moved, position: { x, y }, host: stored.value.host?.position, ok: stored.ok }`)
+  note(`wm top edge: ${JSON.stringify(edge)}`)
+  if (edge?.failed !== undefined) return `wm: ${String(edge.failed)}`
+  if (edge?.moved?.started !== true || edge.moved.ended !== true) return `wm: the drag to the top edge did not start and end: ${JSON.stringify(edge)}`
+  if (edge.position.y === edge.asked.y) return `wm: macOS kept the window at the asked point above the work area, so the check can not tell the stored point from the asked one: ${JSON.stringify(edge)}`
+  if (edge.ok !== true) return `wm: a drag to the top edge did not store the position that getPosition() gives: ${JSON.stringify(edge)}`
+  const still = await wmMain(deadline, `
+    const reset = await post({ reset: true })
+    const cleared = await until((wm) => wm.host?.position === null && wm.bounds.x === wm.home.x && wm.bounds.y === wm.home.y, 5000)
+    const before = read().bounds
+    const pressed = await drag({ x: 0, y: 0 })
+    if (typeof pressed === 'string') return { failed: pressed }
+    await sleep(1000)
+    const after = read()
+    return { reset, cleared: cleared.ok, before, pressed, after: after.bounds, host: after.host?.position, pending: after.pending, data: this.data.get('sample')?.position ?? null }`)
+  note(`wm no-move press: ${JSON.stringify(still)}`)
+  if (still?.failed !== undefined) return `wm: ${String(still.failed)}`
+  if (still?.reset?.status !== 200 || still.cleared !== true) return `wm: the reset of the route did not move the window to the default position: ${JSON.stringify(still)}`
+  if (still.pressed?.started !== true || still.after.x !== still.before.x || still.after.y !== still.before.y) return `wm: the press on the handle did not start a drag, or it moved the window: ${JSON.stringify(still)}`
+  if (still.host !== null || still.pending !== null || still.data !== null) return `wm: a press and a release on the handle with no move stored a position: ${JSON.stringify(still)}`
+  return undefined
+}
+
+/**
+ * window_manager.data: a position, the layer normal, and the lock from the bar stay in the Host. After Turn off and
+ * Turn on, the new window of sample has them. Then the check puts back the layer top, no lock, and no position.
+ */
+async function checkWmTurnOn(deadline) {
+  const set = await wmMain(deadline, `
+    const moved = await drag({ x: 40, y: 30 })
+    if (typeof moved === 'string') return { failed: moved }
+    for (const name of ['layer', 'lock']) {
+      const failed = await click(name)
+      if (failed !== undefined) return { failed }
+    }
+    const stored = await until((wm) => wm.pending === null && wm.host?.layer === 'normal' && wm.host.locked === true && wm.host.position?.x === wm.bounds.x && wm.host.position?.y === wm.bounds.y, 5000)
+    return { ok: stored.ok, value: stored.value }`)
+  note(`wm before Turn off: ${JSON.stringify({ ok: set?.ok, host: set?.value?.host, bounds: set?.value?.bounds })}`)
+  if (set?.failed !== undefined) return `wm: ${String(set.failed)}`
+  if (set?.ok !== true) return `wm: the Host does not have the position, the layer, and the lock from the bar: ${JSON.stringify(set)}`
+  const place = set.value.host.position
+  for (const enabled of [false, true]) {
+    const turned = await setSample(enabled, deadline)
+    if (turned !== undefined) return `wm: ${turned}`
+  }
+  let fresh
+  for (const until = Math.min(deadline, Date.now() + 30_000); Date.now() < until; await delay(500)) {
+    fresh = await wmMain(deadline, 'return until((wm) => wm.visible && wm.loaded && wm.barLoaded, 5000)')
+    if (fresh?.ok === true) break
+  }
+  note(`wm after Turn on: ${JSON.stringify(fresh?.value)}`)
+  const window = fresh?.value
+  if (fresh?.ok !== true || window.bounds.x !== place.x || window.bounds.y !== place.y || window.top !== false || window.allSpaces !== false || window.movable !== false) {
+    return `wm: after Turn off and Turn on, the new window of sample does not have the stored position ${JSON.stringify(place)}, the layer normal, and the lock: ${JSON.stringify(fresh)}`
+  }
+  const restored = await wmMain(deadline, `
+    for (const name of ['lock', 'layer']) {
+      const failed = await click(name)
+      if (failed !== undefined) return { failed }
+    }
+    const reset = await post({ reset: true })
+    const back = await until((wm) => wm.pending === null && wm.host?.layer === 'top' && wm.host.locked === false && wm.host.position === null && wm.bounds.x === wm.home.x && wm.bounds.y === wm.home.y, 5000)
+    return { ok: back.ok, reset: reset.status, value: back.value }`)
+  note(`wm restored: ${JSON.stringify({ ok: restored?.ok, host: restored?.value?.host })}`)
+  if (restored?.ok !== true) return `wm: the check could not put back the layer top, no lock, and no position of sample: ${JSON.stringify(restored)}`
+  return undefined
+}
+
+/**
+ * window_manager.route: a layer click while the Host is down waits in Electron main. It goes to the route when the next
+ * Host is ready, and the hello of that Host does not undo it: from that hello on, the window never shows the layer top
+ * until the Host has the layer normal. Then the check puts back the layer top.
+ */
+async function checkWmHostDown(deadline) {
+  const hellos = await withWidgetWindows(deadline, countHellos())
+  const kill = await killHost('wm')
+  const gap = await wmMain(deadline, `
+    let gone = false
+    for (const end = Date.now() + 10000; Date.now() < end && !gone; await sleep(50)) gone = this.target === undefined
+    const failed = await click('layer')
+    if (failed !== undefined) return { failed }
+    const changed = await until((wm) => !wm.top && !wm.allSpaces, 5000)
+    await sleep(300)
+    return { gone, changed: changed.ok, pending: read().pending, host: read().host }`)
+  note(`wm host down: ${JSON.stringify(gap)}`)
+  if (gap?.failed !== undefined) return `wm: ${String(gap.failed)}`
+  if (gap?.gone !== true || gap.changed !== true || gap.pending?.layer !== 'normal') return `wm: a layer click while the Host is down does not wait in Electron main: ${JSON.stringify(gap)}`
+  if (!await waitForNewHost(kill.pid, Math.min(deadline, Date.now() + 60_000))) return 'wm: no new host after the kill'
+  const kept = await wmMain(deadline, `
+    let flips = 0
+    for (const end = Date.now() + 45000; Date.now() < end; await sleep(20)) {
+      const wm = read()
+      const helloed = this.__smokeHellos > ${String(hellos)}
+      if (helloed && wm.top) flips += 1
+      if (helloed && wm.pending === null && wm.host?.layer === 'normal') return { ok: flips === 0 && !wm.top, flips, value: wm }
+    }
+    return { ok: false, timeout: true, hellos: this.__smokeHellos, value: read() }`)
+  note(`wm after the host restart: ${JSON.stringify({ ok: kept?.ok, flips: kept?.flips, timeout: kept?.timeout, host: kept?.value?.host, top: kept?.value?.top })}`)
+  if (kept?.ok !== true) return `wm: after the host restart, the layer click of the gap did not reach the Host, or the hello undid it: ${JSON.stringify(kept)}`
+  const back = await wmMain(deadline, `
+    const failed = await click('layer')
+    if (failed !== undefined) return { failed }
+    return until((wm) => wm.top && wm.pending === null && wm.host?.layer === 'top', 5000)`)
+  if (back?.ok !== true) return `wm: the check could not put back the layer top of sample after the host restart: ${JSON.stringify(back)}`
   return undefined
 }
 
