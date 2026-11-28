@@ -1781,14 +1781,15 @@ export function apply(ctx: Context, config: Config): void {
       registration,
       streams: new Set(),
       tail: after,
-      seeded: failure === undefined ? after.then(() => seed(registration)) : Promise.resolve(),
+      // window_manager.defaults: the window record is a stored record of the slug too, so `seeded` waits for its agent
+      // defaults. Their write never rejects. A failed entry has no definition, so it writes no agent defaults: the live
+      // entry of a later start writes them.
+      seeded: failure === undefined ? after.then(() => seed(registration)).then(() => writeWindowDefaults(registration)) : Promise.resolve(),
       routes: [],
       ...(failure === undefined ? {} : { failure }),
     }
     entry.seeded.catch((error: unknown) => { ctx.logger.error(`widgets: the seed of ${slug} failed; its calls fail`, error) })
     widgets.set(slug, entry)
-    // A failed entry has no definition, so it writes no agent defaults: the live entry of a later start writes them.
-    if (failure === undefined) writeWindowDefaults(registration)
     entry.routes = addRoutes(entry)
     logChange({ slug, kind: 'added', by: 'host' })
     pushEvent({ type: 'added', slug })
@@ -1921,10 +1922,10 @@ export function apply(ctx: Context, config: Config): void {
    * registration. A record with them stays as it is, also for each field with no operator choice. A record from before
    * `wm.store`, or of a failed entry, keeps its values and gets the defaults of the other fields.
    */
-  function writeWindowDefaults(registration: Registration): void {
+  async function writeWindowDefaults(registration: Registration): Promise<void> {
     const { slug, window: defaults } = registration
     if (!windowed(slug)) return
-    changeWindow(slug, (current) => current?.resizable !== undefined ? undefined : {
+    await changeWindow(slug, (current) => current?.resizable !== undefined ? undefined : {
       ...current,
       shown: current?.shown ?? true,
       updatedAt: Date.now(),
