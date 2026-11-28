@@ -262,8 +262,8 @@ function hasWindow(window, want) {
 }
 
 /** The source of the test widget: the template with the field window of the definition. */
-function testSource(templateText, width) {
-  const window = `window: { layer: 'normal', width: ${String(width)}, height: 200, resizable: true },`
+function testSource(templateText, width, { layer = 'normal', resizable = true } = {}) {
+  const window = `window: { layer: '${layer}', width: ${String(width)}, height: 200, resizable: ${String(resizable)} },`
   const marked = templateText.replace("    program: PROGRAM,\n", `    program: PROGRAM,\n    ${window}\n`)
   if (marked === templateText) throw new Error('the template has no line "program: PROGRAM,"')
   return marked
@@ -423,6 +423,31 @@ async function hostPart() {
     operatorRemoved.body?.result?.ok === true && !fresh.isError && fresh.body?.application === 'applied' && hasWindow(freshAdded?.window, newDefaults) && hasWindow(freshHello, newDefaults),
     JSON.stringify({ removed: operatorRemoved.body?.result, fresh: fresh.body?.error ?? fresh.body?.application, added: freshAdded?.window, hello: freshHello }))
 
+  // ---- partial_record_takes_later_defaults: the decision of 2026-11-28 in window_manager.defaults ----
+  // A record with no agent defaults (from before wm.store, or from a Hide of a failed entry) takes them one time, at the
+  // next registration, and keeps its shown state. The check makes such a record with a forget and a Hide.
+  const partial = await inHost(`
+    const records = loader.ctx.get('widgetRecords')
+    await records.forgetWindow(arg)
+    await records.setWindowShown(arg, false)
+    return records.windowShown(arg)`, SLUG)
+  writeFileSync(source, testSource(templateText, 600, { layer: 'top', resizable: false }))
+  const partialInstall = await call('widget_install', { dir })
+  await waitRows((rows) => rows.get(SLUG)?.status?.kind === 'live')
+  await sleep(500)
+  const partialHello = await helloWindow(SLUG)
+  const taken = { shown: false, layer: 'top', locked: false, x: undefined, y: undefined, width: 600, height: 200, resizable: false, chosen: [] }
+  check('a record with only the shown state takes the agent defaults at the next reinstall, and keeps its shown state',
+    partial === false && !partialInstall.isError && partialInstall.body?.application === 'applied' && hasWindow(partialHello, taken),
+    JSON.stringify({ partial, installed: partialInstall.body?.error ?? partialInstall.body?.application, hello: partialHello }))
+  writeFileSync(source, testSource(templateText, 700, { layer: 'normal', resizable: true }))
+  const secondInstall = await call('widget_install', { dir })
+  await waitRows((rows) => rows.get(SLUG)?.status?.kind === 'live')
+  await sleep(500)
+  const secondHello = await helloWindow(SLUG)
+  check('a second reinstall with other agent defaults keeps the defaults that the record took one time',
+    !secondInstall.isError && secondInstall.body?.application === 'applied' && hasWindow(secondHello, taken),
+    JSON.stringify({ installed: secondInstall.body?.error ?? secondInstall.body?.application, hello: secondHello }))
 
   // ---- window_manager.route: reset ----
   const reset = await windowRoute('sample', { reset: true })

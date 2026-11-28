@@ -1943,7 +1943,8 @@ export function apply(ctx: Context, config: Config): void {
   /**
    * window_manager.defaults: a new widget, a slug whose record has no agent defaults, gets the agent defaults of its
    * registration. A record with them stays as it is, also for each field with no operator choice. A record from before
-   * `wm.store`, or of a failed entry, keeps its values and gets the defaults of the other fields.
+   * `wm.store`, or of a failed entry, keeps its values and gets the defaults of the other fields one time: `resizable`
+   * marks a record that has them. The operator decided this on 2026-11-28 (partial_record_takes_later_defaults).
    */
   async function writeWindowDefaults(registration: Registration): Promise<void> {
     const { slug, window: defaults } = registration
