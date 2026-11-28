@@ -4,6 +4,8 @@
 
 The [follow-up decision and development review](decision-history.md) adds three independent passes and corrects two conclusions below. A widget can cross the window geometry controls through a separate renderer path, and packaging has specific unresolved dependency and kit blockers.
 
+The [product direction](../../specs/product-direction.md) places the local agent-to-person loop first. The sequence in section 5 applies when planning a hosted connector. [Ephemeral surface proposal](ephemeral-surface-design.md)
+
 ## Verdict
 
 **deepWidgets has a solid local widget architecture. It does not yet have the authority model needed for a remote connector.** The valuable product is a set of user-owned desktop widgets that any compatible agent can operate under the PC owner's rules. The widget runtime, shared action model, window ownership and crash recovery are worth building on. A generic tunnel to the current MCP port would carry away the assumptions that make that port acceptable for trusted local development.

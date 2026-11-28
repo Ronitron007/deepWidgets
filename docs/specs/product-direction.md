@@ -20,6 +20,6 @@ The reviewer checks the affected product rule against the change and its accepta
 
 ## First pilot proposal
 
-Connect a standard MCP client to a running desktop app with one local configuration entry. Ask it to present a small diff review or parameter choice using the built-in catalog. Target under 200 ms for the warm path from the desktop accepting a spawn to an interactive frame. Have the person choose or cancel on the PC. Return that result to the originating agent, with a way to retrieve it after timeout or reconnect. Check that an expired or superseded surface cannot submit a late answer and that disposal clears its session state. Prove pinning separately with an explicit owner action that survives restart. [Ephemeral surface proposal](../explore/reviews/future-of-ui-verdict.md)
+Connect a standard MCP client to a running desktop app with one local configuration entry. Ask it to present a small diff review or parameter choice using the built-in catalog. Target a warm time to interactive under 200 ms at the 95th percentile. Have the person choose or cancel on the PC. Return that result to the originating agent, with a way to retrieve it after timeout or reconnect. Check that an expired or superseded surface cannot submit a late answer and that disposal clears its session state. Prove pinning separately with an explicit owner action that survives restart. [Ephemeral surface proposal](../explore/reviews/ephemeral-surface-design.md)
 
 [Architecture and decision reviews](../explore/reviews/README.md)

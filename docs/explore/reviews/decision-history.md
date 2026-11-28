@@ -2,6 +2,8 @@
 
 28 November 2026 · `main` at `f158c36f14`
 
+This review traces how the remote connector goal reached development agents. The current [product direction](../../specs/product-direction.md) puts the local surface and decision loop first. Section 4 records recommendations from the remote connector review.
+
 ## Conclusion
 
 deepWidgets grew around a legitimate prototype brief. Use the existing Cordis/Electron host to make desktop widgets feel real, prove that a local agent can operate and write one, and recover when generated code fails. The people and agents implementing that brief had sources, measurements, fault models and detailed acceptance checks. The repository kept updating those implementation facts. It never gave development and review agents a shared statement that the product should let people connect from compatible model-provider apps anywhere, with the PC owner governing the connection.

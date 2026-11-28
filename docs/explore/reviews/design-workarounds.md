@@ -74,6 +74,8 @@ Keep the upstream source and reusable Cordis packages. Define a small explicit d
 
 ## Order and trade-offs
 
+The [current product direction](../../specs/product-direction.md) puts a local temporary surface and decision loop first. That pilot can use built-in controls and trusted handlers. The prerequisites below apply as it adds durable state, new capabilities, or hosted access.
+
 | Priority | Correct this | Keep |
 | --- | --- | --- |
 | Before expanding local or remote scope | Own the widget store, preserve owner intent on failure, and agree on the complete permission design. Establish the agent-facing product direction. | Atomic writes and local development tooling. |
