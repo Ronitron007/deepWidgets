@@ -562,18 +562,20 @@ export class DesktopWidgetWindows {
   private watchDisplays(): void {
     if (this.watchingDisplays) return
     this.watchingDisplays = true
-    const check = (): void => {
-      for (const entry of this.windows.values()) entry.nativeMove = false
-      for (const [slug, entry] of this.windows) {
-        const data = this.data.get(slug)
-        if (data === undefined || entry.window.isDestroyed()) continue
-        const [x = 0, y = 0] = entry.window.getPosition()
-        const place = this.placeOf({ ...data, position: { x, y } }, entry.row)
-        if (place.x !== x || place.y !== y) this.moveTo(entry, place)
-      }
+    screen.on('display-removed', () => { this.displaysChanged() })
+    screen.on('display-metrics-changed', () => { this.displaysChanged() })
+  }
+
+  /** The check of {@link watchDisplays} at one change of the displays. The smoke check `DSH_SMOKE_WM` calls it too. */
+  private displaysChanged(): void {
+    for (const entry of this.windows.values()) entry.nativeMove = false
+    for (const [slug, entry] of this.windows) {
+      const data = this.data.get(slug)
+      if (data === undefined || entry.window.isDestroyed()) continue
+      const [x = 0, y = 0] = entry.window.getPosition()
+      const place = this.placeOf({ ...data, position: { x, y } }, entry.row)
+      if (place.x !== x || place.y !== y) this.moveTo(entry, place)
     }
-    screen.on('display-removed', check)
-    screen.on('display-metrics-changed', check)
   }
 
   /**

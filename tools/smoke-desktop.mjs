@@ -1157,6 +1157,7 @@ async function checkWmSteps(deadline) {
     ?? await checkWmDrags(deadline)
     ?? await checkWmStoredPlace(deadline)
     ?? await checkWmPageMove(deadline)
+    ?? await checkWmDisplayMove(deadline)
     ?? await checkWmTurnOn(deadline)
     ?? await checkWmHostDown(deadline)
   if (failed !== undefined) return failed
@@ -1336,6 +1337,32 @@ async function checkWmPageMove(deadline) {
   }
   const home = await wmMain(deadline, 'this.moveTo(entry, read().home); return until((wm) => wm.bounds.x === wm.home.x && wm.bounds.y === wm.home.y, 5000)')
   if (home?.ok !== true) return `wm: the check could not put the window of sample home after the page moves: ${JSON.stringify(home)}`
+  return undefined
+}
+
+/**
+ * window_manager.move (native_move_fix_unchecked): a move that macOS makes at a change of the displays is not an operator
+ * choice. The check sets the mark of a `will-move`, runs the display check of Electron main (`displaysChanged`, which
+ * the screen events call), and moves the window with setPosition, which macOS reports with `moved`. The Host must store
+ * no position. Then the window goes home again.
+ */
+async function checkWmDisplayMove(deadline) {
+  const moved = await wmMain(deadline, `
+    const before = read()
+    if (before.host?.position !== null || before.pending !== null) return { failed: 'the window of sample has a stored position before the display change', before }
+    entry.nativeMove = true
+    this.displaysChanged()
+    const mark = entry.nativeMove
+    window.setPosition(before.bounds.x + 25, before.bounds.y + 15)
+    await sleep(1000)
+    const after = read()
+    this.moveTo(entry, after.home)
+    const home = await until((wm) => wm.bounds.x === wm.home.x && wm.bounds.y === wm.home.y, 5000)
+    return { mark, bounds: after.bounds, host: after.host?.position, pending: after.pending, data: this.data.get('sample')?.position ?? null, home: home.ok }`)
+  note(`wm display change: ${JSON.stringify(moved)}`)
+  if (moved?.failed !== undefined) return `wm: ${String(moved.failed)}: ${JSON.stringify(moved)}`
+  if (moved?.host !== null || moved.pending !== null || moved.data !== null) return `wm: a move after a change of the displays became an operator choice: ${JSON.stringify(moved)}`
+  if (moved.home !== true) return `wm: the check could not put the window of sample home after the display change: ${JSON.stringify(moved)}`
   return undefined
 }
 
