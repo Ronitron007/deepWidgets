@@ -216,9 +216,9 @@ Thus the deciding question is how much the window code changes after the user st
 | Move | Yes. |
 | Resize | Yes. The agent decides at build time if a widget is resizable. The default is not resizable. |
 | Size | The agent can set the size at build time. Without it, the widget gets the default size, 320 by 300 pixels today. |
-| Layer | Two layers: always on top, and normal. Each layer has its own default position. The agent sets the layer at build time. The operator can change it. |
+| Layer | Two layers: always on top, and normal. The agent sets the layer at build time. The operator can change it. On 2026-11-28 the operator decided that both layers use the same default position. A window of the layer `normal` stays on the one desktop where it is. App windows can cover it, and it does not show over an app in full screen. |
 | Lock | Yes. A locked window can not move, but it still takes clicks. |
-| Reset position | It moves the window to the default position of its layer. |
+| Reset position | It moves the window to the default position. |
 | Display | One default place for now. |
 | Snap to edges or a grid | Deferred. |
 | Opacity | Deferred. |

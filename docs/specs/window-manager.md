@@ -14,7 +14,7 @@ The work has three stages, in this order:
 
 - **Window data:** the shown state, the layer, the lock, the position, the size, and the resize flag of one widget window. The slug is its key.
 
-- **Layer:** `top` or `normal`. A window of the layer `top` shows above each app window. A window of the layer `normal` behaves as an app window, so another app window can cover it.
+- **Layer:** `top` or `normal`. A window of the layer `top` shows above each app window, on each desktop. A window of the layer `normal` stays on the one desktop where it is. App windows can cover it, and it does not show over an app in full screen.
 
 - **Lock:** a locked window can not move. It still takes clicks.
 
@@ -26,7 +26,7 @@ The work has three stages, in this order:
 
 - **New widget:** a slug that has no window record.
 
-- **Default position:** the place of a window that has no stored position. Each layer has its own default position.
+- **Default position:** the place of a window that has no stored position. Both layers use the same default position.
 
 ## The decisions `window_manager.decisions`
 
@@ -48,7 +48,7 @@ The table `windows` of the storage domain `widgets` keeps one record for each sl
 | `shown` | `true`, `false` | `true` | The operator, in the panel (`main_widget.window_state`) |
 | `layer` | `top`, `normal` | The agent default, else `top` | The operator, and an agent |
 | `locked` | `true`, `false` | `false` | The operator, and an agent |
-| `x`, `y` | Screen points | None. The window uses the default position of its layer. | The operator by a drag, and an agent |
+| `x`, `y` | Screen points | None. The window uses the default position. | The operator by a drag, and an agent |
 | `width`, `height` | Screen points | The agent default, else 320 by 300 | The operator at the window edges, and an agent. Only when `resizable` is true. |
 | `resizable` | `true`, `false` | The agent default, else `false` | Nobody after the first record |
 | `chosen` | The names of the fields with an operator choice | None | The runtime, at each operator change |
@@ -107,11 +107,19 @@ The table `windows` of the storage domain `widgets` keeps one record for each sl
 
 - A window with `resizable` false does not resize.
 
-- At each open, and at each change of the displays, Electron main checks the position of each window. When the window touches no display, it moves to the default position of its layer. This move is not an operator choice.
+- At each open, and at each change of the displays, Electron main checks the position of each window. When the window touches no display, it moves to the default position. This move is not an operator choice.
 
-- The default position of each layer is on the primary display. `window_manager.provisional` gives the two places.
+- The default position is on the primary display, for both layers. `window_manager.provisional` gives the place.
 
-- A window of the layer `top` has `alwaysOnTop` true. A window of the layer `normal` has `alwaysOnTop` false. Both layers stay visible on all Spaces, with `skipTransformProcessType: true`.
+- A layer change does not move the window. Thus a locked window stays in place.
+
+- A window of the layer `top` has `alwaysOnTop` true, and it is visible on all Spaces. A window of the layer `normal` has `alwaysOnTop` false, and it is visible only on its Space. Each call of `setVisibleOnAllWorkspaces` keeps `skipTransformProcessType: true`.
+
+- Electron main stores the position that the window has after a move, from `getPosition()`. macOS can put a window at another place than the place that Electron main asked for.
+
+- A press and a release on the drag handle with no move store no position.
+
+- Only a move that the operator starts is an operator choice. A move that macOS makes, for example at a change of the displays, is not one.
 
 ## The host route `window_manager.route`
 
@@ -119,7 +127,7 @@ The table `windows` of the storage domain `widgets` keeps one record for each sl
 
 - The route is not under `/api/widgets/<slug>/`. Thus a widget origin does not forward it, and an agent page can not call it (`widgetRoute` in `apps/desktop/src/deepwidgets-origin.ts`).
 
-- `reset` deletes `x`, `y`, and their operator choice. The window then moves to the default position of its layer.
+- `reset` deletes `x`, `y`, and their operator choice. The window then moves to the default position.
 
 - A size for a slug with `resizable` false gives the error `not-resizable`.
 
@@ -175,8 +183,7 @@ The operator did not decide these items. A later decision can change each one.
 
 | Item | Choice |
 |---|---|
-| The default position of `top` | The column at the left edge of the primary display, as today |
-| The default position of `normal` | A column at the right edge of the primary display |
+| The default position | The column at the left edge of the primary display, as before. The operator decided on 2026-11-28 that both layers use the same place. |
 | The lock and the size | A lock stops a move. It does not stop a resize. |
 | The hover check | Electron main reads the mouse position 10 times each second, while a widget window shows. |
 | The bar height | 24 points |
@@ -196,7 +203,11 @@ The operator did not decide these items. A later decision can change each one.
 
 - **A drag area in a child view:** nobody checked if `app-region: drag` in a separate view moves the parent window in Electron 44.7.0. The unit `wm.bar` checks it first. If it does not work, the bar sends the pointer moves to Electron main, and Electron main moves the window.
 
-- **The layer `normal` in a menu bar app:** nobody checked what a click on a window of the layer `normal` does to the app in front. The unit `wm.bar` records the result.
+- **The layer `normal` in a menu bar app:** nobody checked what a click on a window of the layer `normal` does to the app in front. `wm.bar` did not record it.
+
+- **One Space for a widget window:** a window of the type `panel` ignores `setVisibleOnAllWorkspaces(false)` (spike of 2026-10-27). Our widget windows are not of that type. Nobody checked them yet. The unit `wm.store` checks it first. If it does not work, the unit stops and reports.
+
+- **The review of `wm.bar`:** these findings stay open. `page_moves_locked_window` (a page script moves a locked window) waits for the operator. `page_drag_area_takes_bar_clicks`, `clamp_misses_window_mostly_off_screen`, `check_misses_hide_and_poll_stop`, and `accept_first_mouse_reaches_page` also wait. The review is the comment on PR #154.
 
 - **A capture of a window behind other windows:** nobody checked if `capturePage` gives the page of a window that another window covers. The unit `wm.screenshot` checks it.
 
