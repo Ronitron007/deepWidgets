@@ -77,8 +77,9 @@
  * With the lock on, the same drag does not move it. A drag to the top edge of the display stores the position that
  * getPosition() gives, not the asked point. After a reset of the position through the route, a press and a release on
  * the handle with no move store no position. With the mark of a `will-move` set, a move of the window is stored once:
- * a later window.moveTo of the page stores nothing. A move after a change of the displays (the check of Electron main
- * that the screen events call) stores nothing. A position, the layer normal, and the lock from the bar stay through Turn
+ * a later window.moveTo of the page stores nothing. A window.moveTo of the page 50 ms after a drag step, inside the
+ * settle time of the move, moves the window and stores nothing. A move after a change of the displays (the check of
+ * Electron main that the screen events call) stores nothing. A position, the layer normal, and the lock from the bar stay through Turn
  * off and Turn on: the new window of sample has them. The check kills the host and clicks the layer button in the gap:
  * the choice waits in Electron main, reaches the next host, and the hello of that host does not undo it. A script in
  * the page of sample finds no bar element, and its call of /api/widget-windows/sample gets 404.
@@ -1159,6 +1160,7 @@ async function checkWmSteps(deadline) {
     ?? await checkWmDrags(deadline)
     ?? await checkWmStoredPlace(deadline)
     ?? await checkWmPageMove(deadline)
+    ?? await checkWmPageMoveSettle(deadline)
     ?? await checkWmDisplayMove(deadline)
     ?? await checkWmTurnOn(deadline)
     ?? await checkWmHostDown(deadline)
@@ -1339,6 +1341,38 @@ async function checkWmPageMove(deadline) {
   }
   const home = await wmMain(deadline, 'this.moveTo(entry, read().home); return until((wm) => wm.bounds.x === wm.home.x && wm.bounds.y === wm.home.y, 5000)')
   if (home?.ok !== true) return `wm: the check could not put the window of sample home after the page moves: ${JSON.stringify(home)}`
+  return undefined
+}
+
+/**
+ * window_manager.move (page_move_in_settle_window): a page move inside the settle time of a native move is not an operator
+ * choice. The check sets the mark of a `will-move`, makes one drag step with setPosition, and 50 ms later the page of
+ * sample runs window.moveTo. The window must move to the point of the page, and the Host must store no position and no
+ * choice of x and y. Then the window goes home again.
+ */
+async function checkWmPageMoveSettle(deadline) {
+  const settle = await wmMain(deadline, `
+    const reset = await post({ reset: true })
+    const cleared = await until((wm) => wm.host?.position === null && wm.pending === null && wm.bounds.x === wm.home.x && wm.bounds.y === wm.home.y, 5000)
+    const home = read().bounds
+    const page = { x: home.x + 90, y: home.y + 70 }
+    entry.nativeMove = true
+    window.setPosition(home.x + 30, home.y + 20)
+    await sleep(50)
+    await window.webContents.executeJavaScript('window.moveTo(' + page.x + ', ' + page.y + '); true')
+    await sleep(1000)
+    const after = read()
+    const answer = await post({ layer: 'top' })
+    this.moveTo(entry, after.home)
+    const back = await until((wm) => wm.bounds.x === wm.home.x && wm.bounds.y === wm.home.y, 5000)
+    return { reset: reset.status, cleared: cleared.ok, home, page, bounds: after.bounds, pending: after.pending, mark: entry.nativeMove, window: answer.body?.window ?? null, back: back.ok }`)
+  note(`wm page move in the settle time: ${JSON.stringify(settle)}`)
+  if (settle?.reset !== 200 || settle.cleared !== true) return `wm: the reset before the page move in the settle time did not move the window home: ${JSON.stringify(settle)}`
+  if (settle.bounds.x !== settle.page.x || settle.bounds.y !== settle.page.y) return `wm: the page move in the settle time did not move the window: ${JSON.stringify(settle)}`
+  if (settle.window === null || 'x' in settle.window || settle.window.chosen.includes('x') || settle.pending !== null) {
+    return `wm: a page move in the settle time of a native move became an operator choice: ${JSON.stringify(settle)}`
+  }
+  if (settle.back !== true) return `wm: the check could not put the window of sample home after the page move in the settle time: ${JSON.stringify(settle)}`
   return undefined
 }
 

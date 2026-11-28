@@ -352,6 +352,13 @@ export class DesktopWidgetWindows {
       entry.nativeMoveTimer = setTimeout(() => { this.nativeMoved(slug, entry) }, NATIVE_MOVE_SETTLE_MS)
     })
     window.on('resized', () => { this.resized(slug, entry) })
+    // page_move_in_settle_window: a `window.moveTo` or `window.resizeTo` of the page comes here before the window moves.
+    // A page move is never an operator choice, so the mark of a native move and its settle end here. The page move still
+    // happens: to stop it is the open finding page_moves_locked_window.
+    window.webContents.on('content-bounds-updated', () => {
+      entry.nativeMove = false
+      clearTimeout(entry.nativeMoveTimer)
+    })
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     window.webContents.on('will-navigate', (event) => { event.preventDefault() })
     window.webContents.on('render-process-gone', (_event, details) => {
