@@ -8,7 +8,9 @@
  * `@deepwidgets/mcp`). The installer keeps a Turn off, so a later `widget_install` or `widget_reload` of the slug installs
  * the new row off. The mutation `remove` removes an agent widget through the remove path of `widget_remove`. The state of
  * a widget stays in each case. The mutations `show` and `hide` store the shown state of the widget window of a slug
- * (`main_widget.window_state`). The runtime keeps it across Host starts, and Electron main obeys it.
+ * (`main_widget.window_state`). The runtime keeps it across Host starts, and Electron main obeys it. The mutations
+ * `setLayer`, `setLock`, and `resetPosition` store an operator choice of the layer, the lock, or the position of that
+ * window (`window_manager.panel`), with the write of the window route of the bar.
  *
  * The plugin manager, the installer, the install records, and the MCP settings are host code. The actions call them
  * through `widgetRecords.asHost`, so those calls run outside the store and the watchdog slot of this row: a crash or a
@@ -35,7 +37,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ChangeResult, PluginInfo } from '@deepseek-ai/dsh-plugin-manager'
 import type { KitChange, KitChangeTarget, KitErrorCode, KitState } from '@deepwidgets/kit'
 import type { CreationErrorCode, ModeSettings, PortSetting, RefuseBuildsSetting, SetModeRefusal, SetRefuseBuildsRefusal } from '@deepwidgets/mcp'
-import type { WidgetActionDescription, WidgetDescription } from '@deepwidgets/widgets'
+import type { WidgetActionDescription, WidgetDescription, WindowChange, WindowData } from '@deepwidgets/widgets'
 import { z } from 'zod'
 
 export const name = 'deepwidgets-widget-main'
@@ -54,8 +56,8 @@ export const CATALOG = 'deepwidgets-main@1'
  * The program of the panel page (`main_widget.widgets`, `main_widget.settings`), in the component set {@link CATALOG}
  * of the shell entry `main.html`. The query `widgets` feeds the Widgets tab, and the query `settings` feeds the
  * Settings tab. Their defaults are null, so the page shows a loading state, not an empty list. The row controls of
- * `WidgetTable` call `show`, `hide`, `turnOff`, `turnOn`, `remove`, and `program` with the slug of the row, then run `refresh`. The
- * switches of `ModeSwitches` and `LaunchAtLogin` call `setMode` and `setLoginItem`, then run `refresh`. The controls of
+ * `WidgetTable` call `show`, `hide`, `setLayer`, `setLock`, `resetPosition`, `turnOff`, `turnOn`, `remove`, and
+ * `program` with the slug of the row, then run `refresh`. The switches of `ModeSwitches` and `LaunchAtLogin` call `setMode` and `setLoginItem`, then run `refresh`. The controls of
  * `WidgetKit` call `kitAdd`, `kitRemove`, and `setRefuseBuilds`, then run `refresh`, and `WidgetKit` runs `refresh` each
  * second while a change of the kit runs (`kit.pane.actions`). The runtime also sends a `data` frame to the page of main
  * on each change of another widget, and the page then runs each query.
@@ -124,9 +126,17 @@ export interface MainWidget {
    * widget with no window: it is turned off, or safe mode keeps it off.
    */
   window?: 'shown' | 'hidden'
+  /**
+   * window_manager.panel: the whole window data of the widget window, with `chosen`. The row shows its layer, its lock,
+   * and its position. `x` and `y` are absent when no position is stored: the window is at the default position. Present
+   * when `window` is.
+   */
+  windowData?: WindowData
 }
 
 const slugInput = z.object({ slug: z.string() })
+const layerInput = z.object({ slug: z.string(), layer: z.enum(['top', 'normal']) })
+const lockInput = z.object({ slug: z.string(), locked: z.boolean() })
 const modeInput = z.object({ mode: z.string(), on: z.boolean() })
 const loginItemInput = z.object({ open: z.boolean() })
 const kitAddInput = z.object({ spec: z.string() })
@@ -291,6 +301,18 @@ function kitError(error: unknown): { code: KitErrorCode, message: string } | und
   return { code: code as KitErrorCode, message: error.message }
 }
 
+/** The fields `window` and `windowData` of a row, from the window data of its slug. */
+function windowFields(data: WindowData): Pick<MainWidget, 'window' | 'windowData'> {
+  return { window: data.shown ? 'shown' : 'hidden', windowData: data }
+}
+
+/** The code of a `WindowError` of `@deepwidgets/widgets`, read by shape: this package imports only its types. */
+function windowErrorCode(error: unknown): string | undefined {
+  if (!(error instanceof Error) || error.name !== 'WindowError') return undefined
+  const { code } = error as Error & { code?: unknown }
+  return typeof code === 'string' ? code : undefined
+}
+
 /** A change of the kit for people: `add date-fns@^4` or `remove date-fns`. */
 const changeText = (target: KitChangeTarget): string => target.kind === 'add' ? `add ${target.spec}` : `remove ${target.name}`
 
@@ -409,8 +431,8 @@ export function apply(ctx: Context): void {
         rows: own.map(rowOf),
         ...(turnedOff ? { turnedOff: true as const } : {}),
         // The events route lists each entry of the runtime, also a failed one, so Electron main has its window. The runtime
-        // reads the shown state from memory at each query, so no cache can keep an old value.
-        ...(summary !== undefined && summary.off === undefined ? { window: host(() => records.windowShown(slug)) ? 'shown' as const : 'hidden' as const } : {}),
+        // reads the window data from memory at each query, so no cache can keep an old value.
+        ...(summary !== undefined && summary.off === undefined ? windowFields(host(() => records.windowData(slug))) : {}),
       })
     }
     return out
@@ -474,6 +496,22 @@ export function apply(ctx: Context): void {
       refuse('no-window', `${slug} has no widget window: it is not live, it is turned off, or safe mode keeps it off`)
     }
     return { slug, window: shown ? 'shown' : 'hidden' }
+  }
+
+  /**
+   * window_manager.panel: one operator choice of the layer, the lock, or the position of the widget window of `slug`.
+   * The runtime stores it through the write of the route `POST /api/widget-windows/<slug>`, so the choice goes into
+   * `chosen`, as a choice on the bar does. Electron main obeys the `window` frame, and the page of main gets a `data`
+   * frame, so the row and the window change at once.
+   */
+  async function changeWindow(slug: string, change: WindowChange): Promise<{ slug: string, windowData: WindowData }> {
+    if (slug === widgetSlugs[0]) refuse('unknown-widget', 'the main widget has no widget window; the panel is its only window')
+    try {
+      return { slug, windowData: await host(() => records.setWindow(slug, change)) }
+    } catch (error) {
+      if (windowErrorCode(error) !== 'no-window') throw error
+      return refuse('no-window', `${slug} has no widget window: it is not live, it is turned off, or safe mode keeps it off`)
+    }
   }
 
   /** The ids of the login-item calls to Electron main. */
@@ -615,6 +653,9 @@ export function apply(ctx: Context): void {
       },
       { name: 'show', kind: 'mutation', args: slugInput, handler: ({ slug }) => answer(() => setShown(slug, true)) },
       { name: 'hide', kind: 'mutation', args: slugInput, handler: ({ slug }) => answer(() => setShown(slug, false)) },
+      { name: 'setLayer', kind: 'mutation', args: layerInput, handler: ({ slug, layer }) => answer(() => changeWindow(slug, { layer })) },
+      { name: 'setLock', kind: 'mutation', args: lockInput, handler: ({ slug, locked }) => answer(() => changeWindow(slug, { locked })) },
+      { name: 'resetPosition', kind: 'mutation', args: slugInput, handler: ({ slug }) => answer(() => changeWindow(slug, { reset: true })) },
       { name: 'turnOff', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => answer(() => setEnabled(slug, false)) },
       { name: 'turnOn', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => answer(() => setEnabled(slug, true)) },
       { name: 'remove', kind: 'mutation', args: slugInput, timeoutMs: CHANGE_TIMEOUT_MS, handler: ({ slug }) => answer(() => remove(slug)) },

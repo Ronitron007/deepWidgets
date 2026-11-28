@@ -1,12 +1,15 @@
 /**
  * One row of the Widgets tab (`main_widget.widgets`). The head shows the title, the slug, the status, and the state
  * rev. A click opens the details: each other field of the row, and the controls Show or Hide for a widget with a
- * window (`main_widget.window_state`), Turn off or Turn on, and Remove.
+ * window (`main_widget.window_state`), Turn off or Turn on, and Remove. A widget with a window also shows its layer,
+ * its lock, and its position, with a switch for the layer, a switch for the lock, and Reset position
+ * (`window_manager.panel`).
  * @module @deepwidgets/shell/main-widget/widget-row
  */
 import { useEffect, useId, useState, type ReactNode } from 'react'
-import { ChevronRight, Eye, EyeOff, Power, PowerOff, Trash2 } from 'lucide-react'
+import { ChevronRight, Eye, EyeOff, Power, PowerOff, RotateCcw, Trash2 } from 'lucide-react'
 import { Button } from '../ui/button.tsx'
+import { Switch } from '../ui/switch.tsx'
 import { useCall } from './call.tsx'
 import { ActionListView, StateView, StatusPill } from './parts.tsx'
 import { ProgramTextSchema, type Widget } from './schema.ts'
@@ -61,9 +64,18 @@ function ProgramField({ slug, rev }: { slug: string, rev: number }) {
   )
 }
 
-type Control = 'show' | 'hide' | 'turnOff' | 'turnOn' | 'remove'
+type Control = 'show' | 'hide' | 'setLayer' | 'setLock' | 'resetPosition' | 'turnOff' | 'turnOn' | 'remove'
 
-const BUSY_TEXT: Record<Control, string> = { show: 'Showing…', hide: 'Hiding…', turnOff: 'Turning off…', turnOn: 'Turning on…', remove: 'Removing…' }
+const BUSY_TEXT: Record<Control, string> = {
+  show: 'Showing…',
+  hide: 'Hiding…',
+  setLayer: 'Changing the layer…',
+  setLock: 'Changing the lock…',
+  resetPosition: 'Resetting the position…',
+  turnOff: 'Turning off…',
+  turnOn: 'Turning on…',
+  remove: 'Removing…',
+}
 
 /**
  * The wait and the refusal of the controls of one row. The row keeps them, not the details: a close of the row or a
@@ -72,7 +84,8 @@ const BUSY_TEXT: Record<Control, string> = { show: 'Showing…', hide: 'Hiding�
 interface RowControl {
   busy: Control | undefined
   error: { message: string, nextStep?: string } | undefined
-  run: (control: Control) => Promise<boolean>
+  /** Call the action `control` of main with the slug of the row and `args`. */
+  run: (control: Control, args?: Record<string, unknown>) => Promise<boolean>
   clearError: () => void
 }
 
@@ -80,10 +93,10 @@ function useRowControl(slug: string, onChanged: () => void): RowControl {
   const call = useCall()
   const [busy, setBusy] = useState<Control | undefined>(undefined)
   const [error, setError] = useState<{ message: string, nextStep?: string } | undefined>(undefined)
-  async function run(control: Control): Promise<boolean> {
+  async function run(control: Control, args: Record<string, unknown> = {}): Promise<boolean> {
     setBusy(control)
     setError(undefined)
-    const answer = await call(control, { slug })
+    const answer = await call(control, { ...args, slug })
     setBusy(undefined)
     if (answer.ok) onChanged()
     else setError({ message: answer.message, ...(answer.nextStep === undefined ? {} : { nextStep: answer.nextStep }) })
@@ -160,6 +173,46 @@ function Controls({ widget, control }: { widget: Widget, control: RowControl }) 
   )
 }
 
+/**
+ * window_manager.panel: the layer, the lock, and the position of the widget window, each with its control. A switch or
+ * the reset calls one action of main. The value shows the window data of the last query, so a change on the bar of the
+ * window shows here when the change frame of the host runs the query again.
+ */
+function WindowFields({ windowData, control }: { windowData: NonNullable<Widget['windowData']>, control: RowControl }) {
+  const { layer, locked, x, y } = windowData
+  const busy = control.busy !== undefined
+  const position = x === undefined || y === undefined ? undefined : `${String(x)}, ${String(y)}`
+  return (
+    <>
+      <Field label="Layer">
+        <span className="flex items-center gap-2" data-dw="window-layer">
+          <Switch checked={layer === 'top'} disabled={busy} aria-label="Keep the window above other windows"
+            onCheckedChange={(top) => { void control.run('setLayer', { layer: top ? 'top' : 'normal' }) }} data-dw="layer-switch" />
+          <span data-dw="layer" data-layer={layer}>{layer === 'top' ? 'On top' : 'Normal'}</span>
+        </span>
+      </Field>
+      <Field label="Lock">
+        <span className="flex items-center gap-2" data-dw="window-lock">
+          <Switch checked={locked} disabled={busy} aria-label="Lock the position of the window"
+            onCheckedChange={(next) => { void control.run('setLock', { locked: next }) }} data-dw="lock-switch" />
+          <span data-dw="lock" data-locked={String(locked)}>{locked ? 'Locked' : 'Not locked'}</span>
+        </span>
+      </Field>
+      <Field label="Position">
+        <span className="flex items-center gap-2" data-dw="window-position">
+          <span className="tabular-nums" data-dw="position" data-position={position ?? 'default'}>
+            {position ?? <Muted>Default</Muted>}
+          </span>
+          <Button variant="outline" size="xs" onClick={() => { void control.run('resetPosition') }} disabled={busy || position === undefined}
+            title="Move the window to the default position" data-dw="reset-position">
+            <RotateCcw />{control.busy === 'resetPosition' ? BUSY_TEXT.resetPosition : 'Reset position'}
+          </Button>
+        </span>
+      </Field>
+    </>
+  )
+}
+
 function Details({ id, widget, control }: { id: string, widget: Widget, control: RowControl }) {
   const { status, catalog, state, program, actions, source, rows } = widget
   return (
@@ -205,6 +258,7 @@ function Details({ id, widget, control }: { id: string, widget: Widget, control:
           {widget.window === undefined ? <Muted>No window</Muted>
             : <span data-dw="window" data-window={widget.window}>{widget.window === 'shown' ? 'Shown' : 'Hidden'}</span>}
         </Field>
+        {widget.windowData === undefined ? null : <WindowFields windowData={widget.windowData} control={control} />}
       </dl>
       <Controls widget={widget} control={control} />
     </div>

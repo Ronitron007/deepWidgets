@@ -27,6 +27,10 @@
  *   unknown-widget and a slug with no window with no-window. An agent widget_remove keeps the hidden state of the test
  *   widget: the next widget_install comes up hidden (agent_remove_reinstall_unhides). The Remove of main ends it: the
  *   next widget_install starts it as shown. Sample stays hidden across the next host start; then Show shows it.
+ * - window_manager.panel: widget_call of setLayer, setLock, and resetPosition of main gives unknown-widget. Each one
+ *   refuses main with unknown-widget and a slug with no window with no-window. setLayer and setLock of sample write the
+ *   value and its `chosen` entry: the answer, the window frame, the row, and widgetRecords.windowData give them.
+ *   resetPosition deletes a position of POST /api/widget-windows/sample and its choice, and keeps the other choices.
  * - main_widget.widgets in safe mode: a second host start with DEEPWIDGETS_SAFE_MODE=1. An agent widget keeps the status
  *   safe-mode, and the field turnedOff follows Turn off and Turn on.
  * - kit.pane: widget_call of kitAdd, kitRemove, and setRefuseBuilds of main gives unknown-widget. The part kit of the
@@ -293,6 +297,7 @@ function liveFields(row, { title, agent, rowId, packageName, source }) {
   if (row.source !== source) problems.push(`source ${JSON.stringify(row.source)}`)
   if (!Array.isArray(row.rows) || row.rows.length !== 1 || row.rows[0].id !== rowId || row.rows[0].name !== packageName || row.rows[0].enabled !== true || typeof row.rows[0].entryId !== 'string') problems.push(`rows ${JSON.stringify(row.rows)}`)
   if (row.window !== 'shown') problems.push(`window ${JSON.stringify(row.window)}`)
+  if (row.windowData?.shown !== true || row.windowData.layer !== 'top' || row.windowData.locked !== false || !Array.isArray(row.windowData.chosen)) problems.push(`windowData ${JSON.stringify(row.windowData)}`)
   return problems
 }
 
@@ -467,6 +472,88 @@ async function windowPart(call, dir) {
   check('the Remove of main ends the hidden state: the next widget_install of the test widget starts as shown',
     operatorRemoved.body?.result?.ok === true && !reinstalled.isError && reinstalled.body?.application === 'applied' && fresh?.window === 'shown' && freshHello?.shown?.[SLUG] === true,
     JSON.stringify({ removed: operatorRemoved.body?.result, installed: reinstalled.body?.error ?? reinstalled.body?.application, fresh: fresh?.window, hello: freshHello?.shown }))
+}
+
+/** One change of the window data through POST /api/widget-windows/<slug>, as the bar of Electron main sends it. */
+async function windowRoute(slug, change) {
+  const answer = await fetch(`${base}/api/widget-windows/${slug}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify(change),
+  })
+  return { status: answer.status, body: await answer.json().catch(() => null) }
+}
+
+/**
+ * window_manager.panel: the actions setLayer, setLock, and resetPosition of main. The MCP tools do not show them. Each
+ * one refuses main with unknown-widget and a slug with no window with no-window. Each one writes its value and its
+ * `chosen` entry, as the window route does: the answer, the row of the query `widgets`, the `window` frame of the
+ * events route, and the window data of the records service give it. resetPosition deletes a position of the route and
+ * its choice, and keeps the other choices. Sample has no operator choice when this part starts, and it is hidden. At
+ * the end, it is back on the layer top and not locked, and still hidden, for the check of the next host start.
+ */
+async function windowDataPart(call) {
+  const actions = [['setLayer', { layer: 'normal' }], ['setLock', { locked: true }], ['resetPosition', {}]]
+  for (const [action, args] of actions) {
+    const hidden = await call('widget_call', { slug: 'main', action, args: { slug: 'sample', ...args } })
+    check(`widget_call of the action ${action} of main gives unknown-widget`, hidden.isError && hidden.body?.error?.code === 'unknown-widget', JSON.stringify(hidden.body))
+    const main = await route('main', action, { slug: 'main', ...args })
+    const none = await route('main', action, { slug: 'no-such-widget', ...args })
+    check(`${action} refuses main with unknown-widget and a slug with no window with no-window`,
+      main.body?.ok === true && main.body.result?.ok === false && main.body.result.code === 'unknown-widget'
+        && none.body?.ok === true && none.body.result?.ok === false && none.body.result.code === 'no-window',
+      JSON.stringify({ main: main.body, none: none.body }))
+  }
+  const records = () => inHost("return loader.ctx.get('widgetRecords').windowData('sample')")
+  const start = await records()
+  check('sample has no operator choice and no position before the window actions of main', JSON.stringify(start?.chosen) === '[]' && start.x === undefined && start.shown === false,
+    JSON.stringify(start))
+  const stream = await openEvents()
+  await stream.next((frame) => frame.type === 'hello')
+
+  const layer = await route('main', 'setLayer', { slug: 'sample', layer: 'normal' })
+  const layerFrame = await stream.next((frame) => frame.type === 'window' && frame.slug === 'sample' && frame.window?.layer === 'normal')
+  const layerRow = (await waitRows((rows) => rows.get('sample')?.windowData?.layer === 'normal')).get('sample')
+  const layerData = await records()
+  check('setLayer of main writes the layer normal of sample with its choice: the answer, the window frame, the row, and the records give it',
+    layer.body?.result?.ok === true && layer.body.result.windowData?.layer === 'normal' && JSON.stringify(layer.body.result.windowData.chosen) === '["layer"]'
+      && layerFrame?.window?.layer === 'normal' && JSON.stringify(layerFrame.window.chosen) === '["layer"]'
+      && layerRow?.windowData?.layer === 'normal' && layerData?.layer === 'normal' && JSON.stringify(layerData.chosen) === '["layer"]',
+    JSON.stringify({ answer: layer.body, frame: layerFrame, row: layerRow?.windowData, records: layerData }))
+
+  const lock = await route('main', 'setLock', { slug: 'sample', locked: true })
+  const lockFrame = await stream.next((frame) => frame.type === 'window' && frame.slug === 'sample' && frame.window?.locked === true)
+  const lockRow = (await waitRows((rows) => rows.get('sample')?.windowData?.locked === true)).get('sample')
+  const lockData = await records()
+  check('setLock of main writes the lock of sample with its choice, and keeps the layer',
+    lock.body?.result?.ok === true && lock.body.result.windowData?.locked === true && JSON.stringify(lock.body.result.windowData.chosen) === '["layer","locked"]'
+      && lockFrame?.window?.locked === true && lockRow?.windowData?.locked === true && lockRow.windowData.layer === 'normal'
+      && lockData?.locked === true && lockData.layer === 'normal' && JSON.stringify(lockData.chosen) === '["layer","locked"]',
+    JSON.stringify({ answer: lock.body, frame: lockFrame, row: lockRow?.windowData, records: lockData }))
+
+  const placed = await windowRoute('sample', { x: 240, y: 160 })
+  await stream.next((frame) => frame.type === 'window' && frame.slug === 'sample' && frame.window?.x === 240)
+  const placedRow = (await waitRows((rows) => rows.get('sample')?.windowData?.x === 240)).get('sample')
+  // Only a frame after the frame of the position can be the frame of the reset.
+  const seen = stream.frames.length
+  const reset = await route('main', 'resetPosition', { slug: 'sample' })
+  const resetFrame = await stream.next((frame, index) => index >= seen && frame.type === 'window' && frame.slug === 'sample' && frame.window?.x === undefined && frame.window?.y === undefined)
+  const resetRow = (await waitRows((rows) => rows.get('sample')?.windowData?.x === undefined)).get('sample')
+  const resetData = await records()
+  await stream.close()
+  check('resetPosition of main deletes the position of the route and its choice, and keeps the layer and the lock with their choices',
+    placed.status === 200 && JSON.stringify(placed.body?.window?.chosen) === '["layer","locked","x","y"]' && placedRow?.windowData?.y === 160
+      && reset.body?.result?.ok === true && reset.body.result.windowData?.x === undefined && reset.body.result.windowData?.y === undefined
+      && resetFrame !== undefined && resetRow?.windowData?.x === undefined && resetRow.windowData.y === undefined
+      && resetData?.x === undefined && resetData?.y === undefined && resetData?.layer === 'normal' && resetData.locked === true && JSON.stringify(resetData.chosen) === '["layer","locked"]',
+    JSON.stringify({ placed: placed.body, placedRow: placedRow?.windowData, reset: reset.body, frame: resetFrame, row: resetRow?.windowData, records: resetData }))
+
+  const top = await route('main', 'setLayer', { slug: 'sample', layer: 'top' })
+  const unlocked = await route('main', 'setLock', { slug: 'sample', locked: false })
+  const back = (await waitRows((rows) => rows.get('sample')?.windowData?.layer === 'top' && rows.get('sample')?.windowData?.locked === false)).get('sample')
+  check('setLayer top and setLock false put sample back on the layer top and not locked, and it stays hidden',
+    top.body?.result?.ok === true && unlocked.body?.result?.ok === true && back?.windowData?.layer === 'top' && back.windowData.locked === false && back.window === 'hidden',
+    JSON.stringify({ top: top.body?.result, unlocked: unlocked.body?.result, row: back?.windowData, window: back?.window }))
 }
 
 /** The core of the kit (kit.terms), in the order of read(). */
@@ -868,6 +955,7 @@ async function hostPart() {
   // main_widget.widgets: a refusal is the result of the action, with a code, not a handler-error with a code in its message.
   check('Turn off refuses main with the code unknown-widget', offMain.body?.ok === true && offMain.body.result?.ok === false && offMain.body.result.code === 'unknown-widget', JSON.stringify(offMain.body))
   await windowPart(call, dir)
+  await windowDataPart(call)
 
   // ---- Remove ----
   const before = (await mainRows()).get(SLUG)?.state

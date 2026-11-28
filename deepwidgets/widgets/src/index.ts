@@ -530,6 +530,8 @@ interface Runtime {
   rowsOf(slug: string): RegisteredRows
   windowShown(slug: string): boolean
   setWindowShown(slug: string, shown: boolean): Promise<void>
+  windowData(slug: string): WindowData
+  setWindow(slug: string, change: unknown): Promise<WindowData>
   forgetWindow(slug: string): Promise<void>
   commit(slug: string, name: string | undefined): void
   committed(slug: string): string | undefined
@@ -841,6 +843,26 @@ export class WidgetRecordsService extends Service {
    */
   setWindowShown(slug: string, shown: boolean): Promise<void> {
     return guard(() => runtimeOf(this).setWindowShown(slug, shown))
+  }
+
+  /**
+   * window_manager.panel: the whole window data of the widget window of `slug`, with `chosen`, as the frames of the
+   * events route carry it. The main widget reads it for the layer, the lock, and the position of its Widgets tab.
+   */
+  windowData(slug: string): WindowData {
+    return guard(() => runtimeOf(this).windowData(slug))
+  }
+
+  /**
+   * window_manager.panel: store one change of the operator, through the same parse and the same write as the route
+   * `POST /api/widget-windows/<slug>` (window_manager.route). Each value is an operator choice, and `reset` deletes the
+   * position and its choice. The controls of the main widget call it.
+   * @returns the whole window data after the write.
+   * @throws {WindowError} the refusals of the route: `unknown-widget` for the main widget, `no-window` for a slug with no
+   *   live or failed entry, `not-resizable`, and `bad-request`. A refused change writes nothing.
+   */
+  setWindow(slug: string, change: WindowChange): Promise<WindowData> {
+    return guard(() => runtimeOf(this).setWindow(slug, change))
   }
 
   /**
@@ -2055,6 +2077,8 @@ export function apply(ctx: Context, config: Config): void {
     rowsOf,
     windowShown: shownOf,
     setWindowShown: (slug, shown) => admit(() => setWindowShown(slug, shown)),
+    windowData: windowOf,
+    setWindow: (slug, change) => admit(async () => setWindow(slug, parseWindowChange(change))),
     forgetWindow: (slug) => admit(() => forgetWindow(slug)),
     changes,
     cursor,

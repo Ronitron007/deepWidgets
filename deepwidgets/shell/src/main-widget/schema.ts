@@ -46,6 +46,16 @@ export const WidgetSchema = z.object({
   turnedOff: z.literal(true).optional(),
   /** The shown state of the widget window (`main_widget.window_state`). Absent for a widget with no window. */
   window: z.enum(['shown', 'hidden']).optional(),
+  /**
+   * The layer, the lock, and the stored position of the widget window (`window_manager.panel`). `x` and `y` are absent
+   * when no position is stored: the window is at the default position. Absent for a widget with no window.
+   */
+  windowData: z.object({
+    layer: z.enum(['top', 'normal']),
+    locked: z.boolean(),
+    x: z.number().optional(),
+    y: z.number().optional(),
+  }).optional(),
 })
 export type Widget = z.infer<typeof WidgetSchema>
 

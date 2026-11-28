@@ -34,6 +34,12 @@
  * change the rev in that row: the stream of main carries each change of another widget (main_widget.widgets). The row
  * of sample opens with its state viewer, Turn off, and no Remove. Turn off and Turn on in the page change its status.
  * Hide in the row hides the window of sample, and the row shows Hidden. Show shows the window again (main_widget.window_state).
+ * The open row of sample shows the layer top, no lock, and the default position (window_manager.panel). The layer switch in
+ * the row makes isAlwaysOnTop() and isVisibleOnAllWorkspaces() of the window false, with no move, and a second click
+ * makes them true. The lock switch makes isMovable() false, then true. After a drag on the handle of the bar, the row
+ * shows the position, and Reset position moves the window to the default position: the Host frame and the query
+ * widgets have no position. Each click of the lock button on the bar shows in the row. The check saves
+ * $TMPDIR/deepwidgets-wm-panel/row.png.
  * Then a second click closes the panel, another app comes in front (lsappinfo front), and the window of sample still
  * shows. "Open deepWidgets" opens it, a new window that takes the focus closes it, and a
  * second launch of the dev app (its launcher HarnessDev) exits by itself and opens it. The check saves screenshots with
@@ -245,6 +251,8 @@ const MAIN_SHOTS = join(tmpdir(), 'deepwidgets-main-page')
 const PANEL_SHOTS = join(tmpdir(), 'deepwidgets-app-menu-bar')
 /** The folder of the screenshot of the Settings tab of DSH_SMOKE_MAIN (main_widget.settings). */
 const SETTINGS_SHOTS = join(tmpdir(), 'deepwidgets-main-settings')
+/** The folder of the screenshot of the window controls in the row of sample of DSH_SMOKE_MAIN (window_manager.panel). */
+const WM_PANEL_SHOTS = join(tmpdir(), 'deepwidgets-wm-panel')
 await mkdir(home)
 await mkdir(userData)
 openSync(logPath, 'a')
@@ -2547,6 +2555,13 @@ function mainReadExpression() {
     windowText: row.querySelector('[data-dw=window]')?.textContent ?? null,
     show: row.querySelector('[data-dw=show]') !== null,
     hide: row.querySelector('[data-dw=hide]') !== null,
+    layer: row.querySelector('[data-dw=layer]')?.dataset.layer ?? null,
+    layerSwitch: row.querySelector('[data-dw=layer-switch]')?.getAttribute('aria-checked') ?? null,
+    locked: row.querySelector('[data-dw=lock]')?.dataset.locked ?? null,
+    lockSwitch: row.querySelector('[data-dw=lock-switch]')?.getAttribute('aria-checked') ?? null,
+    position: row.querySelector('[data-dw=position]')?.dataset.position ?? null,
+    resetDisabled: row.querySelector('[data-dw=reset-position]')?.disabled ?? null,
+    busy: row.querySelector('[data-dw=row-busy]') !== null,
   })),
 })`
 }
@@ -3347,7 +3362,101 @@ async function checkMainPage(target, closed, deadline) {
     if (!changed.ok) return `main: after ${button}, the row of sample does not show ${text} with ${other}: ${JSON.stringify(sampleRow(changed.value) ?? changed.value)}`
     if (shown !== visible) return `main: after ${button}, the window of sample ${visible ? 'does not show' : 'still shows'} (${String(shown)})`
   }
-  return await checkMainWrites(target, closed, deadline) ?? await checkMainCatchUp(target, deadline)
+  return await checkMainWindowControls(target, deadline) ?? await checkMainWrites(target, closed, deadline) ?? await checkMainCatchUp(target, deadline)
+}
+
+/** The checks of the window controls in the row of sample (window_manager.panel). The hover hook goes back at the end. */
+async function checkMainWindowControls(target, deadline) {
+  try {
+    return await checkMainWindowSteps(target, deadline)
+  } finally {
+    await withWidgetWindows(deadline, wmUnhover()).catch(() => undefined)
+  }
+}
+
+/**
+ * window_manager.panel: the open row of sample shows the layer top, no lock, and the default position. The layer switch
+ * in the row makes isAlwaysOnTop() and isVisibleOnAllWorkspaces() of the window false, and does not move it. A second
+ * click makes them true. The lock switch makes isMovable() false, then true. After a drag on the handle of the bar, the
+ * row shows the position, and Reset position in the row moves the window to the default position: the frame of the Host
+ * and the query `widgets` of main have no position. A click of the lock button on the bar shows in the row, and a
+ * second click too. The check saves $TMPDIR/deepwidgets-wm-panel/row.png while the row shows a stored position.
+ */
+async function checkMainWindowSteps(target, deadline) {
+  const soon = () => Math.min(deadline, Date.now() + 15_000)
+  const sampleRow = (value) => value.rows?.find((row) => row.slug === 'sample')
+  const inRow = (control) => `[data-dw=widget-row][data-slug=sample] [data-dw=${control}]`
+  const first = await pollMain(target, soon(), (value) => sampleRow(value)?.layer === 'top' && sampleRow(value).layerSwitch === 'true'
+    && sampleRow(value).locked === 'false' && sampleRow(value).lockSwitch === 'false' && sampleRow(value).position === 'default' && sampleRow(value).resetDisabled === true)
+  note(`main window fields=${JSON.stringify(sampleRow(first.value))}`)
+  if (!first.ok) return `main: the row of sample does not show the layer top, no lock, and the default position: ${JSON.stringify(sampleRow(first.value) ?? first.value)}`
+  const start = await wmMain(deadline, 'return until((wm) => wm.visible && wm.loaded && wm.barLoaded && wm.top && wm.allSpaces && wm.movable && wm.bounds.x === wm.home.x && wm.bounds.y === wm.home.y, 10000)')
+  if (start?.ok !== true) return `main: the window of sample is not on top, movable, and at the default position before the row controls: ${JSON.stringify(start)}`
+
+  // The layer switch of the row: the layer changes on the window, and the window does not move.
+  for (const [layer, top] of [['normal', false], ['top', true]]) {
+    const before = start.value.bounds
+    if (await clickMain(target, inRow('layer-switch'), deadline) !== true) return 'main: no layer switch in the row of sample'
+    const row = await pollMain(target, soon(), (value) => sampleRow(value)?.layer === layer && sampleRow(value).layerSwitch === String(top) && sampleRow(value).busy === false)
+    const window = await wmMain(deadline, `return until((wm) => wm.top === ${String(top)} && wm.allSpaces === ${String(top)} && wm.host?.layer === ${JSON.stringify(layer)}, 5000)`)
+    note(`main layer ${layer}=${JSON.stringify({ row: sampleRow(row.value), problems: row.value?.problems, window: window?.value === undefined ? window : { top: window.value.top, allSpaces: window.value.allSpaces, host: window.value.host?.layer, bounds: window.value.bounds } })}`)
+    if (!row.ok) return `main: after a click of the layer switch, the row of sample does not show the layer ${layer}: ${JSON.stringify(sampleRow(row.value) ?? row.value)}`
+    if (window?.ok !== true) return `main: after a click of the layer switch, isAlwaysOnTop() or isVisibleOnAllWorkspaces() of the window of sample is not ${String(top)}: ${JSON.stringify(window)}`
+    const after = window.value.bounds
+    if (after.x !== before.x || after.y !== before.y) return `main: a click of the layer switch moved the window of sample: ${JSON.stringify({ before, after })}`
+  }
+
+  // The lock switch of the row: the window can not move, then it can again.
+  for (const locked of [true, false]) {
+    if (await clickMain(target, inRow('lock-switch'), deadline) !== true) return 'main: no lock switch in the row of sample'
+    const row = await pollMain(target, soon(), (value) => sampleRow(value)?.locked === String(locked) && sampleRow(value).lockSwitch === String(locked) && sampleRow(value).busy === false)
+    const window = await wmMain(deadline, `return until((wm) => wm.movable === ${String(!locked)} && wm.host?.locked === ${String(locked)}, 5000)`)
+    note(`main lock ${String(locked)}=${JSON.stringify({ row: sampleRow(row.value), movable: window?.value?.movable, host: window?.value?.host?.locked })}`)
+    if (!row.ok) return `main: after a click of the lock switch, the row of sample does not show ${locked ? 'Locked' : 'Not locked'}: ${JSON.stringify(sampleRow(row.value) ?? row.value)}`
+    if (window?.ok !== true) return `main: after a click of the lock switch, isMovable() of the window of sample is not ${String(!locked)}: ${JSON.stringify(window)}`
+  }
+
+  // A drag on the handle of the bar stores a position, and the row shows it. Reset position in the row deletes it.
+  const dragged = await wmMain(deadline, `
+    const moved = await drag({ x: 60, y: 45 })
+    if (typeof moved === 'string') return { failed: moved }
+    const stored = await until((wm) => wm.pending === null && wm.host?.position?.x === wm.bounds.x && wm.host?.position?.y === wm.bounds.y, 5000)
+    return { moved, stored: stored.ok, host: stored.value.host?.position, home: stored.value.home }`)
+  note(`main drag=${JSON.stringify(dragged)}`)
+  if (dragged?.failed !== undefined) return `main: ${String(dragged.failed)}`
+  const { moved } = dragged ?? {}
+  if (moved?.started !== true || moved.after.x !== moved.before.x + 60 || moved.after.y !== moved.before.y + 45 || dragged.stored !== true) {
+    return `main: a drag on the handle of the bar did not move the window of sample by 60, 45 and store its position: ${JSON.stringify(dragged)}`
+  }
+  const position = `${String(dragged.host.x)}, ${String(dragged.host.y)}`
+  const placed = await pollMain(target, soon(), (value) => sampleRow(value)?.position === position && sampleRow(value).resetDisabled === false)
+  note(`main position=${JSON.stringify(sampleRow(placed.value))}`)
+  if (!placed.ok) return `main: after a drag, the row of sample does not show the position ${position}: ${JSON.stringify(sampleRow(placed.value) ?? placed.value)}`
+  await evaluate(target.webSocketDebuggerUrl, `(() => { document.querySelector(${JSON.stringify(inRow('window-layer'))})?.scrollIntoView({ block: 'center' }); return true })()`, deadline)
+  await delay(200)
+  await shootMain('row.png', deadline, WM_PANEL_SHOTS)
+  if (await clickMain(target, inRow('reset-position'), deadline) !== true) return 'main: no Reset position in the row of sample'
+  const reset = await wmMain(deadline, 'return until((wm) => wm.host?.position === null && wm.bounds.x === wm.home.x && wm.bounds.y === wm.home.y, 5000)')
+  const resetRow = await pollMain(target, soon(), (value) => sampleRow(value)?.position === 'default' && sampleRow(value).resetDisabled === true)
+  const record = await hostWidgets(deadline, "async (widgets) => (await widgets.call('main', 'widgets', {}, { caller: 'smoke-main' })).result?.widgets?.find((row) => row.slug === 'sample')?.windowData ?? null", [])
+  note(`main reset=${JSON.stringify({ window: reset?.value === undefined ? reset : { bounds: reset.value.bounds, home: reset.value.home, host: reset.value.host?.position }, row: sampleRow(resetRow.value), record })}`)
+  if (reset?.ok !== true) return `main: Reset position did not move the window of sample to the default position: ${JSON.stringify({ bounds: reset?.value?.bounds, home: reset?.value?.home, host: reset?.value?.host?.position })}`
+  if (record === null || record.x !== undefined || record.y !== undefined || record.chosen?.includes('x') !== false) return `main: after Reset position, the record of sample still has a position: ${JSON.stringify(record)}`
+  if (!resetRow.ok) return `main: after Reset position, the row of sample does not show the default position: ${JSON.stringify(sampleRow(resetRow.value) ?? resetRow.value)}`
+
+  // The lock button of the bar: each click shows in the row.
+  for (const locked of [true, false]) {
+    const clicked = await wmMain(deadline, `
+      const failed = await click('lock')
+      if (failed !== undefined) return { failed }
+      return until((wm) => wm.movable === ${String(!locked)} && wm.host?.locked === ${String(locked)} && wm.pending === null, 5000)`)
+    if (clicked?.failed !== undefined) return `main: ${String(clicked.failed)}`
+    const row = await pollMain(target, soon(), (value) => sampleRow(value)?.locked === String(locked) && sampleRow(value).lockSwitch === String(locked))
+    note(`main bar lock ${String(locked)}=${JSON.stringify({ window: clicked?.ok, row: sampleRow(row.value) })}`)
+    if (clicked?.ok !== true) return `main: a click of the lock button on the bar did not ${locked ? 'lock' : 'unlock'} the window of sample: ${JSON.stringify(clicked)}`
+    if (!row.ok) return `main: a click of the lock button on the bar does not show in the row of sample: ${JSON.stringify(sampleRow(row.value) ?? row.value)}`
+  }
+  return undefined
 }
 
 async function checkHello(page, deadline) {
