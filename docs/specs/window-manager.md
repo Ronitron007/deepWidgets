@@ -135,6 +135,8 @@ The table `windows` of the storage domain `widgets` keeps one record for each sl
 
 - The route refuses `main` and a slug with no live or failed entry, as the actions `show` and `hide` of `main` do.
 
+- A slug that the current host never knew gets the shared 404 of the connection, not `no-window`. The connection matches exact paths only (`rpc-host.ts`).
+
 ## The panel `window_manager.panel`
 
 - The row of each widget in the Widgets tab shows the layer, the lock, and the position.
