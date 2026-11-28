@@ -188,11 +188,13 @@ On the widget origin of the slug S, Electron main answers only these paths:
 
 - Electron main writes a log line for each of these steps.
 
-- A load that a newer load stopped is not a failure. Electron can reject the load of the page with the abort (errno -3) of the load before it, with the URL of that older load. Electron main counts a rejected load as a failure only when its errno is not -3, or when the URL of the error is the URL of the load. The check uses the errno, because the code of that error is empty.
+- A rejected load with errno -3 is not a failure by itself. Electron can reject the load of a page with the abort (errno -3) of the load before it. The URL of that error can be the URL of the older load, or the same URL when a load replaces a load of the same page. The code of that error is empty. Thus neither the code nor the URL tells a real failure from this abort.
 
-- When the rejection is such an abort of an older load, the page did load. Electron main then treats the load as done, as for a load that ends with no error, and shows the window.
+- After such a rejection, Electron main waits until the window stops loading. Then it checks whether the page of this load loaded. If the page loaded, Electron main runs the same steps as for a load that ends with no error. Thus a window that the operator hid stays hidden. If the page did not load, or the renderer ended during the wait, it counts one failure.
 
-- The evidence: a standalone test of Electron 44.7.0 on 2026-11-28 (verified by a run). It replaced a page that had started to show but still loaded. The new load then rejected when it ended, with errno -3, an empty code, and the URL of the old page. Before this rule, the switch from the shared shell to a page counted a failure that did not occur, and loaded the page again (`deferred.phantom_load_failure`, the verify of PR #116).
+- Each other rejection counts one failure, as before.
+
+- The evidence: standalone tests of Electron 44.7.0 on 2026-11-28 (verified by runs). A page replaced the shell while the shell still loaded. The new load then rejected with errno -3, an empty code, and the URL of the shell, though the page loaded. When a load replaced a load of the same page, the error had the URL of that page, and the page loaded too (the review of PR #164). Before this rule, the switch from the shared shell to a page counted a failure that did not occur, and loaded the page again (`deferred.phantom_load_failure`, the verify of PR #116).
 
 This follows the host: a crash gets a restart first, and safe mode comes only after a repeat (`safe_host`).
 
