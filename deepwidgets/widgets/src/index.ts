@@ -1030,6 +1030,9 @@ export function apply(ctx: Context, config: Config): void {
     return opened
   })
   ready.catch((error: unknown) => { ctx.logger.error('widgets: the storage domain did not open; each widget call fails', error) })
+  // window_manager.route: each slug with a window record has its window route, also while it is turned off. A read that
+  // fails adds no route: the slug gets its route when its entry starts.
+  ready.then((opened) => { for (const slug of opened.table('windows').keys()) addWindowRoute(slug) }).catch(() => undefined)
 
   // Each call, update, and setProgram that is admitted runs to its end before the domain closes.
   let stopping = false
@@ -1579,22 +1582,36 @@ export function apply(ctx: Context, config: Config): void {
           }), slug === MAIN_SLUG ? [{ type: 'data' }] : [])
         }),
       }),
-      // window_manager.route: the path is not under /api/widgets/<slug>/, so no widget origin forwards it. Only Electron
-      // main and the panel, with the host cookie, reach it. It answers the whole window data after the write.
-      ctx.connection.fetch.register({
-        path: `/api/widget-windows/${slug}`,
-        methods: ['POST'],
-        requestBody: 'buffered',
-        fetch: guarded(async (request) => {
-          try {
-            const change = parseWindowChange(await readBody(request))
-            return json(200, { ok: true, window: await setWindow(slug, change) })
-          } catch (error) {
-            return failure(error)
-          }
-        }),
-      }),
     ]
+  }
+
+  /**
+   * window_manager.route: the slugs with a window route in this Host start. A route stays after its entry ends, so a slug
+   * that is turned off or removed gets `no-window` (route_404_not_no_window). The connection takes exact paths only, so
+   * a slug that this Host start never knew (no entry, no window record, and not off) has no route and gets the 404 of
+   * the shared channel.
+   */
+  const windowRoutes = new Set<string>()
+  /**
+   * Add the window route of `slug` once. The path is not under /api/widgets/<slug>/, so no widget origin forwards it.
+   * Only Electron main and the panel, with the host cookie, reach it. It answers the whole window data after the write.
+   */
+  function addWindowRoute(slug: string): void {
+    if (windowRoutes.has(slug) || !SLUG.test(slug)) return
+    windowRoutes.add(slug)
+    ctx.connection.fetch.register({
+      path: `/api/widget-windows/${slug}`,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: guarded(async (request) => {
+        try {
+          const change = parseWindowChange(await readBody(request))
+          return json(200, { ok: true, window: await setWindow(slug, change) })
+        } catch (error) {
+          return failure(error)
+        }
+      }),
+    })
   }
 
   /**
@@ -1639,6 +1656,7 @@ export function apply(ctx: Context, config: Config): void {
     if (failure === undefined && safeMode && !builtIn()) {
       const message = `safe mode: the widget ${slug} of ${bundle ?? 'an unknown bundle'} is off for this Host start; only built-in widgets run`
       off.set(slug, { title: registration.title, message, agent: registration.agent === true })
+      addWindowRoute(slug)
       ctx.logger.warn(`widgets: ${message}`)
       throw new WidgetError('safe-mode', message)
     }
@@ -1791,6 +1809,7 @@ export function apply(ctx: Context, config: Config): void {
     entry.seeded.catch((error: unknown) => { ctx.logger.error(`widgets: the seed of ${slug} failed; its calls fail`, error) })
     widgets.set(slug, entry)
     entry.routes = addRoutes(entry)
+    addWindowRoute(slug)
     logChange({ slug, kind: 'added', by: 'host' })
     pushEvent({ type: 'added', slug })
 
@@ -1989,6 +2008,7 @@ export function apply(ctx: Context, config: Config): void {
         for (const slug of slugs) {
           if (widgets.has(slug) || off.has(slug)) continue
           off.set(slug, { title: slug, message: `safe mode: the agent row ${rowId(row)} is off for this Host start; only built-in widgets run`, agent: true })
+          addWindowRoute(slug)
         }
       }
       ctx.logger.warn(`widgets: safe mode skipped ${String(rows.length)} agent rows; only built-in rows run: ${rows.map(({ row }) => rowId(row)).join(', ')}`)

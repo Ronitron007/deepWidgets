@@ -5,7 +5,8 @@
  * - window_manager.route: POST /api/widget-windows/sample sets the layer, the lock, and a position. Each answer gives the
  *   whole window data, and the hello frame of GET /api/widgets/events gives the values with `chosen`. A Hide and a Show
  *   of main keep them. A size for sample gives not-resizable and changes nothing. A body with a lone x or an unknown
- *   field gives bad-request. The route refuses main with unknown-widget, and a slug with no entry gets 404.
+ *   field gives bad-request. The route refuses main with unknown-widget. A slug that is turned off or removed gets the
+ *   JSON error no-window. A slug that this host never knew has no exact route, so it gets the 404 of the shared channel.
  * - window_manager.data: after a host restart, the hello frame gives the same values.
  * - window_manager.defaults: a test widget with window { layer: 'normal', width: 400, height: 200, resizable: true }
  *   gets these values in its first added frame. A reinstall with width 500 keeps 400: no frame and no hello gives 500.
@@ -303,7 +304,7 @@ async function samplePart() {
     JSON.stringify({ lone: lone.body, unknown: unknown.body, small: small.body, empty: empty.body }))
   const main = await windowRoute('main', { layer: 'normal' })
   const none = await windowRoute('no-such-widget', { layer: 'normal' })
-  check('the route refuses main with unknown-widget, and a slug with no entry gets 404',
+  check('the route refuses main with unknown-widget, and a slug that this host never knew gets 404',
     main.status === 404 && main.body?.error?.code === 'unknown-widget' && none.status === 404,
     JSON.stringify({ main, none }))
   return want
@@ -373,6 +374,11 @@ async function hostPart() {
   // Turn off and Turn on keep it.
   const off = await route('main', 'turnOff', { slug: SLUG })
   await waitRows((rows) => rows.get(SLUG)?.status?.kind === 'turned-off')
+  // route_404_not_no_window: a slug with no live or failed entry gets the JSON error no-window.
+  const offRoute = await windowRoute(SLUG, { layer: 'top' })
+  check('the route gives no-window for a turned-off slug, and writes nothing',
+    offRoute.status === 404 && offRoute.body?.ok === false && offRoute.body.error?.code === 'no-window',
+    JSON.stringify(offRoute))
   const on = await route('main', 'turnOn', { slug: SLUG })
   await waitRows((rows) => rows.get(SLUG)?.status?.kind === 'live')
   await sleep(500)
@@ -381,6 +387,8 @@ async function hostPart() {
 
   // An agent widget_remove and a widget_install keep it.
   const removed = await call('widget_remove', { slug: SLUG })
+  const removedRoute = await windowRoute(SLUG, { layer: 'top' })
+  check('the route gives no-window for a removed slug', removedRoute.status === 404 && removedRoute.body?.error?.code === 'no-window', JSON.stringify(removedRoute))
   const back = await call('widget_install', { dir })
   await waitRows((rows) => rows.get(SLUG)?.status?.kind === 'live')
   await sleep(500)
@@ -436,6 +444,7 @@ async function hostPart() {
     JSON.stringify(bad))
   const badListed = (await eventsHello())?.slugs?.includes('bad-window')
   check('the refused definition has no window', badListed === false, String(badListed))
+
 
   // ---- window_manager.route: the page of sample can not reach the route ----
   const pageRoutes = [true, false].map((hasPage) => widgetRoute('sample', '/api/widget-windows/sample', hasPage))
