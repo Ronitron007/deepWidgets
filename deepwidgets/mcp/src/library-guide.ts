@@ -98,6 +98,7 @@ Its warnings: the body has no height, the content is wider than the window, and 
 - The install answer gives the gates, the warnings, and page, the folder of the built page.
 - widget_describe gives the state, and source, the folder of the files. widget_call changes the state, and the page shows the new state.
 - The app shows one window for each widget. A widget with a page loads it at dsh-app://w-<slug>.widget/widget/<slug>/. Ask the user to look at the window.
+- While the mouse is over the window, a bar of the app covers the top 24 px of the page. Keep the controls of the page out of that strip.
 - When the page fails two times in 60 s, its window shows the shared page with a notice. The shared page refuses the program of your catalog. Fix the page and install again.
 
 ## The mode library

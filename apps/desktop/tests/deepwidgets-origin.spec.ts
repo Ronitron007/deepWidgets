@@ -69,7 +69,8 @@ describe('widgetRoute (agent_library.serving.routes)', () => {
     expect(widgetRoute('demo', '/api/widgets/demo/..%5Csample/call', true)).toEqual({ kind: 'status', status: 400 })
     expect(widgetRoute('demo', '/api/widgets/events', true)).toEqual({ kind: 'status', status: 404 })
     expect(widgetRoute('demo', '/api/widgets/demo', true)).toEqual({ kind: 'status', status: 404 })
-    for (const path of ['/', '/index.html', '/assets/index.js', '/api/trace', '/plugins/x.js', '/widgetx']) {
+    // window_manager.route: the window route of the operator is not under /api/widgets/<slug>/, so a page can not reach it.
+    for (const path of ['/', '/index.html', '/assets/index.js', '/api/trace', '/plugins/x.js', '/widgetx', '/api/widget-windows/demo']) {
       expect(widgetRoute('demo', path, true)).toEqual({ kind: 'status', status: 404 })
     }
   })

@@ -28,6 +28,23 @@ declare module 'deepwidgets:widget' {
     handler(args: A, w: WidgetScope<S>): unknown
   }
 
+  /**
+   * The first window data of a new widget. The operator can change the layer, the lock, the place, and a size of a
+   * resizable window. A reinstall, a reload, or a Turn on keeps the window as it is: a change here applies only to a
+   * slug that has no window yet. In the app, a bar with the controls of the operator covers the top 24 points of the
+   * window while the mouse is over it. Keep the controls of the page out of that strip.
+   */
+  export interface WidgetWindow {
+    /** 'top': above each app window, on each desktop. 'normal': on one desktop, and app windows can cover it. Default 'top'. */
+    layer?: 'top' | 'normal'
+    /** The width in points, a whole number from 80 to 4096. Default 320. */
+    width?: number
+    /** The height in points, a whole number from 80 to 4096. Default 300. */
+    height?: number
+    /** true: the operator can resize the window at its edges. Default false. */
+    resizable?: boolean
+  }
+
   /** A widget definition. */
   export interface WidgetDef<S, T extends readonly unknown[] = readonly unknown[]> {
     /** Lowercase letters, digits, and `-`. At most 63 characters. */
@@ -40,6 +57,8 @@ declare module 'deepwidgets:widget' {
      * A widget with a page sets it to the `CATALOG_ID` of `page/child.tsx`. See widget_guide with mode "library".
      */
     catalog?: string
+    /** The first window data of a new widget. A bad value fails the registration. */
+    window?: WidgetWindow
     initialState: S
     timeoutMs?: number
     actions: { readonly [K in keyof T]: WidgetAction<S, T[K]> }
