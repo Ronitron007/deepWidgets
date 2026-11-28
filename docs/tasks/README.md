@@ -6,6 +6,8 @@ Each file in this folder is one task for one agent. A task implements one unit o
 
 - Your task file is the authority for your unit.
 
+- For new or resumed work that affects the product rules, give both the implementer and the reviewer the [product direction](../specs/product-direction.md) revision with the unit brief. Follow the specified unit scope and raise any conflict with that direction.
+
 - The root `AGENTS.md` and the nested `CLAUDE.md` and `AGENTS.md` files come from upstream DeepSeek Harness (DSH). Use their code conventions when you edit DSH code.
 
 - Do not follow the upstream process rules. These include PR description templates, AI usage sections, labels, `gh stack`, CI gates, release steps, upgrade guides, Agent Notes, and translations.

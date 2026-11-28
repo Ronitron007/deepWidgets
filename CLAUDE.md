@@ -6,7 +6,9 @@ This file is the head node for every agent in this repository. Read it before an
 
 deepWidgets is an unofficial fork of DeepSeek Harness (DSH). The fork started as one squashed copy of DSH commit `22ddee3`. On 2026-11-02, [Ronitron007/deepWidgets#73](https://github.com/Ronitron007/deepWidgets/pull/73) merged DSH `master` `ce7073d5` into the fork through the vendor branch `rohan/dsh-upstream`. That upstream commit has Cordis `4.0.0-rc.11`. `docs/plans/upstream-sync.md` tells how a sync works. `UPSTREAM.md` gives the upstream commits and the license.
 
-The goal is a floating desktop widget whose plugins run on Cordis. DSH already has a Cordis host process, a Cordis client in the renderer, and an Electron desktop app. Thus deepWidgets starts from DSH and turns off the parts that it does not use.
+deepWidgets gives people desktop widgets that agents in compatible model-provider apps can operate from anywhere through MCP, with access granted and controlled by the person at the PC. Read the [product direction](docs/specs/product-direction.md) before planning, implementing, or reviewing work. Use the unit brief for assigned scope and raise conflicts with the operator.
+
+The desktop widgets run on Cordis. DSH supplies the Cordis host, client, and Electron desktop app. deepWidgets starts from DSH and turns off the parts it does not use.
 
 ## Why most code does not run `head.why`
 
@@ -137,7 +139,7 @@ The file `tools/in-host.mjs` is not a check. It gives the pin wrappers for inspe
 
 | Path | Content |
 |---|---|
-| `docs/specs/` | `fork-trim.md` (`fork_trim`), `floating-widget.md` (`floating_widget`), `ts-move.md` (`ts_move`), `widget-rows.md` (`widget_rows`), `widget-mvp.md` (`widget_mvp`), `widget-phase2.md` (`widget_phase2`), `handoff.md` (`handoff`, proposed), `handoff-evidence.md` (`handoff_evidence`), `widget-fv.md` (`widget_fv`), `mcp-consent.md` (`mcp_consent`), `modes.md` (`modes`), `safe-host.md` (`safe_host`), `agent-library.md` (`agent_library`), `main-widget.md` (`main_widget`), `kit.md` (`kit`), `window-manager.md` (`window_manager`) |
+| `docs/specs/` | `product-direction.md`, `fork-trim.md` (`fork_trim`), `floating-widget.md` (`floating_widget`), `ts-move.md` (`ts_move`), `widget-rows.md` (`widget_rows`), `widget-mvp.md` (`widget_mvp`), `widget-phase2.md` (`widget_phase2`), `handoff.md` (`handoff`, proposed), `handoff-evidence.md` (`handoff_evidence`), `widget-fv.md` (`widget_fv`), `mcp-consent.md` (`mcp_consent`), `modes.md` (`modes`), `safe-host.md` (`safe_host`), `agent-library.md` (`agent_library`), `main-widget.md` (`main_widget`), `kit.md` (`kit`), `window-manager.md` (`window_manager`) |
 | `docs/explore/widget-system/` | The widget decisions (`where-we-stand.md`, `standing.decided`), the checked facts, the open points, and the spikes `widget-kit-spike.md` (`kit_spike`) and `plugins-spike.md` (`plugins_spike`) |
 | `docs/plans/` | The plans of the specs. Each plan unit is one PR. |
 | `docs/canvas/` | JSON Canvas boards that show how a system works, such as `floating-widget-processes.canvas`. |
