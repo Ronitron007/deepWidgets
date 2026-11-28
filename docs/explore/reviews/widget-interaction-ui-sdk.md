@@ -1,6 +1,8 @@
 # Shared widget interactions and Vercel UI SDK
 
-**Recommendation.** Define the interaction conventions in deepWidgets and apply them to both the built-in shell and authored pages. Keep Vercel Labs UI SDK as a candidate implementation for individual controls. Start by making the existing controls and frame consistent. The dependency decision follows a comparison in the packaged desktop app.
+**Operator decision update (29 November 2026).** Rather than keeping React 18, retaining OpenUI, or benchmarking one control at a time, deepWidgets will **upgrade unconditionally to React 19, remove OpenUI (`@openuidev/react-lang`) completely, adopt `@ui-sdk/core` + `@ui-sdk/react` in `@deepwidgets/kit` Core behind themed `@deepwidgets/shell/ui/*` wrappers, and mount `@ui-sdk/react/agent` (`createAgent()`) in `@deepwidgets/widget-kit`** to give `interact` mode uniform two-way UI inspection and operation alongside host `ctx.widgets` mutations ([settled verdict](future-of-ui-verdict.md) · [product direction](../../specs/product-direction.md)). Keep the control-level accessibility, focus-restoration, `requestId` reconciliation, and trusted desktop confirmation rules below when implementing `@deepwidgets/shell/ui/*` and `@deepwidgets/widget-kit`.
+
+**Original conservative recommendation (superseded above).** Define the interaction conventions in deepWidgets and apply them to both the built-in shell and authored pages. Keep Vercel Labs UI SDK as a candidate implementation for individual controls. Start by making the existing controls and frame consistent. The dependency decision follows a comparison in the packaged desktop app.
 
 ## Where uniformity comes from
 

@@ -2,7 +2,7 @@
 
 29 November 2026
 
-The agent review proposes a local collaboration milestone before the hosted connector. The [product direction](../../specs/product-direction.md) records the combined direction. The [widget interaction review](widget-interaction-ui-sdk.md) evaluates the suggested UI SDK dependency on its own merits.
+The agent review proposes a local collaboration milestone before the hosted connector. The [product direction](../../specs/product-direction.md) and [unified architecture verdict](future-of-ui-verdict.md) record the settled operator decision: drop OpenUI (`@openuidev/react-lang`), upgrade unconditionally to React 19, ship `@deepwidgets/shell/ui/*` + `@deepwidgets/widget-kit` on Vercel UI SDK (`@ui-sdk/core` + `@ui-sdk/react`), and compile ephemeral `.tsx` surfaces via in-memory `esbuild.transform` over a pre-bundled ESM importmap rather than keeping the OpenUI catalog renderer proposed in the table below. The lease, `decisionId` receipt lookup, renderer `requestId`, and trusted desktop confirmation mechanics below remain active requirements.
 
 ## The first workflow
 
