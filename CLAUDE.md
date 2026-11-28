@@ -6,7 +6,7 @@ This file is the head node for every agent in this repository. Read it before an
 
 deepWidgets is an unofficial fork of DeepSeek Harness (DSH). The fork started as one squashed copy of DSH commit `22ddee3`. On 2026-11-02, [Ronitron007/deepWidgets#73](https://github.com/Ronitron007/deepWidgets/pull/73) merged DSH `master` `ce7073d5` into the fork through the vendor branch `rohan/dsh-upstream`. That upstream commit has Cordis `4.0.0-rc.11`. `docs/plans/upstream-sync.md` tells how a sync works. `UPSTREAM.md` gives the upstream commits and the license.
 
-deepWidgets gives people desktop widgets that agents in compatible model-provider apps can operate from anywhere through MCP, with access granted and controlled by the person at the PC. Read the [product direction](docs/specs/product-direction.md) before planning, implementing, or reviewing work. Use the unit brief for assigned scope and raise conflicts with the operator.
+deepWidgets turns the PC desktop into an ephemeral, post-app UI runtime where any MCP-capable agent can spawn, operate, await, compose, and dispose live interactive surfaces and bounded sub-agents under the PC owner's control, using a uniform `@ui-sdk` + `@deepwidgets/shell` + `@deepwidgets/widget-kit` behavioral spine. Read the [product direction](docs/specs/product-direction.md) and the [ephemeral surfaces and UI SDK verdict](docs/explore/reviews/future-of-ui-verdict.md) before planning, implementing, or reviewing work. Use the unit brief for assigned scope and raise conflicts with the operator.
 
 The desktop widgets run on Cordis. DSH supplies the Cordis host, client, and Electron desktop app. deepWidgets starts from DSH and turns off the parts it does not use.
 
