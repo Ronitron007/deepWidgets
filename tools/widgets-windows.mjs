@@ -13,7 +13,12 @@
  *   Turn off and Turn on keep 400. An agent widget_remove and a widget_install keep 400. The Remove of main deletes the
  *   record, and the next widget_install with width 500 gives 500. A size for the test widget is stored.
  * - window_manager.route: reset deletes the position of sample and its choice.
- * - window_manager.defaults: a definition with a bad window value fails its registration with a TypeError.
+ * - window_manager.defaults: a record with only the shown state (from before wm.store, or from a Hide of a failed entry)
+ *   takes the agent defaults of the next reinstall one time, and keeps its shown state. A second reinstall with other
+ *   defaults keeps them.
+ * - window_manager.defaults: a definition with a bad window value fails its registration with a TypeError, and the
+ *   message of a size names 80 to 4096 points. widget_install of such a bundle fails the test gate, and its next step
+ *   names the field window and the allowed values.
  * - window_manager.route: a page of sample can not reach the route: the widget origin gives 404 for
  *   /api/widget-windows/sample (widgetRoute of apps/desktop/src/deepwidgets-origin.ts). DSH_SMOKE_WM=1 calls it from the
  *   real page too.

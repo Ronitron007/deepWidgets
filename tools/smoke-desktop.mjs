@@ -76,7 +76,9 @@
  * hook point moved between them) moves the window by the move of the hook point, and the Host stores the position.
  * With the lock on, the same drag does not move it. A drag to the top edge of the display stores the position that
  * getPosition() gives, not the asked point. After a reset of the position through the route, a press and a release on
- * the handle with no move store no position. A position, the layer normal, and the lock from the bar stay through Turn
+ * the handle with no move store no position. With the mark of a `will-move` set, a move of the window is stored once:
+ * a later window.moveTo of the page stores nothing. A move after a change of the displays (the check of Electron main
+ * that the screen events call) stores nothing. A position, the layer normal, and the lock from the bar stay through Turn
  * off and Turn on: the new window of sample has them. The check kills the host and clicks the layer button in the gap:
  * the choice waits in Electron main, reaches the next host, and the hello of that host does not undo it. A script in
  * the page of sample finds no bar element, and its call of /api/widget-windows/sample gets 404.
