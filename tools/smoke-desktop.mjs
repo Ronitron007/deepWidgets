@@ -1156,6 +1156,7 @@ async function checkWmSteps(deadline) {
   const failed = await checkWmButtons(deadline)
     ?? await checkWmDrags(deadline)
     ?? await checkWmStoredPlace(deadline)
+    ?? await checkWmPageMove(deadline)
     ?? await checkWmTurnOn(deadline)
     ?? await checkWmHostDown(deadline)
   if (failed !== undefined) return failed
@@ -1287,6 +1288,54 @@ async function checkWmStoredPlace(deadline) {
   if (still?.reset?.status !== 200 || still.cleared !== true) return `wm: the reset of the route did not move the window to the default position: ${JSON.stringify(still)}`
   if (still.pressed?.started !== true || still.after.x !== still.before.x || still.after.y !== still.before.y) return `wm: the press on the handle did not start a drag, or it moved the window: ${JSON.stringify(still)}`
   if (still.host !== null || still.pending !== null || still.data !== null) return `wm: a press and a release on the handle with no move stored a position: ${JSON.stringify(still)}`
+  return undefined
+}
+
+/**
+ * window_manager.move (page_move_becomes_operator_choice): only the move that a `will-move` starts is an operator choice.
+ * The check sets the mark of a `will-move`, as the review probe did, and moves the window with setPosition, which macOS
+ * reports with `moved`. The Host stores that position. Then a script in the page of sample runs window.moveTo: the Host
+ * keeps the position of the operator. After a reset, a second page move stores no position and no choice of x and y.
+ */
+async function checkWmPageMove(deadline) {
+  const operator = await wmMain(deadline, `
+    const reset = await post({ reset: true })
+    const cleared = await until((wm) => wm.host?.position === null && wm.pending === null && wm.bounds.x === wm.home.x && wm.bounds.y === wm.home.y, 5000)
+    const home = read().bounds
+    entry.nativeMove = true
+    window.setPosition(home.x + 30, home.y + 20)
+    const stored = await until((wm) => wm.pending === null && wm.host?.position?.x === home.x + 30 && wm.host?.position?.y === home.y + 20, 5000)
+    await sleep(300)
+    return { reset: reset.status, cleared: cleared.ok, home, stored: stored.ok, host: stored.value.host?.position, mark: entry.nativeMove }`)
+  note(`wm operator native move: ${JSON.stringify(operator)}`)
+  if (operator?.reset !== 200 || operator.cleared !== true || operator.stored !== true) return `wm: the native move of the operator did not reach the Host: ${JSON.stringify(operator)}`
+  if (operator.mark !== false) return `wm: the mark of the native move stays after its end: ${JSON.stringify(operator)}`
+  const page = await findWidgetPage('sample', Math.min(deadline, Date.now() + 15_000))
+  if (page === undefined) return 'wm: no renderer page for the window of sample'
+  const pageMove = async (x, y) => {
+    await evaluate(page.webSocketDebuggerUrl, `window.moveTo(${String(x)}, ${String(y)}); 'moved'`, deadline)
+    return wmMain(deadline, `
+      await sleep(1000)
+      const answer = await post({ layer: 'top' })
+      return { bounds: read().bounds, pending: read().pending, window: answer.body?.window ?? null }`)
+  }
+  const first = await pageMove(operator.home.x + 70, operator.home.y + 30)
+  note(`wm page move after the operator move: ${JSON.stringify(first)}`)
+  if (first?.window?.x !== operator.home.x + 30 || first.window.y !== operator.home.y + 20 || first.pending !== null) {
+    return `wm: a window.moveTo of the page after a native move of the operator changed the stored position: ${JSON.stringify({ operator, first })}`
+  }
+  const second = await wmMain(deadline, `
+    const reset = await post({ reset: true })
+    const cleared = await until((wm) => wm.host?.position === null && wm.pending === null && wm.bounds.x === wm.home.x && wm.bounds.y === wm.home.y, 5000)
+    return { reset: reset.status, cleared: cleared.ok }`)
+  if (second?.reset !== 200 || second.cleared !== true) return `wm: the reset after the page move did not move the window home: ${JSON.stringify(second)}`
+  const later = await pageMove(operator.home.x + 70, operator.home.y + 30)
+  note(`wm page move with no operator move: ${JSON.stringify(later)}`)
+  if (later?.window === null || 'x' in later.window || later.window.chosen.includes('x') || later.pending !== null) {
+    return `wm: a window.moveTo of the page stored a position or a choice of x: ${JSON.stringify(later)}`
+  }
+  const home = await wmMain(deadline, 'this.moveTo(entry, read().home); return until((wm) => wm.bounds.x === wm.home.x && wm.bounds.y === wm.home.y, 5000)')
+  if (home?.ok !== true) return `wm: the check could not put the window of sample home after the page moves: ${JSON.stringify(home)}`
   return undefined
 }
 

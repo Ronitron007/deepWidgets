@@ -610,10 +610,16 @@ export class DesktopWidgetWindows {
     this.choose(slug, { position: data.position })
   }
 
-  /** The end of a move by the operator with a drag area of the page: its position is an operator choice. */
+  /**
+   * The end of a move by the operator with a drag area of the page: its position is an operator choice. The mark of the
+   * move ends here, so one `will-move` gives one choice. A later move with no `will-move`, such as a `window.moveTo` of
+   * the page, is not an operator choice (page_move_becomes_operator_choice). On macOS, `moved` comes for each step of
+   * one drag, so the mark can not end at the first `moved`.
+   */
   private nativeMoved(slug: string, entry: WidgetWindow): void {
     const data = this.data.get(slug)
     if (!entry.nativeMove || data === undefined || entry.window.isDestroyed()) return
+    entry.nativeMove = false
     const [x = 0, y = 0] = entry.window.getPosition()
     if (data.position?.x === x && data.position.y === y) return
     data.position = { x, y }
