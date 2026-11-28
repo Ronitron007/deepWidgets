@@ -470,8 +470,8 @@ export class DesktopWidgetWindows {
   /**
    * Send the choices of `slug` that wait, one send at a time. A send waits for a ready Host whose stream lists the slug.
    * A send that the Host refuses drops its choices, and the window takes the data of the Host again. A send that does not
-   * reach the Host keeps its choices: they go again after {@link CHOICE_RETRY_MS} while the same Host is ready, or at the
-   * next frame of the slug.
+   * reach the Host keeps its choices until a Host takes them. They go again after {@link CHOICE_RETRY_MS}, at once when
+   * another Host is ready, or at the next frame of the slug.
    */
   private flush(slug: string): void {
     const pending = this.pending.get(slug)
@@ -481,7 +481,10 @@ export class DesktopWidgetWindows {
     void this.send(target, slug, pending).then((outcome) => {
       this.sending.delete(slug)
       if (outcome === 'later') {
-        setTimeout(() => { if (this.target === target) this.flush(slug) }, CHOICE_RETRY_MS)
+        // retry_lost_across_host_swap: a send to a Host that is gone goes to the next Host at once. A `hello` of that
+        // Host found this send in progress, so its own flush did nothing. `flush` reads the current Host.
+        if (this.target !== target) this.flush(slug)
+        else setTimeout(() => { this.flush(slug) }, CHOICE_RETRY_MS)
         return
       }
       const rest = settleChoice(this.pending.get(slug), pending)
