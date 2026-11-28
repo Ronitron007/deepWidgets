@@ -930,8 +930,8 @@ export class WidgetInstaller {
 
   /**
    * Remove the bundle of `slug`. Its state stays in storage. With `operator`, the Remove of the main widget, it also ends
-   * a Turn off of the slug (main_widget.widgets) and a Hide of its window (main_widget.window_state). An agent
-   * `widget_remove` keeps both.
+   * a Turn off of the slug (main_widget.widgets) and deletes the window data of its window (main_widget.window_state,
+   * window_manager.defaults). An agent `widget_remove` keeps both.
    */
   remove(slug: string, options: { operator?: boolean } = {}): Promise<{ slug: string, application: ChangeResult['application'] }> {
     return this.serial(async () => {
@@ -955,8 +955,9 @@ export class WidgetInstaller {
       this.services.records.commit(slug, undefined)
       // main_widget.widgets: only the operator ends a Turn off: Turn on, or Remove in the main widget. After an agent
       // `widget_remove`, a later `widget_install` of the slug installs it off.
-      // main_widget.window_state (agent_remove_reinstall_unhides): a Hide follows the same rule. Only the Remove of the
-      // operator ends it, and a later install then starts as shown. After an agent `widget_remove`, it comes up hidden.
+      // main_widget.window_state (agent_remove_reinstall_unhides): the window data follows the same rule. Only the Remove
+      // of the operator deletes it, and a later install then is a new widget: shown, with its agent defaults. After an
+      // agent `widget_remove`, it comes up with its old window data.
       // window_read_breaks_core_paths: the two run apart, so a failure of one, such as a `busy` of the forget while the
       // runtime stops, does not skip the other. The bundles are gone already, so the error tells what stays.
       const operator = options.operator === true
@@ -966,11 +967,11 @@ export class WidgetInstaller {
       ])
       const kept = [
         ...(turnOn.status === 'rejected' ? [`its Turn off stays (${errorText(turnOn.reason)})`] : []),
-        ...(forget.status === 'rejected' ? [`the hidden state of its window stays (${errorText(forget.reason)})`] : []),
+        ...(forget.status === 'rejected' ? [`the window data of its window stays: the shown state, the layer, the lock, the position, and the size (${errorText(forget.reason)})`] : []),
       ]
       if (kept.length > 0) {
         throw new CreationError('install-failed', `the bundles of ${slug} were removed, but ${kept.join(', and ')}`, {
-          nextStep: 'The next widget_install of this slug can come up off or hidden. Turn it on or Show it in the main window.',
+          nextStep: 'The next widget_install of this slug can come up off, hidden, or with the old window data, not the agent defaults. Turn it on or Show it in the main window.',
         })
       }
       return { slug, application }
