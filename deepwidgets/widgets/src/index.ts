@@ -221,6 +221,93 @@ export interface WidgetAction<S, A = unknown> {
   handler(args: A, w: WidgetScope<S>): unknown
 }
 
+/** The layer of a widget window (`window_manager.terms`): `top` shows above each app window on each Space. */
+export type WindowLayer = 'top' | 'normal'
+
+/** The fields of the window data that an operator choice sets (`window_manager.data`), in the order of `chosen`. */
+export const WINDOW_CHOICES = ['layer', 'locked', 'x', 'y', 'width', 'height'] as const
+
+/** One field of the window data that an operator choice sets. */
+export type WindowChoice = typeof WINDOW_CHOICES[number]
+
+/** The smallest width and height of a widget window, in screen points. A definition or a route value below it is refused. */
+export const WINDOW_SIZE_MIN = 80
+/** The largest width and height of a widget window, in screen points. */
+export const WINDOW_SIZE_MAX = 4096
+
+/**
+ * The agent defaults of a widget window (`window_manager.defaults`). Only a new widget gets them: a slug with no window
+ * record. A reinstall, a reload, or a Turn on of a slug with a record changes nothing in the record.
+ */
+export interface WidgetWindowDefaults {
+  /** The layer. Default `top`. */
+  layer?: WindowLayer
+  /** The width in screen points, a whole number from {@link WINDOW_SIZE_MIN} to {@link WINDOW_SIZE_MAX}. Default 320. */
+  width?: number
+  /** The height in screen points, with the limits of `width`. Default 300. */
+  height?: number
+  /** True: the operator can resize the window at its edges. Nobody changes it after the first record. Default false. */
+  resizable?: boolean
+}
+
+/** The window data of a slug whose definition gives no agent default (`window_manager.data`). */
+export const WINDOW_DEFAULTS: Readonly<Required<WidgetWindowDefaults>> = { layer: 'top', width: 320, height: 300, resizable: false }
+
+/**
+ * The whole window data of one slug (`window_manager.data`), as the frames `hello`, `added`, and `window` of the events
+ * route carry it. `x` and `y` are missing when the window has no stored position: it then sits at the default position.
+ */
+export interface WindowData {
+  shown: boolean
+  layer: WindowLayer
+  locked: boolean
+  x?: number
+  y?: number
+  width: number
+  height: number
+  resizable: boolean
+  /** The fields with an operator choice. */
+  chosen: WindowChoice[]
+}
+
+/** The error codes of the route `POST /api/widget-windows/<slug>` (`window_manager.route`), each with its HTTP status. */
+export const WINDOW_ERROR_STATUS = {
+  'unknown-widget': 404,
+  'no-window': 404,
+  'not-resizable': 409,
+  'bad-request': 400,
+} as const
+
+/** One error code of the window route. */
+export type WindowErrorCode = keyof typeof WINDOW_ERROR_STATUS
+
+/** A refusal of a change of the window data (`window_manager.errors`). The route maps `status` to the HTTP status. */
+export class WindowError extends Error {
+  readonly code: WindowErrorCode
+  readonly status: number
+
+  constructor(code: WindowErrorCode, message: string) {
+    super(message)
+    this.name = 'WindowError'
+    this.code = code
+    this.status = WINDOW_ERROR_STATUS[code]
+  }
+}
+
+/**
+ * One change of the window data by the operator (`window_manager.route`). Each value is an operator choice. `x` and
+ * `y` come together, and `width` and `height` come together. `reset` deletes the position and its choice.
+ */
+export interface WindowChange {
+  layer?: WindowLayer
+  locked?: boolean
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  reset?: true
+}
+
 /** A widget definition for `ctx.widgets.register`. */
 export interface WidgetDef<S, T extends readonly unknown[] = readonly unknown[]> {
   slug: string
@@ -235,6 +322,8 @@ export interface WidgetDef<S, T extends readonly unknown[] = readonly unknown[]>
    * A page refuses a program of another set.
    */
   catalog?: string
+  /** The agent defaults of the widget window (`window_manager.defaults`). Only a new widget gets them. */
+  window?: WidgetWindowDefaults
   initialState: S
   /** The timeout of each action without its own `timeoutMs`. */
   timeoutMs?: number
@@ -323,11 +412,26 @@ const programSchema = z.object({
   seed: z.string().optional(),
 }).strict()
 /**
- * main_widget.window_state: the shown state of the widget window of a slug, as the operator chose it in the main widget.
- * A slug with no record shows: a new widget starts as shown. The Remove of the operator deletes the record. An agent
- * `widget_remove` keeps it, so a later install of the slug comes up hidden, as a Turn off stays.
+ * main_widget.window_state and window_manager.data: the window data of the widget window of a slug. `shown` is the
+ * choice of the operator in the main widget. A slug with no record shows: a new widget starts as shown. The Remove of the
+ * operator deletes the record. An agent `widget_remove` keeps it, so a later install of the slug comes up as it was.
+ * The other fields are optional, so a record of the format before `wm.store` still reads. A record with no `resizable`
+ * has no agent defaults yet: the next live registration of the slug writes them (window_manager.defaults). The stored
+ * sizes are only positive: the limits of {@link WINDOW_SIZE_MIN} and {@link WINDOW_SIZE_MAX} apply to new values, so a
+ * change of the limits never makes the domain fail to open.
  */
-const windowSchema = z.object({ shown: z.boolean(), updatedAt: z.number() }).strict()
+const windowSchema = z.object({
+  shown: z.boolean(),
+  updatedAt: z.number(),
+  layer: z.enum(['top', 'normal']).optional(),
+  locked: z.boolean().optional(),
+  x: z.number().int().optional(),
+  y: z.number().int().optional(),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  resizable: z.boolean().optional(),
+  chosen: z.array(z.enum(WINDOW_CHOICES)).optional(),
+}).strict()
 const requestSchema = z.object({
   hash: z.string(),
   at: z.number(),
@@ -362,6 +466,8 @@ interface Registration {
   title: string
   program: string
   catalog: string
+  /** The agent defaults of the window, with {@link WINDOW_DEFAULTS} for each field that the definition does not give. */
+  window: Readonly<Required<WidgetWindowDefaults>>
   initialState: unknown
   timeoutMs: number | undefined
   actions: Map<string, WidgetAction<unknown>>
@@ -428,6 +534,64 @@ interface Runtime {
   cursor(): string
 }
 
+/** True for a width or a height of a widget window: a whole number from {@link WINDOW_SIZE_MIN} to {@link WINDOW_SIZE_MAX}. */
+const isWindowSize = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isInteger(value) && value >= WINDOW_SIZE_MIN && value <= WINDOW_SIZE_MAX
+
+/** Check the field `window` of a definition (`window_manager.defaults`). Throws `TypeError` on a bad value. */
+function windowDefaults(slug: string, value: unknown): Readonly<Required<WidgetWindowDefaults>> {
+  if (value === undefined) return WINDOW_DEFAULTS
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`widgets: ${slug}: window must be an object`)
+  const { layer, width, height, resizable, ...rest } = value as Record<string, unknown>
+  const unknown = Object.keys(rest)
+  if (unknown.length > 0) throw new TypeError(`widgets: ${slug}: window has the unknown field ${JSON.stringify(unknown[0])}; it takes layer, width, height, and resizable`)
+  if (layer !== undefined && layer !== 'top' && layer !== 'normal') throw new TypeError(`widgets: ${slug}: window.layer must be "top" or "normal"`)
+  const size = (field: 'width' | 'height', given: unknown): number => {
+    if (given === undefined) return WINDOW_DEFAULTS[field]
+    if (!isWindowSize(given)) throw new TypeError(`widgets: ${slug}: window.${field} must be a whole number from ${String(WINDOW_SIZE_MIN)} to ${String(WINDOW_SIZE_MAX)}`)
+    return given
+  }
+  if (resizable !== undefined && typeof resizable !== 'boolean') throw new TypeError(`widgets: ${slug}: window.resizable must be true or false`)
+  return {
+    layer: layer ?? WINDOW_DEFAULTS.layer,
+    width: size('width', width),
+    height: size('height', height),
+    resizable: resizable ?? WINDOW_DEFAULTS.resizable,
+  }
+}
+
+/**
+ * Parse the body of `POST /api/widget-windows/<slug>` (`window_manager.route`) at the boundary.
+ * @throws {WindowError} `bad-request` for a body with an unknown field, a bad value, a lone `x` or `width`, or nothing.
+ */
+function parseWindowChange(body: unknown): WindowChange {
+  const refuse = (message: string): never => { throw new WindowError('bad-request', message) }
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) refuse('the body must be a JSON object')
+  const { layer, locked, x, y, width, height, reset, ...rest } = body as Record<string, unknown>
+  const unknown = Object.keys(rest)
+  if (unknown.length > 0) refuse(`the body has the unknown field ${JSON.stringify(unknown[0])}; it takes layer, locked, x and y, width and height, or reset`)
+  const change: WindowChange = {}
+  if (layer !== undefined) change.layer = layer === 'top' || layer === 'normal' ? layer : refuse('layer must be "top" or "normal"')
+  if (locked !== undefined) change.locked = typeof locked === 'boolean' ? locked : refuse('locked must be true or false')
+  if (x !== undefined || y !== undefined) {
+    if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y)) refuse('x and y must come together, as whole numbers of screen points')
+    change.x = x as number
+    change.y = y as number
+  }
+  if (width !== undefined || height !== undefined) {
+    if (!isWindowSize(width) || !isWindowSize(height)) refuse(`width and height must come together, as whole numbers from ${String(WINDOW_SIZE_MIN)} to ${String(WINDOW_SIZE_MAX)}`)
+    change.width = width as number
+    change.height = height as number
+  }
+  if (reset !== undefined) {
+    if (reset !== true) refuse('reset must be true')
+    if (change.x !== undefined) refuse('reset deletes the position, so it does not come with x and y')
+    change.reset = true
+  }
+  if (Object.keys(change).length === 0) refuse('the body names no field of the window data')
+  return change
+}
+
 /** Check a definition and build its action map. Throws `TypeError` on a programming error. */
 function buildRegistration(def: WidgetDef<unknown>): Registration {
   if (typeof def.slug !== 'string' || !SLUG.test(def.slug)) throw new TypeError(`widgets: bad slug ${JSON.stringify(def.slug)}`)
@@ -447,7 +611,8 @@ function buildRegistration(def: WidgetDef<unknown>): Registration {
     if (actions.has(action.name)) throw new TypeError(`widgets: ${def.slug}: action ${action.name} repeats`)
     actions.set(action.name, action)
   }
-  return { slug: def.slug, title: def.title, program: def.program, catalog: def.catalog ?? DEFAULT_CATALOG, initialState: def.initialState, timeoutMs: def.timeoutMs, actions }
+  const window = windowDefaults(def.slug, def.window)
+  return { slug: def.slug, title: def.title, program: def.program, catalog: def.catalog ?? DEFAULT_CATALOG, window, initialState: def.initialState, timeoutMs: def.timeoutMs, actions }
 }
 
 const hashOf = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -664,9 +829,9 @@ export class WidgetRecordsService extends Service {
   }
 
   /**
-   * main_widget.window_state: store the shown state of the widget window of `slug`, across Host starts. The events route
-   * sends it to Electron main in a `window` frame, and Electron main shows or hides the window. The Show and Hide
-   * actions of the main widget call it.
+   * main_widget.window_state: store the shown state of the widget window of `slug`, across Host starts. The other window
+   * data stays. The events route sends it to Electron main in a `window` frame, and Electron main shows or hides the
+   * window. The Show and Hide actions of the main widget call it.
    * @throws {WidgetError} `unknown-widget` when `slug` has no widget window: it has no live or failed entry, or it is
    * the main widget.
    */
@@ -675,8 +840,10 @@ export class WidgetRecordsService extends Service {
   }
 
   /**
-   * main_widget.window_state: forget the shown state of `slug`, so that a later install of it starts as shown. The Remove
-   * of the operator in the main widget calls it. An agent `widget_remove` does not, as for a Turn off.
+   * main_widget.window_state and window_manager.defaults: forget the window data of `slug`: the shown state, each
+   * operator choice, and the agent defaults. A later install of it is a new widget: it starts as shown, with the agent
+   * defaults of its definition. The Remove of the operator in the main widget calls it. An agent `widget_remove` does
+   * not, as for a Turn off.
    */
   forgetWindow(slug: string): Promise<void> {
     return guard(() => runtimeOf(this).forgetWindow(slug))
@@ -760,6 +927,7 @@ function failure(error: unknown): Response {
   if (error instanceof WidgetError) {
     return json(error.status, { ok: false, error: { code: error.code, message: error.message, ...(error.rev === undefined ? {} : { rev: error.rev }) } })
   }
+  if (error instanceof WindowError) return json(error.status, { ok: false, error: { code: error.code, message: error.message } })
   return json(500, { ok: false, error: { code: 'handler-error', message: errorText(error) } })
 }
 
@@ -951,41 +1119,72 @@ export function apply(ctx: Context, config: Config): void {
   /** window_read_breaks_core_paths: true after the first read of a window record failed, so the log has one line. */
   let windowReadFailed = false
   /**
-   * main_widget.window_state: the stored shown state of the widget window of `slug`. A slug with no record shows. The
-   * events route opens its streams after the storage domain, so each frame reads the stored value.
+   * main_widget.window_state: the stored window record of `slug`, or undefined. The events route opens its streams after
+   * the storage domain, so each frame reads the stored value.
    * window_read_breaks_core_paths: `start()` and the `hello` of the events route read it, so a read never throws. After
-   * an `unknown-state` failure or the close of the domain, `get` throws: the window then shows, as when the domain did
-   * not open, and the log gets one line.
+   * an `unknown-state` failure or the close of the domain, `get` throws: the window then has the data of a slug with no
+   * record, so it shows, as when the domain did not open, and the log gets one line.
    */
-  function shownOf(slug: string): boolean {
+  function windowRecord(slug: string): WindowRecord | undefined {
     try {
-      return domain?.table('windows').get(slug)?.shown ?? true
+      return domain?.table('windows').get(slug)
     } catch (error) {
-      if (!windowReadFailed) ctx.logger.warn(`widgets: the shown state of the widget windows can not be read; each window shows: ${errorText(error)}`)
+      if (!windowReadFailed) ctx.logger.warn(`widgets: the window data of the widget windows can not be read; each window shows with its defaults: ${errorText(error)}`)
       windowReadFailed = true
-      return true
+      return undefined
     }
   }
+  /**
+   * window_manager.data: the whole window data of `slug` from `record`. A field that the record does not have takes the
+   * agent default of the live registration, else {@link WINDOW_DEFAULTS}. Thus the frames of a new widget give its agent
+   * defaults before their write lands.
+   */
+  function windowData(slug: string, record: WindowRecord | undefined): WindowData {
+    const defaults = widgets.get(slug)?.registration.window ?? WINDOW_DEFAULTS
+    return {
+      shown: record?.shown ?? true,
+      layer: record?.layer ?? defaults.layer,
+      locked: record?.locked ?? false,
+      ...(record?.x === undefined || record.y === undefined ? {} : { x: record.x, y: record.y }),
+      width: record?.width ?? defaults.width,
+      height: record?.height ?? defaults.height,
+      resizable: record?.resizable ?? defaults.resizable,
+      chosen: [...(record?.chosen ?? [])],
+    }
+  }
+  const windowOf = (slug: string): WindowData => windowData(slug, windowRecord(slug))
+  /** main_widget.window_state: whether the widget window of `slug` shows. A slug with no record shows. */
+  const shownOf = (slug: string): boolean => windowRecord(slug)?.shown ?? true
   function sendEvent(message: unknown): void {
     const frame = sseFrame(message)
     for (const open of [...events]) open.send(frame)
   }
-  /** One frame of the events route for `slug`. An `added` frame carries the shown state of its window. */
+  /**
+   * One frame of the events route for `slug`. An `added` frame carries the whole window data of its window in `window`,
+   * and the shown state also in `shown`.
+   */
   function pushEvent(message: { type: 'added' | 'removed', slug: string }): void {
     if (!windowed(message.slug)) return
-    sendEvent(message.type === 'added' ? { ...message, shown: shownOf(message.slug) } : message)
+    if (message.type === 'removed') {
+      sendEvent(message)
+      return
+    }
+    const window = windowOf(message.slug)
+    sendEvent({ ...message, shown: window.shown, window })
   }
-  /** The first frame of the events route: each slug with a widget window, and the shown state of each one. */
-  function eventsHello(): { type: 'hello', slugs: string[], shown: Record<string, boolean> } {
+  /** The first frame of the events route: each slug with a widget window, its shown state, and its whole window data. */
+  function eventsHello(): { type: 'hello', slugs: string[], shown: Record<string, boolean>, windows: Record<string, WindowData> } {
     const slugs = [...widgets.keys()].filter(windowed)
-    return { type: 'hello', slugs, shown: Object.fromEntries(slugs.map((slug) => [slug, shownOf(slug)])) }
+    const windows = Object.fromEntries(slugs.map((slug) => [slug, windowOf(slug)]))
+    return { type: 'hello', slugs, shown: Object.fromEntries(slugs.map((slug) => [slug, windows[slug]?.shown ?? true])), windows }
   }
   ctx.on('domain/changed', (change) => {
     if (change.domain !== 'widgets') return
     if (change.table === 'windows') {
       // main_widget.window_state: the write is durable, so Electron main can obey it. A slug that is not live has no window.
       if (!widgets.has(change.key) || !windowed(change.key)) return
-      sendEvent({ type: 'window', slug: change.key, shown: change.operation === 'put' ? (change.value as WindowRecord).shown : true })
+      const window = windowData(change.key, change.operation === 'put' ? change.value as WindowRecord : undefined)
+      sendEvent({ type: 'window', slug: change.key, shown: window.shown, window })
       signalMain()
       return
     }
@@ -1380,6 +1579,21 @@ export function apply(ctx: Context, config: Config): void {
           }), slug === MAIN_SLUG ? [{ type: 'data' }] : [])
         }),
       }),
+      // window_manager.route: the path is not under /api/widgets/<slug>/, so no widget origin forwards it. Only Electron
+      // main and the panel, with the host cookie, reach it. It answers the whole window data after the write.
+      ctx.connection.fetch.register({
+        path: `/api/widget-windows/${slug}`,
+        methods: ['POST'],
+        requestBody: 'buffered',
+        fetch: guarded(async (request) => {
+          try {
+            const change = parseWindowChange(await readBody(request))
+            return json(200, { ok: true, window: await setWindow(slug, change) })
+          } catch (error) {
+            return failure(error)
+          }
+        }),
+      }),
     ]
   }
 
@@ -1573,6 +1787,8 @@ export function apply(ctx: Context, config: Config): void {
     }
     entry.seeded.catch((error: unknown) => { ctx.logger.error(`widgets: the seed of ${slug} failed; its calls fail`, error) })
     widgets.set(slug, entry)
+    // A failed entry has no definition, so it writes no agent defaults: the live entry of a later start writes them.
+    if (failure === undefined) writeWindowDefaults(registration)
     entry.routes = addRoutes(entry)
     logChange({ slug, kind: 'added', by: 'host' })
     pushEvent({ type: 'added', slug })
@@ -1669,23 +1885,99 @@ export function apply(ctx: Context, config: Config): void {
     }),
   })
 
-  // ---- main_widget.window_state: the shown state of each widget window ----
-  // window_writes_skip_queued_write: each Show, Hide, and forget is one job on the domain write chain, with no check of
-  // the record in memory first. Memory changes only when a write is durable, so a check would miss a write in the queue.
-  // Thus the last request wins, and a forget after a queued Hide leaves no record (`delete` looks at its chain slot).
+  // ---- main_widget.window_state and window_manager.data: the window data of each widget window ----
+  /**
+   * window_writes_skip_queued_write: the window changes run one after another, in the order of the calls. Each change
+   * reads the record in memory at its turn, after each earlier change landed, and makes at most one write: one job on the
+   * domain write chain. Only these changes write the table `windows`, so the read sees each earlier write. Thus the last
+   * request wins, also for a write that waits in the queue, and a forget after a queued Hide leaves no record.
+   */
+  let windowTail: Promise<unknown> = Promise.resolve()
+  /**
+   * Run one change of the window record of `slug` at its turn.
+   * @param change - gets the record, or undefined. It gives the next record, `null` to delete the record, or undefined
+   *   to write nothing. It can throw to refuse the change: then nothing is written.
+   */
+  function changeWindow(slug: string, change: (current: WindowRecord | undefined) => WindowRecord | null | undefined): Promise<void> {
+    const turn = async (): Promise<void> => {
+      const table = (await ready).table('windows')
+      const next = change(table.get(slug))
+      if (next === null) await table.delete(slug)
+      else if (next !== undefined) await table.put(slug, next)
+    }
+    const job = windowTail.then(turn, turn)
+    windowTail = job.catch(() => undefined)
+    return job
+  }
   async function setWindowShown(slug: string, shown: boolean): Promise<void> {
     if (!windowed(slug) || !widgets.has(slug)) throw new WidgetError('unknown-widget', `${JSON.stringify(slug)} has no widget window: it is not live`)
-    await (await ready).table('windows').put(slug, { shown, updatedAt: Date.now() })
+    await changeWindow(slug, (current) => ({ ...current, shown, updatedAt: Date.now() }))
   }
   async function forgetWindow(slug: string): Promise<void> {
-    await (await ready).table('windows').delete(slug)
+    await changeWindow(slug, () => null)
+  }
+  /**
+   * window_manager.defaults: a new widget, a slug whose record has no agent defaults, gets the agent defaults of its
+   * registration. A record with them stays as it is, also for each field with no operator choice. A record from before
+   * `wm.store`, or of a failed entry, keeps its values and gets the defaults of the other fields.
+   */
+  function writeWindowDefaults(registration: Registration): void {
+    const { slug, window: defaults } = registration
+    if (!windowed(slug)) return
+    changeWindow(slug, (current) => current?.resizable !== undefined ? undefined : {
+      ...current,
+      shown: current?.shown ?? true,
+      updatedAt: Date.now(),
+      layer: current?.layer ?? defaults.layer,
+      locked: current?.locked ?? false,
+      width: current?.width ?? defaults.width,
+      height: current?.height ?? defaults.height,
+      resizable: defaults.resizable,
+      chosen: current?.chosen ?? [],
+    }).catch((error: unknown) => { ctx.logger.warn(`widgets: the window defaults of ${slug} were not written; its window uses them until a later start writes them: ${errorText(error)}`) })
+  }
+  /**
+   * window_manager.route: store one change of the operator. Each value is an operator choice, so its field goes into
+   * `chosen`. `reset` deletes the position and its choice.
+   * @returns the whole window data after the write.
+   * @throws {WindowError} `unknown-widget` for the main widget, `no-window` for a slug with no live or failed entry, and
+   *   `not-resizable` for a size of a slug whose window does not resize. A refused change writes nothing.
+   */
+  async function setWindow(slug: string, change: WindowChange): Promise<WindowData> {
+    if (!windowed(slug)) throw new WindowError('unknown-widget', 'the main widget has no widget window; the panel is its only window')
+    if (!widgets.has(slug)) throw new WindowError('no-window', `${JSON.stringify(slug)} has no widget window: it is not live, it is turned off, or safe mode keeps it off`)
+    await changeWindow(slug, (current) => {
+      if (change.width !== undefined && !windowData(slug, current).resizable) throw new WindowError('not-resizable', `the window of ${slug} does not resize, so it keeps its size`)
+      const next: WindowRecord = { ...current, shown: current?.shown ?? true, updatedAt: Date.now() }
+      const chosen = new Set<WindowChoice>(current?.chosen ?? [])
+      if (change.layer !== undefined) next.layer = change.layer
+      if (change.locked !== undefined) next.locked = change.locked
+      if (change.x !== undefined && change.y !== undefined) {
+        next.x = change.x
+        next.y = change.y
+      }
+      if (change.width !== undefined && change.height !== undefined) {
+        next.width = change.width
+        next.height = change.height
+      }
+      for (const field of WINDOW_CHOICES) if (change[field] !== undefined) chosen.add(field)
+      if (change.reset === true) {
+        delete next.x
+        delete next.y
+        chosen.delete('x')
+        chosen.delete('y')
+      }
+      next.chosen = WINDOW_CHOICES.filter((field) => chosen.has(field))
+      return next
+    })
+    return windowOf(slug)
   }
 
   // widget_phase2.isolation.blame: a quarantined widget row loads as one failed entry for each of its slugs.
   const isolation = createIsolation(ctx, {
     hold(slugs, row, reason, fiber) {
       const disposers = slugs.filter((slug) => !widgets.has(slug)).map((slug) => add({
-        slug, title: slug, program: '', catalog: DEFAULT_CATALOG, initialState: null, timeoutMs: undefined, actions: new Map(), row, agent: isAgentRow(row),
+        slug, title: slug, program: '', catalog: DEFAULT_CATALOG, window: WINDOW_DEFAULTS, initialState: null, timeoutMs: undefined, actions: new Map(), row, agent: isAgentRow(row),
       }, undefined, () => fiber !== undefined && isBuiltInRow(ctx, fiber), reason))
       return async () => { for (const dispose of disposers) await dispose() }
     },
