@@ -270,6 +270,13 @@ async function stagePage(dir: string, stagingRoot: string, kit: PageKit): Promis
       allowImportingTsExtensions: true,
       types: [],
       lib: ['es2024', 'dom', 'dom.iterable'],
+      paths: {
+        'react': ['./node_modules/@types/react'],
+        'react/jsx-runtime': ['./node_modules/@types/react/jsx-runtime'],
+        'react/jsx-dev-runtime': ['./node_modules/@types/react/jsx-dev-runtime'],
+        'react-dom': ['./node_modules/@types/react-dom'],
+        'react-dom/client': ['./node_modules/@types/react-dom/client'],
+      },
     },
     files: [join(staging, 'page-env.d.ts')],
     include: ['page/**/*'],

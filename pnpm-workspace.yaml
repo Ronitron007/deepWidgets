@@ -20,6 +20,11 @@ overrides:
   'extract-zip>yauzl': '3.4.0'
   '@deepseek-ai/cosmokit': 'link:vendor/cosmokit'
   '@deepseek-ai/schemastery': 'link:vendor/schemastery'
+  # deepWidgets uses React 19; keep DSH React 18 test/docs importers on React 18.3.1.
+  '@testing-library/react>react': '18.3.1'
+  '@testing-library/react>react-dom': '18.3.1'
+  '@docsearch/js>react-dom': '18.3.1'
+  'vitepress>react-dom': '18.3.1'
 
 peerDependencyRules:
   allowedVersions:

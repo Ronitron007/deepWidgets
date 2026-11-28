@@ -4,7 +4,7 @@ import * as React from "react";
 
 import { clsx } from "clsx";
 
-type ButtonProps = React.ComponentPropsWithoutRef<"button"> &
+type ButtonProps = React.ComponentProps<"button"> &
   VariantProps<typeof buttonVariants> & {
     asChild?: boolean;
   };
@@ -41,20 +41,17 @@ const buttonVariants = cva(
   },
 );
 
-// deepWidgets: forwardRef for React 18. The upstream shadcn Button takes ref as a prop (React 19).
-// Radix asChild triggers need the ref to anchor popovers (overnight shell spike, react18.forwardref_patch).
-const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function Button({
+function Button({
   className,
   variant = "default",
   size = "default",
   asChild = false,
   ...props
-}, ref) {
+}: ButtonProps) {
   const Comp = asChild ? Slot : "button";
 
   return (
     <Comp
-      ref={ref}
       data-slot="button"
       data-variant={variant}
       data-size={size}
@@ -62,6 +59,6 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function Button(
       {...props}
     />
   );
-});
+}
 
 export { Button, buttonVariants };

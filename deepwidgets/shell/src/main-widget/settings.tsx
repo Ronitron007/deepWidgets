@@ -6,7 +6,7 @@
  * and `setRefuseBuilds` the same way. The page talks only to the host (`widget.page_channel`).
  * @module @deepwidgets/shell/main-widget/settings
  */
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { Check, Copy, Lock, Plus, Trash2, X } from 'lucide-react'
 import { z } from 'zod'
 import { Button } from '../ui/button.tsx'
@@ -213,7 +213,7 @@ function KitField({ value, setValue, placeholder, label, button, dw, disabled, o
   disabled: boolean
   onSubmit: (value: string) => void
 }) {
-  function submit(event: FormEvent): void {
+  function submit(event: SyntheticEvent<HTMLFormElement>): void {
     event.preventDefault()
     const text = value.trim()
     if (!disabled && text !== '') onSubmit(text)

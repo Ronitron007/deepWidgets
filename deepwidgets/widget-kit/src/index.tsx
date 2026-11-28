@@ -10,7 +10,7 @@
  * The core imports no component library: the child brings its own (`agent_library.rules`).
  * @module @deepwidgets/widget-kit
  */
-import { useCallback, useEffect, useRef, useState, type ComponentType, type MutableRefObject, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ComponentType, type ReactNode, type RefObject } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ACTION_STEPS, Renderer, useRendererQuery, useTriggerAction, type OpenUIError, type RendererProps } from '@openuidev/react-lang'
 import { NoAnswerError, openChannel, type StreamState, type WidgetChannel } from './channel.ts'
@@ -66,8 +66,8 @@ interface Env {
 /** Lives inside Renderer.Root to reach the OpenUI context. `refreshRef` runs each query again. */
 function RefreshBridge({ dw, queryIdsRef, refreshRef }: {
   dw: ShellDiagnostics
-  queryIdsRef: MutableRefObject<string[]>
-  refreshRef: MutableRefObject<() => void>
+  queryIdsRef: RefObject<string[]>
+  refreshRef: RefObject<() => void>
 }) {
   const trigger = useTriggerAction()
   const query = useRendererQuery()
