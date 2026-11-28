@@ -3,10 +3,12 @@
  * The spec is `widget_mvp.windows` in `docs/specs/widget-mvp.md`. Each window loads its page from the widget origin
  * of its slug (`agent_library.serving` in `docs/specs/agent-library.md`): the built page of the slug when the Host
  * lists a page link for it, else the shared shell. This module also answers the requests of a widget origin.
- * The Host decides whether each window shows (`main_widget.window_state`, decision `widget.window_manager`): each frame
- * of the events stream carries the shown state, and this module shows or hides the window to match it.
- * Each window has the bar of `window_manager.bar` (`deepwidgets-window-bar.ts`). The bar changes the layer, the lock,
- * and the position of the window (`window_manager.move`). This module keeps that window data in memory, by slug.
+ * The Host keeps the window data of each slug (`main_widget.window_state`, `window_manager.data`): each frame of the
+ * events stream carries the shown state, the layer, the lock, the position, and the size, and this module makes the
+ * window match it. Each window has the bar of `window_manager.bar` (`deepwidgets-window-bar.ts`). The bar changes the
+ * layer, the lock, and the position of the window (`window_manager.move`). This module sends each such operator choice to
+ * the Host route `POST /api/widget-windows/<slug>` with the Host cookie. A choice that the Host does not have yet waits
+ * here, and it wins over the frames until the Host has it: a change made while the Host is down goes to the next Host.
  * @module deepwidgets-windows
  */
 import { join } from 'node:path'
@@ -15,12 +17,22 @@ import { EventSourceParserStream } from 'eventsource-parser/stream'
 import { isWidgetSlug, widgetRoute, widgetUrl, type WidgetPageMode, type WidgetPages } from './deepwidgets-origin.ts'
 import { servePageFile } from './deepwidgets-page-path.ts'
 import { WidgetWindowBars, type WidgetBar } from './deepwidgets-window-bar.ts'
-import { defaultPosition, newWindowData, placeWindow, type ScreenPoint, type WidgetWindowData } from './deepwidgets-window-place.ts'
+import type { WidgetLayer } from './deepwidgets-window-bar-protocol.ts'
+import {
+  choiceBody, newWindowData, parseWindowData, placeWindow, settleChoice, withPending, WIDGET_SIZE_MAX, WIDGET_SIZE_MIN,
+  type HostWindowData, type PendingChoice, type ScreenPoint, type WidgetWindowData,
+} from './deepwidgets-window-place.ts'
 
-/** One frame of `GET /api/widgets/events` (`widget_mvp.runtime.routes`, `main_widget.window_state`). */
+/** One slug of a frame and its window data. */
+interface WidgetFrameItem {
+  readonly slug: string
+  readonly data: HostWindowData
+}
+
+/** One frame of `GET /api/widgets/events` (`widget_mvp.runtime.routes`, `main_widget.window_state`, `window_manager.data`). */
 type WidgetEvent =
-  | { readonly type: 'hello'; readonly slugs: readonly { readonly slug: string; readonly shown: boolean }[] }
-  | { readonly type: 'added' | 'window'; readonly slug: string; readonly shown: boolean }
+  | { readonly type: 'hello'; readonly slugs: readonly WidgetFrameItem[] }
+  | ({ readonly type: 'added' | 'window' } & WidgetFrameItem)
   | { readonly type: 'removed'; readonly slug: string }
 
 /** The ready Host that serves the events. */
@@ -35,6 +47,12 @@ const RETRY_MAX_MS = 10_000
 const PAGE_FAILURE_WINDOW_MS = 60_000
 /** The wait before a failed load of an agent page counts, so the gone event of the same load counts first. */
 const LOAD_FAILURE_SETTLE_MS = 250
+/** A move by the operator with a drag area of the page sends its end position after this time with no further move. */
+const NATIVE_MOVE_SETTLE_MS = 300
+/** The wait before a send of an operator choice that did not reach the Host goes again, while the same Host is ready. */
+const CHOICE_RETRY_MS = 1_000
+/** The time limit of one send of an operator choice. */
+const CHOICE_TIMEOUT_MS = 10_000
 
 /**
  * Check one slug against the Host pattern. An invalid slug writes one warning.
@@ -46,9 +64,6 @@ function validSlug(slug: unknown): slug is string {
   return false
 }
 
-/** A window shows unless the Host says `false`: a new widget starts as shown (`main_widget.window_state`). */
-const shownValue = (value: unknown): boolean => value !== false
-
 /**
  * Parse one frame at the boundary. An unknown frame gives `undefined`. Invalid slugs are dropped.
  * @param data - the `data` field of one server-sent event.
@@ -57,13 +72,14 @@ function parseWidgetEvent(data: string): WidgetEvent | undefined {
   let value: unknown
   try { value = JSON.parse(data) } catch { return undefined }
   if (typeof value !== 'object' || value === null) return undefined
-  const frame = value as { type?: unknown; slug?: unknown; slugs?: unknown; shown?: unknown }
+  const frame = value as { type?: unknown; slug?: unknown; slugs?: unknown; shown?: unknown; window?: unknown; windows?: unknown }
   if (frame.type === 'hello' && Array.isArray(frame.slugs)) {
     const shown = typeof frame.shown === 'object' && frame.shown !== null ? frame.shown as Record<string, unknown> : {}
-    return { type: 'hello', slugs: frame.slugs.filter(validSlug).map(slug => ({ slug, shown: shownValue(shown[slug]) })) }
+    const windows = typeof frame.windows === 'object' && frame.windows !== null ? frame.windows as Record<string, unknown> : {}
+    return { type: 'hello', slugs: frame.slugs.filter(validSlug).map(slug => ({ slug, data: parseWindowData(windows[slug], shown[slug]) })) }
   }
   if ((frame.type === 'added' || frame.type === 'window') && validSlug(frame.slug)) {
-    return { type: frame.type, slug: frame.slug, shown: shownValue(frame.shown) }
+    return { type: frame.type, slug: frame.slug, data: parseWindowData(frame.window, frame.shown) }
   }
   if (frame.type === 'removed' && validSlug(frame.slug)) return { type: 'removed', slug: frame.slug }
   return undefined
@@ -86,15 +102,18 @@ interface WidgetWindow {
   shown: boolean
   /** True after a load of the window ended: a Show can show it at once. */
   loaded?: true
-  /** The place of the window in the default column of its layer. */
+  /** The place of the window in the default column. */
   readonly row: number
   /** The bar over the page (`window_manager.bar`). */
   readonly bar: WidgetBar
   /**
    * True from a `will-move`, which comes only for a move by the operator, such as a drag area of the page. A move of
-   * this module sets it false first: on macOS, `moved` also comes for a move from code (`window_manager.move`).
+   * this module and a change of the displays set it false: on macOS, `moved` also comes for a move from code and for a
+   * move of macOS (`window_manager.move`).
    */
   nativeMove: boolean
+  /** The timer that sends the end position of a move with a drag area of the page. */
+  nativeMoveTimer?: ReturnType<typeof setTimeout>
 }
 
 /** How the widget origin reaches the shared shell and the Host. Electron main gives these. */
@@ -112,13 +131,24 @@ export interface WidgetOriginServers {
  */
 export class DesktopWidgetWindows {
   private readonly windows = new Map<string, WidgetWindow>()
-  /** The window data of each slug that had a window in this run. It stays after the window closes. */
+  /**
+   * The window data that the window of each slug shows: the data of the Host with the choices that wait over it. It
+   * stays after the window closes.
+   */
   private readonly data = new Map<string, WidgetWindowData>()
+  /** The window data of each slug in the last frame of the Host. */
+  private readonly host = new Map<string, WidgetWindowData>()
+  /** The operator choices of each slug that the Host does not have yet (`window_manager.route`). */
+  private readonly pending = new Map<string, PendingChoice>()
+  /** The slugs with a send in progress. A slug sends one choice at a time, so the Host gets them in their order. */
+  private readonly sending = new Set<string>()
+  /** The slugs that the stream of the current Host listed. A send waits for its slug, so its route exists. */
+  private readonly listed = new Set<string>()
   /** The bars of the windows. Their controls change the window data. */
   readonly bars = new WidgetWindowBars({
     toggle: (slug, control) => { this.toggle(slug, control) },
     movable: slug => this.data.get(slug)?.locked === false,
-    drag: (slug, point) => { this.dragged(slug, point) },
+    drag: (slug, point, done, start) => { this.dragged(slug, point, done, start) },
   })
   private watchingDisplays = false
   /** The page state of the Host. It stays across a Host restart, because the page files stay. */
@@ -177,7 +207,7 @@ export class DesktopWidgetWindows {
     this.connect()
   }
 
-  /** Stop the stream until the next Host is ready. The windows stay open. */
+  /** Stop the stream until the next Host is ready. The windows stay open, and the choices that wait stay. */
   hostGone(): void {
     this.target = undefined
     this.halt()
@@ -197,6 +227,7 @@ export class DesktopWidgetWindows {
     this.retry = undefined
     this.reading?.abort()
     this.reading = undefined
+    this.listed.clear()
   }
 
   private connect(): void {
@@ -235,30 +266,52 @@ export class DesktopWidgetWindows {
         this.failures = 0
         this.sync(frame.slugs)
       }
-      else if (frame.type === 'added' || frame.type === 'window') this.open(frame.slug, frame.shown)
-      else this.close(frame.slug)
+      else if (frame.type === 'added' || frame.type === 'window') this.obey(frame.slug, frame.data)
+      else {
+        this.listed.delete(frame.slug)
+        this.close(frame.slug)
+      }
     }
   }
 
-  private sync(slugs: readonly { readonly slug: string; readonly shown: boolean }[]): void {
+  private sync(slugs: readonly WidgetFrameItem[]): void {
     const listed = new Set(slugs.map(item => item.slug))
+    this.listed.clear()
     for (const slug of [...this.windows.keys()]) if (!listed.has(slug)) this.close(slug)
-    for (const { slug, shown } of slugs) this.open(slug, shown)
+    for (const { slug, data } of slugs) this.obey(slug, data)
   }
 
   /**
-   * Open the panel window of one slug once: no frame, on all Spaces, and shown without focus, as the trace window.
-   * Each window has its own renderer, and the bar over it. The window data of the slug gives its layer, lock, place,
-   * and size (`window_manager.move`). A window that is open already takes the shown state.
+   * Obey the window data of one frame: open the window of the slug, or make the open window match the data. Each choice
+   * that waits for the Host wins over the frame, so a frame from before the choice does not undo it. Then the choices
+   * of the slug go to the Host.
+   * @param slug - the slug of the frame.
+   * @param frame - the window data of the frame.
+   */
+  private obey(slug: string, frame: HostWindowData): void {
+    if (this.stopped) return
+    this.listed.add(slug)
+    const { shown, ...host } = frame
+    this.host.set(slug, host)
+    const next = withPending(host, this.pending.get(slug))
+    const entry = this.windows.get(slug)
+    if (entry === undefined || entry.window.isDestroyed()) {
+      this.data.set(slug, next)
+      this.open(slug, shown)
+    } else {
+      this.apply(slug, entry, next)
+      this.show(entry, shown)
+    }
+    this.flush(slug)
+  }
+
+  /**
+   * Open the panel window of one slug once: no frame, shown without focus, as the trace window. Each window has its own
+   * renderer, and the bar over it. The window data of the slug gives its layer, lock, place, and size
+   * (`window_manager.move`).
    * @param shown - false keeps the window hidden (`main_widget.window_state`).
    */
   private open(slug: string, shown: boolean): void {
-    if (this.stopped) return
-    const existing = this.windows.get(slug)
-    if (existing !== undefined && !existing.window.isDestroyed()) {
-      this.show(existing, shown)
-      return
-    }
     this.watchDisplays()
     const data = this.dataOf(slug)
     const row = this.windows.size
@@ -269,6 +322,10 @@ export class DesktopWidgetWindows {
       width: data.width,
       height: data.height,
       resizable: data.resizable,
+      minWidth: WIDGET_SIZE_MIN,
+      minHeight: WIDGET_SIZE_MIN,
+      maxWidth: WIDGET_SIZE_MAX,
+      maxHeight: WIDGET_SIZE_MAX,
       movable: !data.locked,
       frame: false,
       alwaysOnTop: data.layer === 'top',
@@ -282,20 +339,19 @@ export class DesktopWidgetWindows {
     const bar = this.bars.attach(slug, window, { layer: data.layer, locked: data.locked })
     const entry: WidgetWindow = { window, mode: stamp === undefined ? 'shell' : 'page', stamp, loads: 0, counted: 0, failures: [], shown, row, bar, nativeMove: false }
     this.windows.set(slug, entry)
-    window.once('closed', () => { if (this.windows.get(slug) === entry) this.windows.delete(slug) })
-    window.setVisibleOnAllWorkspaces(true, { skipTransformProcessType: true })
+    window.once('closed', () => {
+      clearTimeout(entry.nativeMoveTimer)
+      if (this.windows.get(slug) === entry) this.windows.delete(slug)
+    })
+    this.setLayer(window, data.layer)
     window.on('will-move', () => { entry.nativeMove = true })
     window.on('moved', () => {
       if (!entry.nativeMove || window.isDestroyed()) return
-      const [x = 0, y = 0] = window.getPosition()
-      data.position = { x, y }
+      // A move with a drag area of the page gives a `moved` for each step. The end position goes to the Host one time.
+      clearTimeout(entry.nativeMoveTimer)
+      entry.nativeMoveTimer = setTimeout(() => { this.nativeMoved(slug, entry) }, NATIVE_MOVE_SETTLE_MS)
     })
-    window.on('resized', () => {
-      if (!data.resizable || window.isDestroyed()) return
-      const [width = data.width, height = data.height] = window.getSize()
-      data.width = width
-      data.height = height
-    })
+    window.on('resized', () => { this.resized(slug, entry) })
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     window.webContents.on('will-navigate', (event) => { event.preventDefault() })
     window.webContents.on('render-process-gone', (_event, details) => {
@@ -373,6 +429,106 @@ export class DesktopWidgetWindows {
     if (entry !== undefined && !entry.window.isDestroyed()) entry.window.destroy()
   }
 
+  /**
+   * Make an open window match its window data. Only a field that changed acts, so a frame that repeats the data does not
+   * move the window. A drag in progress keeps its place.
+   */
+  private apply(slug: string, entry: WidgetWindow, next: WidgetWindowData): void {
+    const prev = this.data.get(slug) ?? next
+    this.data.set(slug, next)
+    const { window } = entry
+    if (window.isDestroyed()) return
+    if (prev.layer !== next.layer) this.setLayer(window, next.layer)
+    if (prev.locked !== next.locked) window.setMovable(!next.locked)
+    if (prev.layer !== next.layer || prev.locked !== next.locked) entry.bar.setState({ layer: next.layer, locked: next.locked })
+    if (prev.resizable !== next.resizable) window.setResizable(next.resizable)
+    const sized = prev.width !== next.width || prev.height !== next.height
+    if (sized) window.setSize(next.width, next.height)
+    const moved = prev.position?.x !== next.position?.x || prev.position?.y !== next.position?.y
+    if ((moved || sized) && !this.bars.dragging(slug)) {
+      const place = this.placeOf(next, entry.row)
+      const [x = 0, y = 0] = window.getPosition()
+      if (place.x !== x || place.y !== y) this.moveTo(entry, place)
+    }
+  }
+
+  /**
+   * The layer of a window (`window_manager.move`). `top`: above each app window, and on all Spaces. `normal`: app windows
+   * can cover it, and it stays on its one Space. Each call keeps the Dock icon away (`skipTransformProcessType`).
+   */
+  private setLayer(window: BrowserWindow, layer: WidgetLayer): void {
+    window.setAlwaysOnTop(layer === 'top')
+    window.setVisibleOnAllWorkspaces(layer === 'top', { skipTransformProcessType: true })
+  }
+
+  /** Keep one operator choice of `slug`, and send it to the Host. */
+  private choose(slug: string, choice: PendingChoice): void {
+    this.pending.set(slug, { ...this.pending.get(slug), ...choice })
+    this.flush(slug)
+  }
+
+  /**
+   * Send the choices of `slug` that wait, one send at a time. A send waits for a ready Host whose stream lists the slug.
+   * A send that the Host refuses drops its choices, and the window takes the data of the Host again. A send that does not
+   * reach the Host keeps its choices: they go again after {@link CHOICE_RETRY_MS} while the same Host is ready, or at the
+   * next frame of the slug.
+   */
+  private flush(slug: string): void {
+    const pending = this.pending.get(slug)
+    const target = this.target
+    if (pending === undefined || target === undefined || this.stopped || this.sending.has(slug) || !this.listed.has(slug)) return
+    this.sending.add(slug)
+    void this.send(target, slug, pending).then((outcome) => {
+      this.sending.delete(slug)
+      if (outcome === 'later') {
+        setTimeout(() => { if (this.target === target) this.flush(slug) }, CHOICE_RETRY_MS)
+        return
+      }
+      const rest = settleChoice(this.pending.get(slug), pending)
+      if (rest === undefined) this.pending.delete(slug)
+      else this.pending.set(slug, rest)
+      if (outcome === 'refused') this.rematch(slug)
+      this.flush(slug)
+    })
+  }
+
+  /**
+   * One send of the choices of `slug` to `POST /api/widget-windows/<slug>`.
+   * @returns `stored` when the Host stored them, `refused` when the Host refused them for their values, and `later`
+   *   when the send did not reach the Host or the Host could not take it now.
+   */
+  private async send(target: WidgetHostTarget, slug: string, choice: PendingChoice): Promise<'stored' | 'refused' | 'later'> {
+    try {
+      const response = await fetch(new URL(`/api/widget-windows/${slug}`, target.url), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: target.cookie },
+        body: JSON.stringify(choiceBody(choice)),
+        signal: AbortSignal.timeout(CHOICE_TIMEOUT_MS),
+      })
+      type Answer = { ok?: unknown; error?: { code?: unknown; message?: unknown } } | undefined
+      const answer = await response.json().catch(() => undefined) as Answer
+      if (response.ok && answer?.ok === true) return 'stored'
+      const code = answer?.error?.code
+      if (code === 'not-resizable' || code === 'bad-request') {
+        console.warn(`deepwidgets-windows: the Host refused a window choice of ${slug}: ${code}: ${JSON.stringify(answer?.error?.message)}`)
+        return 'refused'
+      }
+      console.warn(`deepwidgets-windows: POST /api/widget-windows/${slug} answered ${String(response.status)} ${JSON.stringify(code)}; the choice waits`)
+      return 'later'
+    } catch (error) {
+      if (this.target === target) console.warn(`deepwidgets-windows: POST /api/widget-windows/${slug} failed; the choice waits`, error)
+      return 'later'
+    }
+  }
+
+  /** After a refused send, the window takes the data of the Host, with the choices that still wait. */
+  private rematch(slug: string): void {
+    const host = this.host.get(slug)
+    const entry = this.windows.get(slug)
+    if (host === undefined || entry === undefined) return
+    this.apply(slug, entry, withPending(host, this.pending.get(slug)))
+  }
+
   /** The window data of a slug. A slug with no data gets the data of a new widget. */
   private dataOf(slug: string): WidgetWindowData {
     let data = this.data.get(slug)
@@ -396,13 +552,15 @@ export class DesktopWidgetWindows {
   }
 
   /**
-   * At each change of the displays, a window that touches no display moves to the default position of its layer. The
-   * move is not an operator choice, so the stored position stays (`window_manager.move`).
+   * At each change of the displays, a window that touches no display moves to the default position. The move is not an
+   * operator choice, so the stored position stays (`window_manager.move`). A move of macOS at the change is not one
+   * either: the check clears the mark of a move by the operator first (native_move_flag_stays_on).
    */
   private watchDisplays(): void {
     if (this.watchingDisplays) return
     this.watchingDisplays = true
     const check = (): void => {
+      for (const entry of this.windows.values()) entry.nativeMove = false
       for (const [slug, entry] of this.windows) {
         const data = this.data.get(slug)
         if (data === undefined || entry.window.isDestroyed()) continue
@@ -416,8 +574,8 @@ export class DesktopWidgetWindows {
   }
 
   /**
-   * The layer button and the lock button of the bar (`window_manager.bar`). A layer change of a window with no stored
-   * position moves it to the default position of the other layer. A lock stops a move, and not a resize.
+   * The layer button and the lock button of the bar (`window_manager.bar`). A layer change does not move the window, so
+   * a locked window stays in place. A lock stops a move, and not a resize. Each change is an operator choice.
    */
   private toggle(slug: string, control: 'layer' | 'lock'): void {
     const entry = this.windows.get(slug)
@@ -425,21 +583,51 @@ export class DesktopWidgetWindows {
     if (entry === undefined || data === undefined || entry.window.isDestroyed()) return
     if (control === 'layer') {
       data.layer = data.layer === 'top' ? 'normal' : 'top'
-      entry.window.setAlwaysOnTop(data.layer === 'top')
-      if (data.position === undefined) this.moveTo(entry, defaultPosition(data.layer, entry.row, screen.getPrimaryDisplay().workArea, data))
+      this.setLayer(entry.window, data.layer)
+      this.choose(slug, { layer: data.layer })
     } else {
       data.locked = !data.locked
       entry.window.setMovable(!data.locked)
+      this.choose(slug, { locked: data.locked })
     }
     entry.bar.setState({ layer: data.layer, locked: data.locked })
   }
 
-  /** A drag on the handle of the bar. The new position is an operator choice. */
-  private dragged(slug: string, point: ScreenPoint): void {
+  /**
+   * A drag on the handle of the bar. At its end, the position that the window has is an operator choice: macOS can put
+   * the window at another place than the one asked (stored_position_not_window_position). A drag that did not move the
+   * window stores nothing (handle_click_stores_position).
+   */
+  private dragged(slug: string, point: ScreenPoint, done: boolean, start: ScreenPoint): void {
     const entry = this.windows.get(slug)
     const data = this.data.get(slug)
-    if (entry === undefined || data === undefined || data.locked) return
+    if (entry === undefined || data === undefined || data.locked || entry.window.isDestroyed()) return
     this.moveTo(entry, point)
-    data.position = point
+    if (!done) return
+    const [x = start.x, y = start.y] = entry.window.getPosition()
+    if (x === start.x && y === start.y) return
+    data.position = { x, y }
+    this.choose(slug, { position: data.position })
+  }
+
+  /** The end of a move by the operator with a drag area of the page: its position is an operator choice. */
+  private nativeMoved(slug: string, entry: WidgetWindow): void {
+    const data = this.data.get(slug)
+    if (!entry.nativeMove || data === undefined || entry.window.isDestroyed()) return
+    const [x = 0, y = 0] = entry.window.getPosition()
+    if (data.position?.x === x && data.position.y === y) return
+    data.position = { x, y }
+    this.choose(slug, { position: data.position })
+  }
+
+  /** The end of a resize by the operator at the window edges (`window_manager.move`): the size is an operator choice. */
+  private resized(slug: string, entry: WidgetWindow): void {
+    const data = this.data.get(slug)
+    if (data === undefined || !data.resizable || entry.window.isDestroyed()) return
+    const [width = data.width, height = data.height] = entry.window.getSize()
+    if (width === data.width && height === data.height) return
+    data.width = width
+    data.height = height
+    this.choose(slug, { size: { width, height } })
   }
 }

@@ -58,8 +58,11 @@ export interface WidgetBarOwner {
   toggle(slug: string, control: 'layer' | 'lock'): void
   /** False while the window of `slug` is locked: a drag on its handle does not move it. */
   movable(slug: string): boolean
-  /** A drag of the operator puts the window of `slug` at `point`. `done` is true at the end of the drag. */
-  drag(slug: string, point: ScreenPoint, done: boolean): void
+  /**
+   * A drag of the operator puts the window of `slug` at `point`. `done` is true at the end of the drag. `start` is the
+   * position of the window when the drag started, so the owner can tell a drag with no move (`window_manager.move`).
+   */
+  drag(slug: string, point: ScreenPoint, done: boolean, start: ScreenPoint): void
 }
 
 /** The bar of one widget window. */
@@ -74,6 +77,8 @@ export interface WidgetBar {
 interface BarDrag {
   /** The mouse point minus the window position at the start. */
   readonly grab: ScreenPoint
+  /** The window position at the start. */
+  readonly start: ScreenPoint
   readonly timer: ReturnType<typeof setInterval>
 }
 
@@ -166,6 +171,15 @@ export class WidgetWindowBars {
     this.hover ??= setInterval(() => { this.tick() }, HOVER_POLL_MS)
   }
 
+  /**
+   * True while a drag on the handle of the window of `slug` lasts.
+   * @param slug - the slug of the window.
+   */
+  dragging(slug: string): boolean {
+    for (const entry of this.bars.values()) if (entry.slug === slug && entry.drag !== undefined) return true
+    return false
+  }
+
   /** Stop the hover check and each drag, on app quit. */
   stop(): void {
     clearInterval(this.hover)
@@ -224,7 +238,8 @@ export class WidgetWindowBars {
     if (entry.drag !== undefined || entry.window.isDestroyed() || !this.owner.movable(entry.slug)) return
     const cursor = this.cursorPoint()
     const [x = 0, y = 0] = entry.window.getPosition()
-    entry.drag = { grab: { x: cursor.x - x, y: cursor.y - y }, timer: setInterval(() => { this.follow(entry, false) }, DRAG_POLL_MS) }
+    const timer = setInterval(() => { this.follow(entry, false) }, DRAG_POLL_MS)
+    entry.drag = { grab: { x: cursor.x - x, y: cursor.y - y }, start: { x, y }, timer }
   }
 
   /** Move the window to the mouse point minus the grab offset. */
@@ -232,7 +247,7 @@ export class WidgetWindowBars {
     const drag = entry.drag
     if (drag === undefined || entry.window.isDestroyed()) return
     const cursor = this.cursorPoint()
-    this.owner.drag(entry.slug, { x: Math.round(cursor.x - drag.grab.x), y: Math.round(cursor.y - drag.grab.y) }, done)
+    this.owner.drag(entry.slug, { x: Math.round(cursor.x - drag.grab.x), y: Math.round(cursor.y - drag.grab.y) }, done, drag.start)
   }
 
   /**
