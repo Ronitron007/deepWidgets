@@ -224,7 +224,6 @@ Each item waits for a later decision of the operator. This list is the one place
 | `deferred.channels_push` | Later (2026-11-10): push to Claude Code through channels | `standing.design.agent` |
 | `deferred.mcp_prompts` | Not now (2026-11-10): MCP prompts as `/` shortcuts for the operator | `modes.later` |
 | `deferred.stylesheet_rules` | Decided in the free hour of 2026-11-16, open to the operator: `@plugin`, `@config`, and a PostCSS or Tailwind config file still refuse | `agent_library.fence_warn` |
-| `deferred.phantom_load_failure` | Merged as is on 2026-11-17 with PR #116. Not fixed. | A window can change from the shared shell to a page. Electron can then reject the page load with the abort (-3) of the old shell URL. `apps/desktop/src/deepwidgets-windows.ts` counts this abort as a page failure and loads the page again. `tools/widgets-create.mjs` then fails in 2 of 4 runs. After such a count, one real crash in 60 s shows the notice. A possible fix: ignore `ERR_ABORTED` for a URL that is not the URL of the load. |
 | `deferred.permission_layer` | Deferred on 2026-11-28. The operator wants a permission layer, designed as one large piece of work, and no partial guards before it. | `standing.permission_gaps` lists each known problem. |
 
 ## Permission gaps `standing.permission_gaps`
