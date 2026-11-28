@@ -224,7 +224,35 @@ Each item waits for a later decision of the operator. This list is the one place
 | `deferred.channels_push` | Later (2026-11-10): push to Claude Code through channels | `standing.design.agent` |
 | `deferred.mcp_prompts` | Not now (2026-11-10): MCP prompts as `/` shortcuts for the operator | `modes.later` |
 | `deferred.stylesheet_rules` | Decided in the free hour of 2026-11-16, open to the operator: `@plugin`, `@config`, and a PostCSS or Tailwind config file still refuse | `agent_library.fence_warn` |
-| `deferred.phantom_load_failure` | Merged as is on 2026-11-17 with PR #116. Not fixed. | A window can change from the shared shell to a page. Electron can then reject the page load with the abort (-3) of the old shell URL. `apps/desktop/src/deepwidgets-windows.ts` counts this abort as a page failure and loads the page again. `tools/widgets-create.mjs` then fails in 2 of 4 runs. After such a count, one real crash in 60 s shows the notice. A possible fix: ignore `ERR_ABORTED` for a URL that is not the URL of the load. |
+| `deferred.permission_layer` | Deferred on 2026-11-28. The operator wants a permission layer, designed as one large piece of work, and no partial guards before it. | `standing.permission_gaps` lists each known problem. |
+
+## Permission gaps `standing.permission_gaps`
+
+On 2026-11-28 the operator decided that these problems wait for a permission layer. The operator does not want a partial guard for one of them before that layer, because a partial guard gives a false sense of safety. Agent code is the host half of a widget that an agent writes and installs with `widget_install`. A run on a CLI host with a temporary `DSH_HOME` verified each row on 2026-11-26, at `origin/main` `c29211b367`. A row that says otherwise tells which part is inferred.
+
+| Gap | What agent code can do | Added |
+|---|---|---|
+| `gap.services` | Agent code gets every host service through `ctx.get(name)` or `ctx.root[name]`, 32 services in all. The narrow `WidgetContext` of `deepwidgets/mcp/widget/widget.d.ts` is only a TypeScript type. | #63 |
+| `gap.node` | Agent code imports Node builtins through `process.getBuiltinModule`, a computed `import()`, or a static import under `// @ts-expect-error`. Each passes the compile, lint, and test gates. Thus agent code can run each command and read or write each file as the operator. | #63 |
+| `gap.test_gate` | The test gate runs the top-level code of a bundle that it then refuses (`deepwidgets/mcp/src/creation.ts`). A refused install still runs code. | #63 |
+| `gap.main_actions` | Agent code calls the actions of the main widget with `ctx.widgets.call('main', ...)`. The `Widgets` type hides `call`, but the service object has it (`deepwidgets/widgets/src/index.ts`, `call`). The caller names itself in `CallOptions.caller`. Thus agent code can turn a mode on, turn off or remove another widget, add a kit package, and change the refuse list. | #54, #127, #136, #156 |
+| `gap.mcp_settings` | Agent code calls `mcpSettings.setMode` and turns a mode on that the operator turned off | #136 |
+| `gap.kit` | Agent code calls `kit.add`, and the install scripts of the package run | #140. A run verified the add. The run of the scripts is inferred. |
+| `gap.root_listener` | A listener on `ctx.root` runs outside the ownership check of the agent row, and it stays after `widget_remove` | Cordis |
+| `gap.host_parts` | Agent code reaches the plugin manager, the loader, and the web server. It can install bundles and add HTTP routes. | #63. A run verified the reach. The effects are inferred. |
+| `gap.token` | Each local process can get an MCP token (`mcp_consent.today`). The mode `create` is on by default. When the operator turns `create` off, the widgets that are already installed keep running. | `mcp_consent` |
+
+These spec rules hold only at the MCP server. Agent code can break each one until the permission layer exists:
+
+- `main_widget.widget`: agents can not reach `main`.
+
+- `modes.refusal`: an agent asks the operator to turn a mode on.
+
+- `kit.pane.view`: agents add packages only after `kit.tools`.
+
+- `main_widget.reviews`: only a built-in row can call `asHost`.
+
+The decisions `widget.agent_code_v1` and `standing.hard.agent_code` accept full Node rights for agent code in v1. The permission layer is the later iteration that these decisions name.
 
 ## Hard problems that stay open `standing.hard`
 

@@ -73,6 +73,8 @@ The table `windows` of the storage domain `widgets` keeps one record for each sl
 
 - An agent `widget_remove` keeps the record, as it keeps a Hide today.
 
+- A record with no agent defaults takes them one time, at the next registration of its slug. Such a record comes from before the unit `wm.store`, or from a Hide of a failed entry. It keeps its shown state. The operator decided this on 2026-11-28.
+
 - The template and the guide of `deepwidgets/mcp` tell the agent about the field `window`.
 
 ## The bar `window_manager.bar`
@@ -187,6 +189,7 @@ The operator did not decide these items. A later decision can change each one.
 | The lock and the size | A lock stops a move. It does not stop a resize. |
 | The hover check | Electron main reads the mouse position 10 times each second, while a widget window shows. |
 | The bar height | 24 points |
+| The size limits | A width or a height from 80 to 4096 points. The route and the definition refuse another value. |
 
 ## Checked facts `window_manager.checked`
 

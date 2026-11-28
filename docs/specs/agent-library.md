@@ -188,6 +188,8 @@ On the widget origin of the slug S, Electron main answers only these paths:
 
 - Electron main writes a log line for each of these steps.
 
+- A load that a newer load stopped is not a failure. Electron can reject the load of the page with the abort (`ERR_ABORTED`, -3) of the load before it, with the URL of that older load. Electron main counts a rejected load as a failure only when its error is not `ERR_ABORTED`, or when the URL of the error is the URL of the load. Before this rule, the switch from the shared shell to a page counted a failure that did not occur, and loaded the page again (`deferred.phantom_load_failure`, the verify of PR #116).
+
 This follows the host: a crash gets a restart first, and safe mode comes only after a repeat (`safe_host`).
 
 ### Decisions of the free hour `agent_library.serving.decisions`
