@@ -391,16 +391,26 @@ export class DesktopWidgetWindows {
     if (window.isDestroyed()) return
     const load = ++entry.loads
     const url = widgetUrl(slug, mode)
-    void window.loadURL(url).then(() => {
+    const ended = (): void => {
       if (window.isDestroyed() || this.stopped || load !== entry.loads) return
       entry.loaded = true
       if (entry.shown) {
         window.showInactive()
         this.bars.watch()
       }
-    }, (error: unknown) => {
+    }
+    void window.loadURL(url).then(ended, (error: unknown) => {
       // A newer load stopped this one.
       if (window.isDestroyed() || load !== entry.loads) return
+      // Electron rejects a load with the first main-frame `did-fail-load` after the call, when the load ends. A document
+      // that this load replaced while it still loaded sends its abort (-3) then, with its own URL and an empty code.
+      // That abort is no failure: this load is done, and the window shows (`agent_library.serving.failures`).
+      const abort = error as { errno?: unknown; url?: unknown } | undefined
+      if (abort?.errno === -3 && abort.url !== url) {
+        console.info(`deepwidgets-windows: the window of ${slug} loaded ${url}; Electron gave the load the abort of ${String(abort.url)}`)
+        ended()
+        return
+      }
       console.warn(`deepwidgets-windows: the window of ${slug} did not load ${url}`, error)
       if (mode !== 'page' || this.stopped) { window.destroy(); return }
       // A renderer that ends during the load also rejects the load. The wait lets the gone event of the same attempt
