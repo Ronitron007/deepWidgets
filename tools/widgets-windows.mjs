@@ -445,6 +445,23 @@ async function hostPart() {
   const badListed = (await eventsHello())?.slugs?.includes('bad-window')
   check('the refused definition has no window', badListed === false, String(badListed))
 
+  // ---- gate_gap_misleads_agent: the test gate refuses a bad window value, with a next step that names the field ----
+  const badDir = join(work, 'agent', 'windows-bad')
+  const gateCases = [
+    { window: 'window: { width: 50 },', diagnostic: 'window.width must be a whole number of points from 80 to 4096' },
+    { window: 'window: JSON.parse(\'{"opacity": 1}\') as { layer?: "top" },', diagnostic: 'window has the unknown field "opacity"' },
+  ]
+  for (const item of gateCases) {
+    mkdirSync(join(badDir, 'src'), { recursive: true })
+    const text = templateText.replaceAll(`'${SLUG}'`, "'windows-bad'").replace('    program: PROGRAM,\n', `    program: PROGRAM,\n    ${item.window}\n`)
+    writeFileSync(join(badDir, 'src', 'index.ts'), text)
+    const refused = await call('widget_install', { dir: badDir })
+    const error = refused.body?.error
+    check(`widget_install of a bad window value gives gate-failed at the test gate, with a next step that names the field: ${item.diagnostic}`,
+      refused.isError && error?.code === 'gate-failed' && error.gate === 'test' && error.diagnostics?.some((line) => line.includes(item.diagnostic))
+        && typeof error.nextStep === 'string' && error.nextStep.includes('field window') && error.nextStep.includes('whole numbers of points from 80 to 4096'),
+      JSON.stringify(error))
+  }
 
   // ---- window_manager.route: the page of sample can not reach the route ----
   const pageRoutes = [true, false].map((hasPage) => widgetRoute('sample', '/api/widget-windows/sample', hasPage))

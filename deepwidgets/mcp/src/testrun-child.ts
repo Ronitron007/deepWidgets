@@ -50,6 +50,9 @@ const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/
 const ACTION = /^[A-Za-z][A-Za-z0-9_]{0,62}$/
 /** The catalog of a definition with no `catalog`, `DEFAULT_CATALOG` of `@deepwidgets/widgets`. */
 const DEFAULT_CATALOG = 'shadcn-widgets@1'
+/** The limits of a window size (`window_manager.provisional`), `WINDOW_SIZE_MIN` and `WINDOW_SIZE_MAX` of `@deepwidgets/widgets`. */
+const WINDOW_SIZE_MIN = 80
+const WINDOW_SIZE_MAX = 4096
 const ACTION_LIMIT_MS = 1_000
 const APPLY_LIMIT_MS = 1_000
 /** The largest query answer, as JSON text, that the report keeps for the render check. */
@@ -72,6 +75,7 @@ interface WidgetDefLike {
   title: string
   program: string
   catalog?: string
+  window?: unknown
   initialState: unknown
   timeoutMs?: number
   actions: ActionDef[]
@@ -90,12 +94,32 @@ function jsonAnswer(value: unknown): unknown {
 }
 const out = (line: string): void => { process.stdout.write(`${line}\n`) }
 
+/**
+ * Check the field `window` of a definition as `windowDefaults` of `@deepwidgets/widgets` does (`window_manager.defaults`,
+ * gate_gap_misleads_agent). Throws `TypeError` with the runtime text.
+ */
+function checkWindow(slug: string, value: unknown): void {
+  if (value === undefined) return
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`widgets: ${slug}: window must be an object`)
+  const { layer, width, height, resizable, ...rest } = value as Record<string, unknown>
+  const unknown = Object.keys(rest)
+  if (unknown.length > 0) throw new TypeError(`widgets: ${slug}: window has the unknown field ${JSON.stringify(unknown[0])}; it takes layer, width, height, and resizable`)
+  if (layer !== undefined && layer !== 'top' && layer !== 'normal') throw new TypeError(`widgets: ${slug}: window.layer must be "top" or "normal"`)
+  for (const [field, size] of [['width', width], ['height', height]] as const) {
+    if (size !== undefined && !(typeof size === 'number' && Number.isInteger(size) && size >= WINDOW_SIZE_MIN && size <= WINDOW_SIZE_MAX)) {
+      throw new TypeError(`widgets: ${slug}: window.${field} must be a whole number of points from ${String(WINDOW_SIZE_MIN)} to ${String(WINDOW_SIZE_MAX)}`)
+    }
+  }
+  if (resizable !== undefined && typeof resizable !== 'boolean') throw new TypeError(`widgets: ${slug}: window.resizable must be true or false`)
+}
+
 /** Check a definition as the runtime does. Throws `TypeError` with the runtime text. */
 function checkDefinition(def: WidgetDefLike): void {
   if (typeof def.slug !== 'string' || !SLUG.test(def.slug)) throw new TypeError(`widgets: bad slug ${JSON.stringify(def.slug)}`)
   if (typeof def.title !== 'string' || def.title === '') throw new TypeError(`widgets: ${def.slug}: title is required`)
   if (typeof def.program !== 'string') throw new TypeError(`widgets: ${def.slug}: program text is required`)
   if (def.catalog !== undefined && (typeof def.catalog !== 'string' || def.catalog === '')) throw new TypeError(`widgets: ${def.slug}: catalog must be a non-empty string`)
+  checkWindow(def.slug, def.window)
   if (!Array.isArray(def.actions)) throw new TypeError(`widgets: ${def.slug}: actions must be an array`)
   if (def.timeoutMs !== undefined && !(Number.isFinite(def.timeoutMs) && def.timeoutMs > 0)) throw new TypeError(`widgets: ${def.slug}: timeoutMs must be positive`)
   const names = new Set<string>()

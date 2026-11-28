@@ -588,6 +588,16 @@ async function writeBundle(folder: string, name: string, widget: TestRunWidget, 
 
 const isPageGate = (gate: GateName): gate is PageGateName => gate.startsWith('page-')
 
+/**
+ * window_manager.defaults (gate_gap_misleads_agent): the next step when the test run refused the field `window` of the
+ * definition. The limits are those of `window_manager.provisional`.
+ */
+const WINDOW_NEXT_STEP = 'Fix the field window of the widget definition in src/index.ts. layer is "top" or "normal". width and height are whole numbers of points from 80 to 4096. resizable is true or false. window takes no other field. Then call widget_install again with the same folder. Nothing was installed.'
+
+/** The next step of a refusal of a gate that is not a page gate, or undefined for the default next step. */
+const testNextStep = (diagnostics: readonly string[]): string | undefined =>
+  diagnostics.some((line) => /widgets: [a-z0-9-]+: window[ .]/.test(line)) ? WINDOW_NEXT_STEP : undefined
+
 /** The diagnostics of a plugin manager result. */
 function resultDiagnostics(result: ChangeResult): string[] {
   const out: string[] = [`application: ${result.application} at ${result.stage}`]
@@ -993,7 +1003,7 @@ export class WidgetInstaller {
     const failed = outcome.gates.find((gate) => !gate.ok)
     if (failed !== undefined || outcome.widget === undefined || outcome.code === undefined) {
       const gate = failed?.gate ?? 'test'
-      const nextStep = isPageGate(gate) ? pageNextStep(gate, failed?.diagnostics ?? []) : undefined
+      const nextStep = isPageGate(gate) ? pageNextStep(gate, failed?.diagnostics ?? []) : testNextStep(failed?.diagnostics ?? [])
       throw new CreationError('gate-failed', `the ${gate} gate refused the bundle; nothing was installed`, { gate, diagnostics: failed?.diagnostics ?? ['the test run found no widget'], ...(nextStep === undefined ? {} : { nextStep }) })
     }
     const { widget, code } = outcome
