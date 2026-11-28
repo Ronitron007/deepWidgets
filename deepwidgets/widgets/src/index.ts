@@ -230,9 +230,12 @@ export const WINDOW_CHOICES = ['layer', 'locked', 'x', 'y', 'width', 'height'] a
 /** One field of the window data that an operator choice sets. */
 export type WindowChoice = typeof WINDOW_CHOICES[number]
 
-/** The smallest width and height of a widget window, in screen points. A definition or a route value below it is refused. */
+/**
+ * The smallest width and height of a widget window, in screen points (`window_manager.provisional`). A definition or a
+ * route value below it is refused, and the refusal names both limits.
+ */
 export const WINDOW_SIZE_MIN = 80
-/** The largest width and height of a widget window, in screen points. */
+/** The largest width and height of a widget window, in screen points (`window_manager.provisional`). */
 export const WINDOW_SIZE_MAX = 4096
 
 /**
@@ -548,7 +551,7 @@ function windowDefaults(slug: string, value: unknown): Readonly<Required<WidgetW
   if (layer !== undefined && layer !== 'top' && layer !== 'normal') throw new TypeError(`widgets: ${slug}: window.layer must be "top" or "normal"`)
   const size = (field: 'width' | 'height', given: unknown): number => {
     if (given === undefined) return WINDOW_DEFAULTS[field]
-    if (!isWindowSize(given)) throw new TypeError(`widgets: ${slug}: window.${field} must be a whole number from ${String(WINDOW_SIZE_MIN)} to ${String(WINDOW_SIZE_MAX)}`)
+    if (!isWindowSize(given)) throw new TypeError(`widgets: ${slug}: window.${field} must be a whole number of points from ${String(WINDOW_SIZE_MIN)} to ${String(WINDOW_SIZE_MAX)}`)
     return given
   }
   if (resizable !== undefined && typeof resizable !== 'boolean') throw new TypeError(`widgets: ${slug}: window.resizable must be true or false`)
@@ -579,7 +582,8 @@ function parseWindowChange(body: unknown): WindowChange {
     change.y = y as number
   }
   if (width !== undefined || height !== undefined) {
-    if (!isWindowSize(width) || !isWindowSize(height)) refuse(`width and height must come together, as whole numbers from ${String(WINDOW_SIZE_MIN)} to ${String(WINDOW_SIZE_MAX)}`)
+    if (width === undefined || height === undefined) refuse('width and height must come together')
+    if (!isWindowSize(width) || !isWindowSize(height)) refuse(`width and height must be whole numbers of points from ${String(WINDOW_SIZE_MIN)} to ${String(WINDOW_SIZE_MAX)}`)
     change.width = width as number
     change.height = height as number
   }

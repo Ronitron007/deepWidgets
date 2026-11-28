@@ -51,7 +51,10 @@ export interface PendingChoice {
 /** The size of a widget with no agent default (`window_manager.data`). */
 export const WIDGET_WIDTH = 320
 export const WIDGET_HEIGHT = 300
-/** The limits of a width and a height, as `WINDOW_SIZE_MIN` and `WINDOW_SIZE_MAX` of `@deepwidgets/widgets`. */
+/**
+ * The limits of a width and a height (`window_manager.provisional`), as `WINDOW_SIZE_MIN` and `WINDOW_SIZE_MAX` of
+ * `@deepwidgets/widgets`. Each widget window has them as its smallest and largest size.
+ */
 export const WIDGET_SIZE_MIN = 80
 export const WIDGET_SIZE_MAX = 4096
 /** The space between the default column and the edge of the work area, and between two windows of the column. */

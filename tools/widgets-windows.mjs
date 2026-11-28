@@ -299,9 +299,14 @@ async function samplePart() {
   const unknown = await windowRoute('sample', { opacity: 0.5 })
   const small = await windowRoute('sample', { width: 10, height: 10 })
   const empty = await windowRoute('sample', {})
-  check('a lone x, an unknown field, a size below the limit, and an empty body give bad-request',
-    [lone, unknown, small, empty].every((answer) => answer.status === 400 && answer.body?.error?.code === 'bad-request'),
-    JSON.stringify({ lone: lone.body, unknown: unknown.body, small: small.body, empty: empty.body }))
+  const large = await windowRoute('sample', { width: 400, height: 5000 })
+  check('a lone x, an unknown field, a size out of the limits, and an empty body give bad-request',
+    [lone, unknown, small, large, empty].every((answer) => answer.status === 400 && answer.body?.error?.code === 'bad-request'),
+    JSON.stringify({ lone: lone.body, unknown: unknown.body, small: small.body, large: large.body, empty: empty.body }))
+  // size_limits_not_in_spec: the refusal of a size out of the limits of window_manager.provisional names the limits.
+  check('the refusal of a size out of the limits names 80 to 4096 points',
+    [small, large].every((answer) => String(answer.body?.error?.message).includes('whole numbers of points from 80 to 4096')),
+    JSON.stringify({ small: small.body, large: large.body }))
   const main = await windowRoute('main', { layer: 'normal' })
   const none = await windowRoute('no-such-widget', { layer: 'normal' })
   check('the route refuses main with unknown-widget, and a slug that this host never knew gets 404',
@@ -418,6 +423,7 @@ async function hostPart() {
     operatorRemoved.body?.result?.ok === true && !fresh.isError && fresh.body?.application === 'applied' && hasWindow(freshAdded?.window, newDefaults) && hasWindow(freshHello, newDefaults),
     JSON.stringify({ removed: operatorRemoved.body?.result, fresh: fresh.body?.error ?? fresh.body?.application, added: freshAdded?.window, hello: freshHello }))
 
+
   // ---- window_manager.route: reset ----
   const reset = await windowRoute('sample', { reset: true })
   const resetHello = await helloWindow('sample')
@@ -440,7 +446,8 @@ async function hostPart() {
       }
     })`)
   check('a definition with a bad window value fails its registration with a TypeError',
-    Array.isArray(bad) && bad.length === 6 && bad.every((line) => line.startsWith('TypeError: widgets: bad-window: window')),
+    Array.isArray(bad) && bad.length === 6 && bad.every((line) => line.startsWith('TypeError: widgets: bad-window: window'))
+      && bad[1].includes('whole number of points from 80 to 4096'),
     JSON.stringify(bad))
   const badListed = (await eventsHello())?.slugs?.includes('bad-window')
   check('the refused definition has no window', badListed === false, String(badListed))
