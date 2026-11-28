@@ -4,6 +4,9 @@
  * - A timer uses ctx.interval or ctx.timeout, never setTimeout or setInterval.
  * - Await each promise, or end it with .catch().
  * - The program is OpenUI Lang. Call widget_guide with mode "create" for the components.
+ * - window gives the first layer and size of a new widget, for example
+ *   window: { layer: 'normal', width: 400, height: 200, resizable: true }. A reinstall keeps the window as it is.
+ * - In the app, a bar covers the top 24 points of the window while the mouse is over it. Keep controls out of it.
  */
 import type { WidgetContext } from 'deepwidgets:widget'
 import { z } from 'zod'

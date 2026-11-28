@@ -38,7 +38,9 @@ vi.mock('electron', async () => {
 
 const { WidgetWindowBars, WIDGET_BAR_HEIGHT, HOVER_POLL_MS, DRAG_POLL_MS } = await import('../src/deepwidgets-window-bar.ts')
 const { WIDGET_BAR_IPC, parseBarCommand, parseBarState } = await import('../src/deepwidgets-window-bar-protocol.ts')
-const { defaultPosition, newWindowData, placeWindow, touchesDisplay, WIDGET_GAP } = await import('../src/deepwidgets-window-place.ts')
+const {
+  choiceBody, defaultPosition, newWindowData, parseWindowData, placeWindow, settleChoice, touchesDisplay, withPending, WIDGET_GAP,
+} = await import('../src/deepwidgets-window-place.ts')
 
 type View = InstanceType<typeof import('electron').WebContentsView> & { visible: boolean; bounds: { width: number; height: number } }
 
@@ -132,10 +134,12 @@ describe('a drag on the handle', () => {
     f.send('drag-start')
     f.setCursor({ x: 190, y: 155 })
     vi.advanceTimersByTime(DRAG_POLL_MS)
-    expect(f.owner.drag).toHaveBeenLastCalledWith('sample', { x: 160, y: 145 }, false)
+    expect(f.owner.drag).toHaveBeenLastCalledWith('sample', { x: 160, y: 145 }, false, { x: 100, y: 100 })
+    expect(f.bars.dragging('sample')).toBe(true)
     f.setCursor({ x: 200, y: 160 })
     f.send('drag-end')
-    expect(f.owner.drag).toHaveBeenLastCalledWith('sample', { x: 170, y: 150 }, true)
+    expect(f.owner.drag).toHaveBeenLastCalledWith('sample', { x: 170, y: 150 }, true, { x: 100, y: 100 })
+    expect(f.bars.dragging('sample')).toBe(false)
     const calls = f.owner.drag.mock.calls.length
     vi.advanceTimersByTime(DRAG_POLL_MS * 5)
     expect(f.owner.drag).toHaveBeenCalledTimes(calls)
@@ -166,17 +170,17 @@ describe('the window place', () => {
   const area = { x: 0, y: 30, width: 1440, height: 870 }
   const displays = [{ x: 0, y: 0, width: 1440, height: 900 }]
 
-  it('gives each layer its default column on the primary display', () => {
-    expect(defaultPosition('top', 0, area, { width: 320, height: 300 })).toEqual({ x: WIDGET_GAP, y: 30 + WIDGET_GAP })
-    expect(defaultPosition('normal', 1, area, { width: 320, height: 300 })).toEqual({ x: 1440 - 320 - WIDGET_GAP, y: 30 + WIDGET_GAP + 316 })
-    expect(defaultPosition('top', 9, area, { width: 320, height: 300 }).y).toBe(30 + 870 - 300)
+  it('gives one default column at the left edge of the primary display', () => {
+    expect(defaultPosition(0, area, { width: 320, height: 300 })).toEqual({ x: WIDGET_GAP, y: 30 + WIDGET_GAP })
+    expect(defaultPosition(1, area, { width: 320, height: 300 })).toEqual({ x: WIDGET_GAP, y: 30 + WIDGET_GAP + 316 })
+    expect(defaultPosition(9, area, { width: 320, height: 300 }).y).toBe(30 + 870 - 300)
   })
 
-  it('keeps a stored position on a display, and uses the default of the layer off the displays', () => {
+  it('keeps a stored position on a display, and uses the default position off the displays, for both layers', () => {
     const data = { ...newWindowData(), position: { x: 500, y: 400 } }
     expect(placeWindow(data, 0, area, displays)).toEqual({ x: 500, y: 400 })
     expect(placeWindow({ ...data, position: { x: 3000, y: 400 } }, 0, area, displays)).toEqual({ x: WIDGET_GAP, y: 30 + WIDGET_GAP })
-    expect(placeWindow({ ...data, layer: 'normal', position: undefined }, 0, area, displays)).toEqual({ x: 1440 - 320 - WIDGET_GAP, y: 30 + WIDGET_GAP })
+    expect(placeWindow({ ...data, layer: 'normal', position: undefined }, 0, area, displays)).toEqual({ x: WIDGET_GAP, y: 30 + WIDGET_GAP })
   })
 
   it('counts a window that overlaps a display edge as on the display', () => {
@@ -187,5 +191,32 @@ describe('the window place', () => {
 
   it('gives a new widget the layer top, no lock, no position, 320 by 300, and no resize', () => {
     expect(newWindowData()).toEqual({ layer: 'top', locked: false, position: undefined, width: 320, height: 300, resizable: false })
+  })
+})
+
+describe('the window data of the Host', () => {
+  const host = { layer: 'top' as const, locked: false, position: { x: 40, y: 50 }, width: 400, height: 200, resizable: true }
+
+  it('parses the window data of a frame, and gives the default for each missing or bad field', () => {
+    expect(parseWindowData({ shown: false, layer: 'normal', locked: true, x: -20, y: 60, width: 400, height: 200, resizable: true, chosen: ['x', 'y'] }, true))
+      .toEqual({ shown: false, layer: 'normal', locked: true, position: { x: -20, y: 60 }, width: 400, height: 200, resizable: true })
+    expect(parseWindowData(undefined, false)).toEqual({ ...newWindowData(), shown: false })
+    expect(parseWindowData({ layer: 'desktop', x: 5, width: 50, height: 200, locked: 'yes' }, undefined)).toEqual({ ...newWindowData(), shown: true })
+  })
+
+  it('shows each choice that waits over the data of the Host', () => {
+    expect(withPending(host, undefined)).toEqual(host)
+    expect(withPending(host, { layer: 'normal', position: { x: 1, y: 2 }, size: { width: 500, height: 300 } }))
+      .toEqual({ ...host, layer: 'normal', position: { x: 1, y: 2 }, width: 500, height: 300 })
+    expect(withPending({ ...host, resizable: false }, { locked: true })).toEqual({ ...host, resizable: false, locked: true })
+  })
+
+  it('sends a choice as the body of the route, and keeps only a choice that changed during the send', () => {
+    expect(choiceBody({ layer: 'normal', locked: true, position: { x: 1, y: 2 }, size: { width: 500, height: 300 } }))
+      .toEqual({ layer: 'normal', locked: true, x: 1, y: 2, width: 500, height: 300 })
+    expect(settleChoice({ layer: 'normal', position: { x: 1, y: 2 } }, { layer: 'normal', position: { x: 1, y: 2 } })).toBeUndefined()
+    expect(settleChoice({ layer: 'top', locked: true }, { layer: 'normal' })).toEqual({ layer: 'top', locked: true })
+    expect(settleChoice({ position: { x: 3, y: 2 } }, { position: { x: 1, y: 2 } })).toEqual({ position: { x: 3, y: 2 } })
+    expect(settleChoice(undefined, { layer: 'top' })).toBeUndefined()
   })
 })
