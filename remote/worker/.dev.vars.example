@@ -1,0 +1,8 @@
+# Copy to .dev.vars (gitignored) for `wrangler dev`; for deploy use `npx wrangler secret put <NAME>`.
+# Names only; never commit values.
+OWNER_PASSCODE=
+ASSERTION_SIGNING_KEY=
+DEVICE_CREDENTIAL_SHA256=
+# Optional overrides of the vars in wrangler.jsonc:
+# PUBLIC_URL=http://127.0.0.1:8787
+# DEVICE_ID=

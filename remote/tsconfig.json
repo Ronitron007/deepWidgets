@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "types": ["node"]
+  },
+  "include": ["*.mr.spec.ts", "stub/**/*.ts", "bridge/**/*.ts", "e2e/**/*.ts", "test/**/*.ts", "real/**/*.ts", "vitest.config.ts"],
+  "exclude": ["node_modules", "worker/**", "ref/**"]
+}
