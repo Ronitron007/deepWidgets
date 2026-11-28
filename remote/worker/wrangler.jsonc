@@ -1,0 +1,28 @@
+{
+  // dw-relay: the deepWidgets remote-access relay (ARCHITECTURE.md section 14). Secrets: see .dev.vars.example.
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "dw-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "kv_namespaces": [
+    // Create with `npx wrangler kv namespace create OAUTH_KV` and put its id here before `wrangler deploy`.
+    { "binding": "OAUTH_KV", "id": "00000000000000000000000000000000" }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "DEVICE", "class_name": "DeviceRelay" },
+      { "name": "LOCKOUT", "class_name": "Lockout" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["DeviceRelay", "Lockout"] }
+  ],
+  "vars": {
+    // The public origin, no trailing slash: https://dw-relay.<subdomain>.workers.dev
+    "PUBLIC_URL": "https://dw-relay.example.workers.dev",
+    "DEVICE_ID": "dev_replace_me"
+  }
+}

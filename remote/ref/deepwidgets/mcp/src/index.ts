@@ -1,0 +1,1208 @@
+/**
+ * The MCP server for widgets (`widget_mvp.mcp`). One `webServer` prefix route owns `/mcp` and
+ * `/mcp/token`. Each tool calls `ctx.widgets` in this process, so the action contract (queue,
+ * timeout, `requestId`, change feed) stays in the runtime.
+ *
+ * The port file (`widget_phase2.mcp_port`) tells agents the listening port and a random server
+ * nonce. The nonce never leaves the file: `POST /mcp/token { agent, challenge }` answers
+ * `proof = HMAC-SHA256(nonce, challenge)`, so an agent that checks the proof refuses a server on
+ * the port that is not this host (`standing.hard.port_squat`). See README.md.
+ *
+ * In the desktop app, Electron main owns the port and the port file (`safe_host.port`). Electron
+ * main sets `DEEPWIDGETS_MCP_FORWARDED=1` for the host. The row then writes no port file. It sends
+ * `{ port, nonce, secret }` to Electron main over IPC, and it refuses each request without the
+ * secret in `x-deepwidgets-forward`. A CLI host binds its port and writes the file itself.
+ *
+ * The tools are grouped in modes (spec `modes`). `deepwidgets_modes` lists them, and the settings
+ * file `$DSH_HOME/deepwidgets/settings.json` can turn a gated mode off. The server reads that file
+ * at each call of a tool that needs it, so an edit takes effect with no restart.
+ *
+ * The main widget is for the operator only (`main_widget.widget`): the tools treat the slug `main` as a slug that
+ * does not exist. The row also provides the service `widgetInstaller`, the remove path of `widget_remove` for the main
+ * widget, and the service `mcpSettings`, the modes, the port, and the refuse list of the kit for its Settings tab
+ * (`main_widget.settings`, `kit.pane`).
+ * @module @deepwidgets/mcp
+ */
+import { execFile } from 'node:child_process'
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
+import { promisify } from 'node:util'
+import { Service } from '@deepseek-ai/cordis'
+import type { Context } from '@deepseek-ai/cordis'
+import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
+import type {} from '@deepseek-ai/dsh-app-boot'
+import type {} from '@deepseek-ai/dsh-host-webserver'
+import type {} from '@deepseek-ai/dsh-plugin-manager'
+import type {} from '@deepwidgets/kit'
+import type { WidgetErrorCode } from '@deepwidgets/widgets'
+import { localhostHostValidation, toNodeHandler } from '@modelcontextprotocol/node'
+import type { NodeIncomingMessageLike } from '@modelcontextprotocol/node'
+import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
+import type { CallToolResult, StandardSchemaWithJSON } from '@modelcontextprotocol/server'
+import validatePackageName from 'validate-npm-package-name'
+import { z } from 'zod'
+import { CreationError, pageTemplateFiles, templateFiles, widgetTypesText, WidgetInstaller } from './creation.ts'
+import type { CreationErrorCode, GateName, InstallOutcome, PageState } from './creation.ts'
+
+export type { CreationErrorCode } from './creation.ts'
+import { LIBRARY_GUIDE } from './library-guide.ts'
+import { fenceCount, fenceFindings } from './page-gate.ts'
+import type { RenderCheck, RenderCheckRequest, RenderCheckResult } from './page-gate.ts'
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** The remove path and the source lookup of the widget installer, for the main widget. It is there while the installer is. */
+    widgetInstaller: WidgetInstallerService
+    /** The settings of the MCP server for the Settings tab of the main widget. It is there while the MCP row is. */
+    mcpSettings: McpSettingsService
+  }
+}
+
+export const name = 'deepwidgets-mcp'
+export const inject = ['webServer', 'widgets', 'widgetRecords']
+
+const TOKEN_BODY_LIMIT = 4_096
+/** Electron main sets this in the host environment (`safe_host.port`). Same name as `apps/desktop/src/deepwidgets-mcp-port.ts`. */
+const FORWARDED_ENV = 'DEEPWIDGETS_MCP_FORWARDED'
+/** The request header that carries the forward secret. Same name as `apps/desktop/src/deepwidgets-mcp-port.ts`. */
+const FORWARD_HEADER = 'x-deepwidgets-forward'
+const execFileAsync = promisify(execFile)
+/** The token file keeps the newest agents up to this count; a new token drops the oldest (decision `widget.agent_identity`: tokens only name the caller). */
+const MAX_AGENTS = 64
+const LOOPBACK_HOST = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i
+const LOOPBACK_V4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/
+const AGENT_NAME = /^[\x20-\x7e]{1,64}$/
+/** At least 16 random bytes as base64url (22 characters) or hex (32 characters). */
+const CHALLENGE = /^[A-Za-z0-9_-]{22,256}$/
+/** The slug pattern of the runtime (`deepwidgets/widgets/src/index.ts`). */
+const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/
+/**
+ * The slug of the main widget, `MAIN_SLUG` of `@deepwidgets/widgets`. Its actions change the settings and the other
+ * widgets, so an agent never sees it (`main_widget.widget`).
+ */
+const MAIN_SLUG = 'main'
+
+/** The error of the runtime for a slug that does not exist, with the same code and text. The tools give it for `main`. */
+function unknownWidget(slug: string): Error & { code: 'unknown-widget' } {
+  const error = Object.assign(new Error(`no widget ${JSON.stringify(slug)}`), { code: 'unknown-widget' as const })
+  error.name = 'WidgetError'
+  return error
+}
+
+/** An error code of a tool answer: a runtime code, or a code of this package. */
+type ToolErrorCode = WidgetErrorCode | CreationErrorCode | 'stale-cursor' | 'internal-error' | 'mode-off'
+
+/** What the agent does next, for each error code. */
+const NEXT_STEP: Record<ToolErrorCode, string> = {
+  'unknown-widget': 'Call widget_list and retry with an exact slug.',
+  'unknown-action': 'Call widget_describe with this slug and retry with an exact action name.',
+  'invalid-args': 'Fix args to match the action args schema from widget_describe, then retry.',
+  'handler-error': 'The action threw. Do not retry unchanged. Tell the user the message.',
+  'timeout': 'The action ran past its limit and was aborted. Its later writes were refused. Read the state with widget_describe before you retry with the same requestId.',
+  'timeout-after-write': 'The action wrote, then ran past its limit. Its write landed at the rev in the error, and its later writes were refused. A retry with the same requestId gives this answer again. Read the state with widget_describe before you start a new operation.',
+  'busy': 'Other writes on this widget held the queue. This call did not run. Retry shortly.',
+  'idempotency-conflict': 'This requestId was used for a different call. Use a new requestId for a new operation.',
+  'conflict': 'The slug already has a live registration. Pick another slug.',
+  'bad-request': 'Fix the request as the message says, then retry.',
+  'safe-mode': 'The host runs in safe mode after repeated crashes, so this widget is off. Tell the user. Do not retry until the host restarts normally.',
+  'widget-failed': 'The widget crashed the host and is quarantined. Do not retry. Change its files to bring it back, or tell the user the message.',
+  'stale-cursor': 'The change feed was reset (a host restart or a gap). Call widget_list for the current state and use its cursor.',
+  'internal-error': 'The host failed. Tell the user the message. Do not retry in a loop.',
+  'bad-source': 'Pass the absolute path of a folder that holds src/index.ts. widget_template gives the files.',
+  'gate-failed': 'Fix the code at each diagnostic, then call widget_install again with the same folder. Nothing was installed.',
+  'slug-taken': 'A built-in widget has this slug. Change the slug in ctx.widgets.register, then call widget_install again.',
+  'slug-changed': 'widget_reload keeps the slug. Use widget_install to install a widget with a new slug.',
+  'install-failed': 'Read the diagnostics. Fix the code and call widget_install again. If the diagnostics name the plugin manager or pnpm, tell the user.',
+  'not-installed': 'Call widget_list. Only a widget that widget_install installed can be reloaded or removed.',
+  'creation-unavailable': 'This host has no plugin manager, so it cannot install widgets. Tell the user.',
+  'kit-unavailable': 'The widget kit is not ready, so a widget with page/ does not install now. Nothing was installed. Call widget_install again in a minute: another process can be changing the kit. If the answer stays kit-unavailable, tell the user the message: the host log names the reason. A widget folder with no page/ still installs.',
+  'mode-off': 'This mode is off, and the call did nothing. Ask the user to turn the mode on: set the setting to true in the settings file. Do not change the file yourself. The next call reads the file again, with no restart.',
+}
+
+interface ToolError {
+  code: ToolErrorCode
+  message: string
+  nextStep: string
+  /** The state revision after the call, for `timeout-after-write`. */
+  rev?: number
+  /** The creation gate that refused the code. */
+  gate?: GateName
+  diagnostics?: string[]
+  /** For `mode-off`: the mode that is off, its setting, and the settings file. */
+  mode?: GatedMode
+  setting?: string
+  settingsFile?: string
+}
+
+interface ModeSpec {
+  readonly name: string
+  readonly goal: string
+  /** The dotted key in the settings file that turns the mode off, or null when the mode is always on. */
+  readonly setting: string | null
+  readonly tools: readonly string[]
+}
+
+/**
+ * The modes, in the order of `modes.list`. `kit` and `plugin` join this list when their stage ships.
+ * `widget_list` and `widget_guide` are shared and belong to no mode. The mode `library` also gates `widget_install`
+ * and `widget_reload` of a bundle with `page/` (`agent_library.guide.mode`).
+ */
+const MODES = [
+  { name: 'interact', goal: 'Use widgets that exist', setting: null, tools: ['widget_describe', 'widget_call', 'widget_changes'] },
+  { name: 'create', goal: 'Write, change, or remove a widget', setting: 'modes.create', tools: ['widget_template', 'widget_install', 'widget_reload', 'widget_remove'] },
+  { name: 'library', goal: 'Write the page of a widget with components of the agent', setting: 'modes.library', tools: ['library_template'] },
+] as const satisfies readonly ModeSpec[]
+type Mode = (typeof MODES)[number]
+type ModeName = Mode['name']
+/** A mode that a setting can turn off (`modes.terms`). */
+type GatedSpec = Extract<Mode, { setting: string }>
+type GatedMode = GatedSpec['name']
+const MODE_NAMES = MODES.map((mode) => mode.name) as [ModeName, ...ModeName[]]
+/** The setting of each gated mode, from {@link MODES}. */
+const SETTING_OF = Object.fromEntries(MODES.filter((mode): mode is GatedSpec => mode.setting !== null).map((mode) => [mode.name, mode.setting])) as Record<GatedMode, string>
+
+/** The settings file (`modes.settings`). Other keys are for later stages; this stage ignores them. */
+const settingsSchema = z.object({ modes: z.object({ create: z.boolean().optional(), library: z.boolean().optional() }).optional() })
+
+/** The settings at one tool call. `error` is set when the file exists and does not parse; then each mode is on. */
+interface Settings {
+  on: Record<GatedMode, boolean>
+  error?: string
+}
+
+/**
+ * The settings file as it is now: the parsed JSON with each key that it has, or the reason that it can not be used.
+ * A missing file is an empty object.
+ */
+type SettingsFile = { raw: Record<string, unknown>, settings: z.infer<typeof settingsSchema> } | { error: string }
+
+/**
+ * Read and check the settings file. The MCP tools and the Settings tab of the main widget read it here, so they can
+ * not disagree about a file.
+ */
+async function loadSettingsFile(file: string): Promise<SettingsFile> {
+  let text: string
+  try {
+    text = await readFile(file, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { raw: {}, settings: {} }
+    return { error: `the settings file could not be read: ${error instanceof Error ? error.message : String(error)}` }
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    return { error: `the settings file is not JSON: ${error instanceof Error ? error.message : String(error)}` }
+  }
+  const checked = settingsSchema.safeParse(parsed)
+  if (!checked.success) return { error: `the settings file does not match { "modes": { "create": true, "library": true } }: ${z.prettifyError(checked.error)}` }
+  return { raw: parsed as Record<string, unknown>, settings: checked.data }
+}
+
+/**
+ * The key `kit` of the settings file (`kit.settings`), with the parse of `settingsSchema` in `@deepwidgets/kit`, which
+ * reads `kit.refuseBuilds` at each change of the kit. Other keys belong to other readers, so the schema is not strict.
+ */
+const kitSettingsSchema = z.object({ kit: z.object({ refuseBuilds: z.array(z.string()).optional() }).optional() })
+
+/**
+ * kit.pane.actions: the reason that npm does not accept `name`, or undefined for a name that npm accepts. The refuse
+ * list takes the names of old packages too, such as `JSONStream`: such a package can reach the kit as a dependency of
+ * an extra, and the hook of the kit compares exact names (`kit.settings`).
+ */
+function badPackageName(name: string): string | undefined {
+  const checked = validatePackageName(name)
+  if (checked.validForNewPackages || checked.validForOldPackages) return undefined
+  return checked.errors.join(', ')
+}
+
+/**
+ * The settings file with its refuse list: the parsed JSON with each key that it has, and the names of
+ * `kit.refuseBuilds`. The reason when the file does not parse, also when only its key `kit` does not match.
+ */
+async function loadRefuseBuilds(file: string): Promise<{ raw: Record<string, unknown>, names: string[] } | { error: string }> {
+  const loaded = await loadSettingsFile(file)
+  if ('error' in loaded) return loaded
+  const checked = kitSettingsSchema.safeParse(loaded.raw)
+  if (!checked.success) return { error: `the settings file does not match { "kit": { "refuseBuilds": ["<package name>"] } }: ${z.prettifyError(checked.error)}` }
+  return { raw: loaded.raw, names: checked.data.kit?.refuseBuilds ?? [] }
+}
+
+/**
+ * Read the settings file. A missing file or key means that each mode is on. A file that can not be read or parsed
+ * also turns no mode off, so a broken file never locks the agent out; `deepwidgets_modes` reports its error.
+ */
+async function readSettings(file: string): Promise<Settings> {
+  const allOn: Settings['on'] = { create: true, library: true }
+  const loaded = await loadSettingsFile(file)
+  if ('error' in loaded) return { on: allOn, error: loaded.error }
+  return { on: { create: loaded.settings.modes?.create ?? true, library: loaded.settings.modes?.library ?? true } }
+}
+
+/** A call that a mode that is off refuses after it started, such as an install that found `page/` (`agent_library.guide.mode`). */
+class ModeOffError extends Error {
+  constructor(readonly mode: GatedMode) {
+    super(`the mode ${mode} is off`)
+    this.name = 'ModeOffError'
+  }
+}
+
+/** The guide of the mode `interact` (`modes.guide`): the rules that the server instructions held before the modes. */
+const INTERACT_GUIDE = `# Using widgets
+
+1. Call widget_list. It gives the live widgets and a cursor for widget_changes.
+2. Call widget_describe with a slug before you call an action of that widget. It gives the actions, their args JSON Schema, and the state.
+3. Call widget_call to run one action. Pass a new requestId on each mutation. After a timeout, retry with the same requestId.
+4. Call widget_changes with the last cursor, from widget_list or from the last widget_changes, to see what changed. Each change names who made it in \`by\`.
+5. A tool error gives code, message, and nextStep. Do what nextStep says.
+6. widget_describe gives \`source\` for a widget that widget_install installed: the folder of its files. To change that widget, use the mode create.
+`
+
+/** The text of `widget_guide` before the OpenUI guide: the widget API (`widget_phase2.creation.tools`). */
+const WIDGET_API_GUIDE = `# Writing a widget
+
+A widget is one TypeScript bundle: src/index.ts. It exports name, inject = ['widgets', 'timer'], and apply(ctx).
+apply calls ctx.widgets.register once. The definition has a slug, a title, a program, an initial state, and actions.
+An action is a query (reads the state) or a mutation (writes with w.update). The window and the agent run the same actions.
+
+Steps:
+1. Call widget_template. Write its files into an empty folder. Change the slug, title, state, actions, and program.
+2. Call widget_install with the absolute folder path. The gates compile, lint, type-check, and test-run the code.
+3. Check the widget: widget_describe, then widget_call each action.
+4. To change the code, edit the files and call widget_reload with the slug. widget_install of the same slug replaces it too.
+5. widget_remove removes the bundle. The state stays.
+
+Rules that the gates check:
+- No raw setTimeout, setInterval, setImmediate, or queueMicrotask, also not as globalThis.setTimeout, window.setTimeout, or self.setTimeout. Use ctx.timeout and ctx.interval: they stop with the widget.
+- Await each promise, or end it with .catch(). An unhandled rejection ends the host.
+- No loop without an exit, such as while (true) with no break. A loop that blocks stops every widget.
+- apply must not throw. Each action is called once with {} (an action whose args schema refuses {} is not called), then timers run for 1.5 s. The heap limit is 256 MB.
+- Only zod and the types of deepwidgets:widget can be imported. Node built-in modules are not in the types.
+- The web globals are typed and work: fetch, Request, Response, Headers, URL, AbortController, TextEncoder, TextDecoder, and console. The code runs in the Node host, so window, document, and self do not exist at run time.
+
+The types of the widget API (import type { WidgetContext } from 'deepwidgets:widget'):
+
+\`\`\`ts
+TYPES
+\`\`\`
+
+# The program: OpenUI Lang
+
+The program is the UI text of the widget. Query("<action>", args, default) runs a query action. Mutation("<action>", args) runs a mutation action.
+`
+
+/** The text of `widget_guide`: the widget API, then the OpenUI guide of the component set that the shell generated. */
+async function guideText(): Promise<string> {
+  const require = createRequire(import.meta.url)
+  const file = join(dirname(require.resolve('@deepwidgets/shell/package.json')), 'dist', 'guide.md')
+  const openui = await readFile(file, 'utf8')
+  return WIDGET_API_GUIDE.replace('TYPES', (await widgetTypesText()).trim()) + openui
+}
+
+/** `epoch` names the host start that issued the token; rows of an earlier start (or with no epoch) are void. */
+const tokenRowSchema = z.object({ agentId: z.string(), agent: z.string(), issuedAt: z.string(), epoch: z.string().optional() }).strict()
+/** The token file: the SHA-256 hash of each bearer token to its row. The file never holds a token. */
+const tokenFileSchema = z.record(z.string(), tokenRowSchema)
+type TokenRow = z.infer<typeof tokenRowSchema>
+
+const hashToken = (token: string): string => createHash('sha256').update(token).digest('hex')
+
+/** True for an error of the widget runtime. The check is structural: the runtime class is not imported as a value. */
+function isWidgetError(error: unknown): error is Error & { code: WidgetErrorCode, rev?: number | undefined } {
+  if (!(error instanceof Error) || error.name !== 'WidgetError') return false
+  const code = (error as { code?: unknown }).code
+  return typeof code === 'string' && Object.hasOwn(NEXT_STEP, code)
+}
+
+/**
+ * True for a `Host` header of `127.0.0.1`, `localhost`, or `[::1]`, each with an optional port.
+ * It refuses any other text, such as userinfo (`evil.com@127.0.0.1`), which the SDK guard accepts.
+ */
+export function isLoopbackHost(host: string | undefined): boolean {
+  return host !== undefined && LOOPBACK_HOST.test(host)
+}
+
+/** True for a loopback socket address: 127.0.0.0/8, `::1`, or 127.0.0.0/8 mapped into IPv6. */
+export function isLoopbackAddress(address: string | undefined): boolean {
+  if (address === undefined) return false
+  if (address === '::1') return true
+  const v4 = address.toLowerCase().startsWith('::ffff:') ? address.slice(7) : address
+  return LOOPBACK_V4.test(v4) && v4.split('.').every((part) => Number(part) <= 255)
+}
+
+/**
+ * Wrap a zod schema so that the SDK advertises its JSON Schema but passes each input through.
+ * The tool parses the input itself, so a bad input gets `invalid-args` with a `nextStep`, not
+ * the SDK text error.
+ */
+function lenient(schema: z.ZodType): StandardSchemaWithJSON {
+  const standard = schema['~standard'] as StandardSchemaWithJSON['~standard']
+  return { '~standard': { ...standard, validate: (value: unknown) => ({ value }) } }
+}
+
+function toolOk(body: Record<string, unknown>): CallToolResult {
+  return { content: [{ type: 'text', text: JSON.stringify(body) }], structuredContent: body }
+}
+
+function toolError(code: ToolErrorCode, message: string, extra: { rev?: number | undefined, gate?: GateName | undefined, diagnostics?: string[], nextStep?: string | undefined, mode?: GatedMode, setting?: string, settingsFile?: string } = {}): CallToolResult {
+  const error: ToolError = { code, message, nextStep: extra.nextStep ?? NEXT_STEP[code] }
+  if (extra.rev !== undefined) error.rev = extra.rev
+  if (extra.gate !== undefined) error.gate = extra.gate
+  if (extra.diagnostics !== undefined) error.diagnostics = extra.diagnostics
+  if (extra.mode !== undefined) error.mode = extra.mode
+  if (extra.setting !== undefined) error.setting = extra.setting
+  if (extra.settingsFile !== undefined) error.settingsFile = extra.settingsFile
+  return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error }) }], structuredContent: { error } }
+}
+
+function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
+  res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers })
+  res.end(JSON.stringify(body))
+}
+
+/** Read a small request body. Gives `undefined` when the body is larger than the limit. */
+async function readSmallBody(req: IncomingMessage): Promise<string | undefined> {
+  let size = 0
+  const chunks: Buffer[] = []
+  for await (const chunk of req as AsyncIterable<Buffer>) {
+    size += chunk.length
+    if (size > TOKEN_BODY_LIMIT) return undefined
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+export interface Config {
+  /** The token file. Defaults to `$DSH_HOME/deepwidgets/mcp-tokens.json`. */
+  tokenFile?: string
+  /** The port file `{ port, nonce, pid }` for agents. Defaults to `$DSH_HOME/deepwidgets/mcp.json`. */
+  portFile?: string
+  /** The settings file of the modes (`modes.settings`). Defaults to `$DSH_HOME/deepwidgets/settings.json`. */
+  settingsFile?: string
+  /**
+   * Electron main forwards each request (`safe_host.port`). Defaults to `DEEPWIDGETS_MCP_FORWARDED=1`
+   * with an IPC channel to the parent process.
+   */
+  forwarded?: boolean
+}
+
+/** The IPC message to Electron main: the route of this host start, or null when the row disposes. */
+interface ForwardMessage {
+  type: 'deepwidgets-mcp'
+  mcp: { port: number; nonce: string; secret: string } | null
+}
+
+/** The render check of a page asks Electron main and waits this long for the answer (`agent_library.build_gate.render`). */
+const RENDER_CHECK_LIMIT_MS = 45_000
+
+/** The IPC message to Electron main that asks for a render check, and the answer, with the same `checkId`. */
+interface RenderCheckMessage {
+  type: 'deepwidgets-render-check'
+  checkId: number
+  check: RenderCheckRequest
+}
+
+/** Parse the answer of Electron main at the boundary. */
+function renderAnswer(message: unknown, checkId: number): RenderCheckResult | undefined {
+  if (typeof message !== 'object' || message === null) return undefined
+  const value = message as { type?: unknown, checkId?: unknown, result?: unknown }
+  if (value.type !== 'deepwidgets-render-check' || value.checkId !== checkId || typeof value.result !== 'object' || value.result === null) return undefined
+  const result = value.result as { ok?: unknown, diagnostics?: unknown, warnings?: unknown }
+  const lines = (list: unknown): string[] | undefined => Array.isArray(list) && list.every((line) => typeof line === 'string') ? list : undefined
+  const diagnostics = lines(result.diagnostics)
+  const warnings = lines(result.warnings)
+  if (typeof result.ok !== 'boolean' || diagnostics === undefined || warnings === undefined) return undefined
+  return { ok: result.ok, diagnostics, warnings }
+}
+
+/**
+ * The render check through Electron main over the IPC channel of the host (`agent_library.build_gate.render`).
+ * Electron main loads the built page in a hidden window and answers with the result.
+ */
+function mainRenderCheck(): RenderCheck {
+  let next = 1
+  return (check) => new Promise<RenderCheckResult>((resolve, reject) => {
+    if (!process.connected || process.send === undefined) {
+      reject(new Error('the IPC channel to Electron main is closed'))
+      return
+    }
+    const checkId = next++
+    const listen = (message: unknown): void => {
+      const result = renderAnswer(message, checkId)
+      if (result === undefined) return
+      done()
+      resolve(result)
+    }
+    const timer = setTimeout(() => {
+      done()
+      reject(new Error(`Electron main did not answer in ${String(RENDER_CHECK_LIMIT_MS)} ms`))
+    }, RENDER_CHECK_LIMIT_MS)
+    function done(): void {
+      clearTimeout(timer)
+      process.off('message', listen)
+    }
+    process.on('message', listen)
+    const message: RenderCheckMessage = { type: 'deepwidgets-render-check', checkId, check }
+    process.send(message, (error: Error | null) => {
+      if (error === null) return
+      done()
+      reject(error)
+    })
+  })
+}
+
+/** The IPC message to Electron main with the page state of the widgets (`agent_library.serving.changes`). */
+interface PagesMessage extends PageState {
+  type: 'deepwidgets-pages'
+}
+
+function sendToMain(message: ForwardMessage | PagesMessage): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (!process.connected || process.send === undefined) { resolve(); return }
+    process.send(message, (error: Error | null) => { if (error === null) resolve(); else reject(error) })
+  })
+}
+
+/** True when `value` is the forward secret, in constant time. */
+function sameSecret(value: string | string[] | undefined, secret: string): boolean {
+  if (typeof value !== 'string') return false
+  const got = Buffer.from(value)
+  const want = Buffer.from(secret)
+  return got.length === want.length && timingSafeEqual(got, want)
+}
+
+/** The port file: the port of the host web server, the nonce of this host start, the host process id, and its start time. */
+export interface PortFile {
+  port: number
+  nonce: string
+  pid: number
+  /** The start of the host process in ms since the epoch, so a reused pid does not count as the owner. */
+  started: number
+}
+
+/** How far the start time from `ps` may differ from the recorded one; `ps` gives whole seconds. */
+const START_TOLERANCE_MS = 3_000
+
+/** The proof of one token answer: HMAC-SHA256 with the nonce as key over the challenge, in hex. */
+export function mcpProof(nonce: string, challenge: string): string {
+  return createHmac('sha256', nonce).update(challenge).digest('hex')
+}
+
+/** True when process `pid` exists. EPERM means it exists under another user. */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/** The start of process `pid` in ms since the epoch, from `ps -o etime=`; undefined when `ps` cannot tell. */
+async function processStartMs(pid: number): Promise<number | undefined> {
+  try {
+    const { stdout } = await execFileAsync('ps', ['-o', 'etime=', '-p', String(pid)], { env: { ...process.env, LC_ALL: 'C' } })
+    const match = /^\s*(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)\s*$/.exec(stdout)
+    if (match === null) return undefined
+    const [, days = '0', hours = '0', minutes = '0', seconds = '0'] = match
+    return Date.now() - (((Number(days) * 24 + Number(hours)) * 60 + Number(minutes)) * 60 + Number(seconds)) * 1000
+  } catch {
+    // ps is missing or the process ended; the caller falls back to the pid check.
+    return undefined
+  }
+}
+
+/** True when the process of a port file is alive and is the same process: its start time matches. */
+async function ownerAlive(pid: number, started: unknown): Promise<boolean> {
+  if (!processAlive(pid)) return false
+  if (typeof started !== 'number') return true
+  const actual = await processStartMs(pid)
+  // ps rounds the elapsed time down, so the actual start may look up to a second later.
+  return actual === undefined || Math.abs(actual - started) <= START_TOLERANCE_MS
+}
+
+/** The live process that owns the port file, or `undefined` when no other live host owns it. */
+async function otherOwner(portFile: string): Promise<number | undefined> {
+  let current: Partial<PortFile> | null
+  try {
+    current = JSON.parse(await readFile(portFile, 'utf8')) as Partial<PortFile> | null
+  } catch {
+    // A missing or unreadable file has no owner; this host replaces it.
+    return undefined
+  }
+  const pid = current?.pid
+  if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) return undefined
+  return await ownerAlive(pid, current?.started) ? pid : undefined
+}
+
+/** Replace `path` in one rename with `text`, with mode 0600 in a folder of mode 0700. */
+async function writeFileAtomic(path: string, text: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+  const temp = `${path}.${randomBytes(4).toString('hex')}.tmp`
+  await writeFile(temp, text, { mode: 0o600 })
+  await chmod(temp, 0o600)
+  await rename(temp, path)
+}
+
+/** Remove the port file when it still names `nonce`; a later host start may have replaced it. */
+async function removePortFile(portFile: string, nonce: string): Promise<void> {
+  let current: unknown
+  try {
+    current = JSON.parse(await readFile(portFile, 'utf8'))
+  } catch {
+    // A missing or unreadable file names no host; there is nothing of this host to remove.
+    return
+  }
+  if ((current as Partial<PortFile> | null)?.nonce === nonce) await unlink(portFile)
+}
+
+/**
+ * Load the token file.
+ * @throws {Error} when the file exists but is not a valid token file. The plugin then does not
+ * load, so no request runs against a token table that lost rows.
+ */
+async function loadTokens(tokenFile: string): Promise<Map<string, TokenRow>> {
+  let text: string
+  try {
+    text = await readFile(tokenFile, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return new Map()
+    throw error
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch (cause) {
+    throw new Error(`mcp: the token file ${tokenFile} is not JSON. Move it away to issue new tokens.`, { cause })
+  }
+  const checked = tokenFileSchema.safeParse(parsed)
+  if (!checked.success) throw new Error(`mcp: the token file ${tokenFile} is not valid (${z.prettifyError(checked.error)}). Move it away to issue new tokens.`)
+  return new Map(Object.entries(checked.data))
+}
+
+/**
+ * The service `widgetInstaller` (`main_widget.widgets`): the remove path and the source lookup of the installer of
+ * `widget_remove`, for the main widget. The mode `create` does not gate it: the operator calls it, not an agent.
+ * Each method uses the install records, so a widget calls it only as host code (`widgetRecords.asHost`).
+ */
+export class WidgetInstallerService extends Service {
+  // A private field (#) does not work: the caller context reads the service through a proxy.
+  private readonly installer: WidgetInstaller
+
+  constructor(ctx: Context, installer: WidgetInstaller) {
+    super(ctx, 'widgetInstaller')
+    this.installer = installer
+  }
+
+  /** The folder that the agent widget `slug` was installed from (`modes.source`), or undefined for a widget that is not an agent widget. */
+  source(slug: string): Promise<string | undefined> {
+    return this.installer.source(slug)
+  }
+
+  /** The source folder of each agent widget of `slugs`, with one read of the bundle list. A slug that is not an agent widget has no item. */
+  sources(slugs: readonly string[]): Promise<Map<string, string>> {
+    return this.installer.sources(slugs)
+  }
+
+  /**
+   * Remove the agent bundle of `slug` for the operator, with the remove path of `widget_remove`. Its window closes, and
+   * its state stays. Unlike `widget_remove` of an agent, it also ends a Turn off of the slug.
+   * @throws {CreationError} `not-installed` when no agent bundle has the slug, or `install-failed`.
+   */
+  remove(slug: string): ReturnType<WidgetInstaller['remove']> {
+    return this.installer.remove(slug, { operator: true })
+  }
+
+  /**
+   * Turn off (`off`) or Turn on `slug` for the operator: `change` sets the plugin rows of the slug. It runs in the queue of
+   * the installer, so never during an install, a replace, or a remove. The choice lasts across host starts: while it is
+   * off, `widget_install` and `widget_reload` of the slug install the new row off.
+   */
+  turn<T>(slug: string, off: boolean, change: () => Promise<T>): Promise<T> {
+    return this.installer.turn(slug, off, change)
+  }
+}
+
+/** One mode in the Settings tab of the main widget (`main_widget.settings`), as the MCP tools read it now. */
+export interface ModeSetting {
+  name: string
+  goal: string
+  /** The dotted key that turns the mode off, or null for `interact`, which is always on. */
+  setting: string | null
+  on: boolean
+}
+
+/** The MCP modes of the Settings tab: each mode, and the settings file (`modes.settings`). */
+export interface ModeSettings {
+  file: string
+  modes: ModeSetting[]
+  /** The file exists and can not be read, is not JSON, or does not match. Each mode is then on, and no switch writes the file. */
+  error?: string
+}
+
+/** The MCP port of the Settings tab: the port in `mcp.json` and the path of the file. The nonce never leaves the host. */
+export interface PortSetting {
+  file: string
+  /** Absent when the file is missing or does not hold a port; `error` then tells why. */
+  port?: number
+  error?: string
+}
+
+/** The code of a switch of a mode that did not write the settings file. */
+export type SetModeRefusal = 'unknown-mode' | 'settings-unreadable' | 'write-failed'
+
+/** The answer of {@link McpSettingsService.setMode}. A refusal leaves the settings file as it was. */
+export type SetModeResult = { ok: true, settings: ModeSettings } | { ok: false, code: SetModeRefusal, message: string }
+
+/** The refused install scripts of the kit section (`kit.settings`): the names of `kit.refuseBuilds`, and the settings file. */
+export interface RefuseBuildsSetting {
+  file: string
+  names: string[]
+}
+
+/** The answer of {@link McpSettingsService.refuseBuilds}: the list, or `settings-unreadable` for a file that does not parse. */
+export type RefuseBuildsResult = { ok: true, setting: RefuseBuildsSetting } | { ok: false, code: 'settings-unreadable', message: string }
+
+/** The code of a change of the refuse list that did not write the settings file. */
+export type SetRefuseBuildsRefusal = 'bad-name' | 'settings-unreadable' | 'write-failed'
+
+/** The answer of {@link McpSettingsService.setRefuseBuilds}. A refusal leaves the settings file as it was. */
+export type SetRefuseBuildsResult = { ok: true, setting: RefuseBuildsSetting } | { ok: false, code: SetRefuseBuildsRefusal, message: string }
+
+/**
+ * The service `mcpSettings` (`main_widget.settings`): the settings of the MCP server for the Settings tab of the main
+ * widget. It reads the settings file with the parse of the tools, so the tab shows what the next tool call uses. A switch
+ * writes the file in one rename and keeps each other key. It never writes a file that does not parse: the operator fixes
+ * that file by hand. Only the operator calls it, through the main widget, which the MCP tools do not show.
+ *
+ * It is the only writer of the settings file (`kit.pane.service`): it also writes `kit.refuseBuilds` for the kit
+ * section. Each write waits for the one before it, so a mode switch and a change of the refuse list keep each other.
+ */
+export class McpSettingsService extends Service {
+  // A private field (#) does not work: the caller context reads the service through a proxy.
+  private readonly settingsFile: string
+  private readonly portFile: string
+  /** One write at a time, so two switches do not lose a key: each write reads the file that the last one wrote. */
+  private writes: Promise<unknown> = Promise.resolve()
+
+  constructor(ctx: Context, settingsFile: string, portFile: string) {
+    super(ctx, 'mcpSettings')
+    this.settingsFile = settingsFile
+    this.portFile = portFile
+  }
+
+  /** Each mode with its state at this moment, as `deepwidgets_modes` gives it. */
+  async modes(): Promise<ModeSettings> {
+    const settings = await readSettings(this.settingsFile)
+    const modes = MODES.map((mode) => ({ name: mode.name, goal: mode.goal, setting: mode.setting, on: mode.setting === null ? true : settings.on[mode.name] }))
+    return settings.error === undefined ? { file: this.settingsFile, modes } : { file: this.settingsFile, modes, error: settings.error }
+  }
+
+  /**
+   * Turn the gated mode `mode` on or off. The next tool call reads the new value, with no restart.
+   * @returns the modes after the write, or a refusal: `unknown-mode` for a mode that no setting gates,
+   *   `settings-unreadable` for a file that does not parse, or `write-failed`. A refusal writes nothing.
+   */
+  setMode(mode: string, on: boolean): Promise<SetModeResult> {
+    const run = async (): Promise<SetModeResult> => {
+      if (!Object.hasOwn(SETTING_OF, mode)) return { ok: false, code: 'unknown-mode', message: `no setting turns the mode ${JSON.stringify(mode)} off; the gated modes are ${Object.keys(SETTING_OF).join(', ')}` }
+      const loaded = await loadSettingsFile(this.settingsFile)
+      if ('error' in loaded) return { ok: false, code: 'settings-unreadable', message: `${loaded.error}. The switch did not change the file. Fix or remove ${this.settingsFile}.` }
+      const modes = (loaded.raw.modes ?? {}) as Record<string, unknown>
+      const next = { ...loaded.raw, modes: { ...modes, [mode]: on } }
+      try {
+        await writeFileAtomic(this.settingsFile, `${JSON.stringify(next, null, 2)}\n`)
+      } catch (error) {
+        return { ok: false, code: 'write-failed', message: `the settings file ${this.settingsFile} was not written, so it is as it was: ${error instanceof Error ? error.message : String(error)}` }
+      }
+      return { ok: true, settings: await this.modes() }
+    }
+    return this.queued(run)
+  }
+
+  /**
+   * kit.settings: the names of `kit.refuseBuilds`, as the next change of the kit reads them. A missing file or key is an
+   * empty list.
+   * @returns the list, or `settings-unreadable` when the file exists and does not parse, also when only its key `kit`
+   *   does not match. The list then can not change until the operator fixes or removes the file.
+   */
+  async refuseBuilds(): Promise<RefuseBuildsResult> {
+    const loaded = await loadRefuseBuilds(this.settingsFile)
+    if ('error' in loaded) return { ok: false, code: 'settings-unreadable', message: `${loaded.error}. The refuse list can not change until you fix or remove ${this.settingsFile}.` }
+    return { ok: true, setting: { file: this.settingsFile, names: loaded.names } }
+  }
+
+  /**
+   * kit.pane.actions: set `kit.refuseBuilds` to `names`, in the order given, with each name once. The next change of the
+   * kit reads the list; a change that runs now keeps the list that it read.
+   * @returns the list after the write, or a refusal: `bad-name` for a name that npm does not accept, also not for an
+   *   old package (`validate-npm-package-name`), `settings-unreadable` for a file that does not parse, or
+   *   `write-failed`. A refusal writes nothing.
+   */
+  setRefuseBuilds(names: readonly string[]): Promise<SetRefuseBuildsResult> {
+    const run = async (): Promise<SetRefuseBuildsResult> => {
+      const bad = names.flatMap((name) => {
+        const reason = badPackageName(name)
+        return reason === undefined ? [] : [`${JSON.stringify(name)} (${reason})`]
+      })
+      if (bad.length > 0) {
+        return { ok: false, code: 'bad-name', message: `the refuse list takes only names that npm accepts, and npm does not accept ${bad.join(', ')}. The list did not change.` }
+      }
+      const loaded = await loadRefuseBuilds(this.settingsFile)
+      if ('error' in loaded) return { ok: false, code: 'settings-unreadable', message: `${loaded.error}. The refuse list did not change. Fix or remove ${this.settingsFile}.` }
+      const unique = [...new Set(names)]
+      const kit = (loaded.raw.kit ?? {}) as Record<string, unknown>
+      const next = { ...loaded.raw, kit: { ...kit, refuseBuilds: unique } }
+      try {
+        await writeFileAtomic(this.settingsFile, `${JSON.stringify(next, null, 2)}\n`)
+      } catch (error) {
+        return { ok: false, code: 'write-failed', message: `the settings file ${this.settingsFile} was not written, so it is as it was: ${error instanceof Error ? error.message : String(error)}` }
+      }
+      return { ok: true, setting: { file: this.settingsFile, names: unique } }
+    }
+    return this.queued(run)
+  }
+
+  /** Run one write of the settings file after the write before it, so that each write reads the file that the last one wrote. */
+  private queued<T>(run: () => Promise<T>): Promise<T> {
+    const result = this.writes.then(run)
+    this.writes = result.catch(() => undefined)
+    return result
+  }
+
+  /** The port in `mcp.json`, which Electron main writes in the desktop app (`safe_host.port`) and a CLI host writes itself. */
+  async port(): Promise<PortSetting> {
+    let text: string
+    try {
+      text = await readFile(this.portFile, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { file: this.portFile, error: 'the port file does not exist yet: the MCP port is not open' }
+      return { file: this.portFile, error: `the port file could not be read: ${error instanceof Error ? error.message : String(error)}` }
+    }
+    let port: unknown
+    try {
+      port = (JSON.parse(text) as Partial<PortFile> | null)?.port
+    } catch (error) {
+      return { file: this.portFile, error: `the port file is not JSON: ${error instanceof Error ? error.message : String(error)}` }
+    }
+    if (typeof port !== 'number' || !Number.isSafeInteger(port) || port <= 0 || port > 65535) return { file: this.portFile, error: 'the port file holds no port' }
+    return { file: this.portFile, port }
+  }
+}
+
+export async function apply(ctx: Context, config: Config = {}): Promise<void> {
+  const tokenFile = config.tokenFile ?? dshHomePath('deepwidgets', 'mcp-tokens.json')
+  const portFile = config.portFile ?? dshHomePath('deepwidgets', 'mcp.json')
+  const settingsFile = config.settingsFile ?? dshHomePath('deepwidgets', 'settings.json')
+  /** New for each host start (each plugin start), so a stale port file or another server does not match. */
+  const nonce = randomBytes(16).toString('base64url')
+  const forwarded = config.forwarded ?? (process.env[FORWARDED_ENV] === '1' && process.connected)
+  /** Electron main adds this to each request it forwards; it is new for each host start and never leaves the IPC channel. */
+  const secret = randomBytes(32).toString('base64url')
+  /** Names this host start in the token rows. It is not secret; the nonce stays only in the port file. */
+  const epoch = randomBytes(16).toString('hex')
+  const tokens = await loadTokens(tokenFile)
+  // A token of an earlier start is void: after a restart an agent does a new handshake with a proof.
+  for (const [key, row] of tokens) if (row.epoch !== epoch) tokens.delete(key)
+
+  // One write at a time; each write replaces the file in one rename, with mode 0600.
+  let writes: Promise<void> = Promise.resolve()
+  function persist(): Promise<void> {
+    const text = JSON.stringify(Object.fromEntries(tokens))
+    const next = writes.then(() => writeFileAtomic(tokenFile, text))
+    writes = next.catch(() => undefined)
+    return next
+  }
+
+  const agentOf = (authorization: string | undefined): (TokenRow & { token: string }) | undefined => {
+    const token = /^Bearer (\S+)$/.exec(authorization ?? '')?.[1]
+    if (token === undefined) return undefined
+    const row = tokens.get(hashToken(token))
+    return row === undefined || row.epoch !== epoch ? undefined : { ...row, token }
+  }
+
+  /** The answer of a failed tool call. A runtime error keeps its code; any other error is `internal-error`. */
+  function failure(error: unknown): CallToolResult {
+    if (error instanceof ModeOffError) return modeOff(error.mode)
+    if (isWidgetError(error)) return toolError(error.code, error.message, { rev: error.rev })
+    if (error instanceof CreationError) return toolError(error.code, error.message, { gate: error.gate, diagnostics: error.diagnostics, nextStep: error.nextStep })
+    ctx.logger.warn('mcp: a tool failed', error)
+    return toolError('internal-error', error instanceof Error ? error.message : String(error))
+  }
+
+  /** Run one tool body. */
+  async function guarded(run: () => Record<string, unknown> | Promise<Record<string, unknown>>): Promise<CallToolResult> {
+    try {
+      return toolOk(await run())
+    } catch (error) {
+      return failure(error)
+    }
+  }
+
+  /** The answer of a call that a mode that is off refuses (`modes.refusal`). */
+  function modeOff(mode: GatedMode): CallToolResult {
+    const setting = SETTING_OF[mode]
+    return toolError('mode-off', `the mode ${mode} is off: the setting ${setting} is false in ${settingsFile}`, { mode, setting, settingsFile })
+  }
+
+  /**
+   * Parse the tool input with `schema`, then run the tool body through {@link guarded}. With `mode`, the call first
+   * reads the settings file and does nothing when that mode is off (`modes.refusal`).
+   */
+  function tool<S extends z.ZodType>(schema: S, run: (input: z.infer<S>) => Record<string, unknown> | Promise<Record<string, unknown>>, options: { mode?: GatedMode, invalidNextStep?: string } = {}): (input: unknown) => Promise<CallToolResult> {
+    return async (input) => {
+      const { mode } = options
+      if (mode !== undefined && !(await readSettings(settingsFile)).on[mode]) return modeOff(mode)
+      const parsed = schema.safeParse(input ?? {})
+      if (!parsed.success) return toolError('invalid-args', z.prettifyError(parsed.error), { nextStep: options.invalidNextStep })
+      return guarded(() => run(parsed.data))
+    }
+  }
+
+  /** The answer of `deepwidgets_modes`, made from the settings file as it is at this call (`modes.tool`). */
+  async function modesAnswer(): Promise<Record<string, unknown>> {
+    const settings = await readSettings(settingsFile)
+    const modes = MODES.map((mode) => ({
+      name: mode.name,
+      goal: mode.goal,
+      on: mode.setting === null ? true : settings.on[mode.name],
+      setting: mode.setting,
+      tools: mode.tools,
+      guide: { tool: 'widget_guide', args: { mode: mode.name } },
+    }))
+    return settings.error === undefined ? { modes, settingsFile } : { modes, settingsFile, settingsError: settings.error }
+  }
+
+  function buildServer(agentId: string): McpServer {
+    const widgets = ctx.widgets
+    const listInput = z.object({})
+    const guideInput = z.object({ mode: z.enum(MODE_NAMES) })
+    const describeInput = z.object({ slug: z.string() })
+    const callInput = z.object({
+      slug: z.string(),
+      action: z.string(),
+      args: z.record(z.string(), z.unknown()).optional(),
+      requestId: z.string().min(1).max(100).optional(),
+    })
+    const changesInput = z.object({ since: z.string().optional() })
+    const templateInput = z.object({ slug: z.string().regex(SLUG).optional(), title: z.string().min(1).max(80).optional() })
+    const libraryTemplateInput = z.object({ slug: z.string().regex(SLUG).optional() })
+    const installInput = z.object({ dir: z.string().min(1) })
+    const slugInput = z.object({ slug: z.string().regex(SLUG) })
+    const mcp = new McpServer(
+      { name: 'deepwidgets', version: '0.0.0' },
+      // modes.instructions: Claude Code reads this text once, at connect, so it holds no fact that can go stale.
+      { instructions: 'Call deepwidgets_modes first.' },
+    )
+    mcp.registerTool('deepwidgets_modes', {
+      description: 'List the modes of this server: for each mode its goal, whether it is on, the setting that turns it off, its tools, and its guide. Also gives the path of the settings file. Call it first.',
+      inputSchema: lenient(listInput),
+      annotations: { readOnlyHint: true },
+    }, tool(listInput, modesAnswer))
+
+    mcp.registerTool('widget_list', {
+      description: 'List the live widgets: slug, title, state revision, program revision. Also gives a cursor for widget_changes.',
+      inputSchema: lenient(listInput),
+      annotations: { readOnlyHint: true },
+    }, tool(listInput, () => ({ cursor: widgets.cursor(), widgets: widgets.list().filter((widget) => widget.slug !== MAIN_SLUG) })))
+
+    mcp.registerTool('widget_describe', {
+      description: 'Describe one widget: its actions (name, kind, args JSON Schema, timeoutMs) and its current state. For a widget that widget_install installed, `source` is the absolute folder of its files. Call it before widget_call on a widget you have not described.',
+      inputSchema: lenient(describeInput),
+      annotations: { readOnlyHint: true },
+    }, tool(describeInput, async ({ slug }) => {
+      if (slug === MAIN_SLUG) throw unknownWidget(slug)
+      const description = widgets.describe(slug)
+      // modes.source: only an agent bundle has a source folder; a built-in widget such as sample has none.
+      const source = await installer?.source(slug)
+      const located = source === undefined ? { ...description } : { ...description, source }
+      // A widget that is off has no state to read; `off` gives the reason.
+      if (description.off !== undefined) return located
+      const state = widgets.get(slug)
+      return { ...located, rev: state.rev, state: state.data }
+    }))
+
+    mcp.registerTool('widget_call', {
+      description: 'Run one widget action. For a mutation, pass a new requestId. After a timeout, retry with the same requestId.',
+      inputSchema: lenient(callInput),
+    }, tool(callInput, async ({ slug, action, args, requestId }) => {
+      if (slug === MAIN_SLUG) throw unknownWidget(slug)
+      const outcome = await widgets.call(slug, action, args ?? {}, { caller: agentId, ...(requestId === undefined ? {} : { requestId }) })
+      // widget_fv.action: a replay whose answer was lost says so, with the rev of its write.
+      if (outcome.resultLost === true) return { ...outcome, nextStep: 'The call wrote before a host restart, and its answer was lost. Read the state with widget_describe. Do not send this requestId again for a new operation.' }
+      return { ...outcome }
+    }))
+
+    mcp.registerTool('widget_changes', {
+      description: 'The changes after a cursor from widget_list or an earlier widget_changes. Each change names who made it in `by`. With no cursor, it gives a cursor for now.',
+      inputSchema: lenient(changesInput),
+      annotations: { readOnlyHint: true },
+    }, tool(changesInput, ({ since }) => {
+      const all = widgets.changes(since)
+      const out = { ...all, changes: all.changes.filter((change) => change.slug !== MAIN_SLUG) }
+      if (out.reset === true) return { ...out, error: { code: 'stale-cursor', message: 'the cursor is from another host process or too old', nextStep: NEXT_STEP['stale-cursor'] } }
+      return out
+    }))
+
+    mcp.registerTool('widget_template', {
+      description: 'Give the files of the TypeScript widget template, with the slug and title filled in. Write them into an empty folder, change them, then call widget_install with the absolute folder path.',
+      inputSchema: lenient(templateInput),
+      annotations: { readOnlyHint: true },
+    }, tool(templateInput, async ({ slug, title }) => {
+      const files = await templateFiles(slug ?? 'my-widget', title ?? 'My widget')
+      return { files, nextStep: 'Write each file under one empty folder (src/index.ts), change it, then call widget_install with the absolute folder path. Call widget_guide with mode "create" for the API and the components.' }
+    }))
+
+    mcp.registerTool('widget_guide', {
+      description: 'Give the guide of one mode. interact: how to list, describe, call, and follow widgets. create: the widget API types, the rules that the install gates check, and the OpenUI Lang guide of the component set for the program. library: how to write the page of a widget with your own components, and the page gates.',
+      inputSchema: lenient(guideInput),
+      annotations: { readOnlyHint: true },
+    }, tool(guideInput, async ({ mode }) => ({ mode, guide: mode === 'interact' ? INTERACT_GUIDE : mode === 'library' ? LIBRARY_GUIDE : await guideText() }), {
+      invalidNextStep: 'Pass mode: interact, create, or library. deepwidgets_modes lists the modes.',
+    }))
+
+    mcp.registerTool('widget_install', {
+      description: 'Install the widget in a folder (absolute path, with src/index.ts). The gates compile, lint, type-check, and test-run the code first; code that fails a gate is not installed. A folder with page/ also runs the page gates: the fixed files, the type check, the build, and the render check. A page that imports or uses a file outside page/ installs with a warning. A second install of the same slug replaces the bundle; the state stays.',
+      inputSchema: lenient(installInput),
+    }, tool(installInput, async ({ dir }) => withNextStep(logFence(await creator().install(dir)), 'Call widget_describe with the slug, then widget_call each action to check it.'), { mode: 'create' }))
+
+    mcp.registerTool('widget_reload', {
+      description: 'Run the gates again on the folder that the widget was installed from, and replace the bundle. Use it after you edit the files. The state stays.',
+      inputSchema: lenient(slugInput),
+    }, tool(slugInput, async ({ slug }) => withNextStep(logFence(await creator().reload(slug)), 'Call widget_describe with the slug, then widget_call the changed actions.'), { mode: 'create' }))
+
+    mcp.registerTool('widget_remove', {
+      description: 'Remove the bundle of a widget that widget_install installed. Its window closes. The state stays, so a later install of the slug gets it back.',
+      inputSchema: lenient(slugInput),
+    }, tool(slugInput, async ({ slug }) => ({ ...await creator().remove(slug) }), { mode: 'create' }))
+
+    mcp.registerTool('library_template', {
+      description: 'Give the files of the page folder of a widget, with the slug filled in: the fixed index.html, main.tsx, and styles.css, an example child.tsx, and an example library.tsx that adds one component to the component set of the shell. Write them under page/ in the folder of the widget. Call widget_guide with mode "library" first.',
+      inputSchema: lenient(libraryTemplateInput),
+      annotations: { readOnlyHint: true },
+    }, tool(libraryTemplateInput, async ({ slug }) => {
+      const name = slug ?? 'my-widget'
+      return {
+        files: await pageTemplateFiles(name),
+        nextStep: `Write each file under the folder of the widget, next to src/. In src/index.ts, set catalog: '${name}@1' in the widget definition: it is the CATALOG_ID of page/child.tsx. Do not change page/index.html, page/main.tsx, or the dw-core block of page/styles.css. Then call widget_install with the absolute folder path. Call widget_guide with mode "library" for the page rules.`,
+      }
+    }, { mode: 'library' }))
+    return mcp
+  }
+
+  /**
+   * The answer of `widget_install` and `widget_reload` with its next step. main_widget.widgets: when the user turned the
+   * widget off in the main window, the new version is off, and the agent asks the user to turn it on.
+   */
+  function withNextStep(outcome: InstallOutcome, nextStep: string): Record<string, unknown> {
+    if (outcome.turnedOff === undefined) return { ...outcome, nextStep }
+    return { ...outcome, nextStep: 'The user turned this widget off in the main window of deepWidgets, so the new version is installed off and does not run. Ask the user to turn it on in the main window. Until then, widget_describe and widget_call do not find it.' }
+  }
+
+  /**
+   * agent_library.fence_warn: one log line for an install whose page used an import or a file outside the fences.
+   * Each warning of the gate `page-build` is a fence warning. A warning of the output fence starts with the path of the
+   * file, and a warning of the import fence names the file that the import reaches, or the import.
+   */
+  function logFence(outcome: InstallOutcome): InstallOutcome {
+    const fence = outcome.gates.find((gate) => gate.gate === 'page-build')?.warnings ?? []
+    // The caps of the fences and of the gate add summary lines such as `3 more fence warning(s)`: the count is of findings.
+    const findings = fenceFindings(fence)
+    const count = fenceCount(fence)
+    if (count > 0) {
+      const path = (line: string): string => / reaches (.+?), outside the page folder/.exec(line)?.[1] ?? / the import (".+?")/.exec(line)?.[1] ?? line.split(': ')[0] ?? line
+      const first = findings.slice(0, 3).map(path).join(', ')
+      ctx.logger.warn(`mcp: the page of ${outcome.slug} installed with ${String(count)} fence warning(s): ${first}`)
+    }
+    return outcome
+  }
+
+  // main_widget.settings: the Settings tab reads and writes the settings file and reads the port file of this row.
+  new McpSettingsService(ctx, settingsFile, portFile)
+
+  /** The installer, while the plugin manager and the profile are there (`widget_phase2.creation`). */
+  let installer: WidgetInstaller | undefined
+  function creator(): WidgetInstaller {
+    if (installer === undefined) throw new CreationError('creation-unavailable', 'the host has no plugin manager or no profile')
+    return installer
+  }
+  ctx.inject(['pluginManager', 'profileContext'], (inner) => {
+    installer = new WidgetInstaller({
+      pluginManager: inner.pluginManager,
+      profileDir: inner.profileContext.dir,
+      widgets: ctx.widgets,
+      records: ctx.widgetRecords,
+      // agent_library.build_gate.render: only the desktop host has Electron main. A CLI host skips the check.
+      renderCheck: forwarded && process.connected ? mainRenderCheck() : undefined,
+      // agent_library.serving.changes: Electron main serves each page from the folder of its slug below the root.
+      onPages: forwarded && process.connected ? (state) => {
+        sendToMain({ type: 'deepwidgets-pages', ...state }).catch((error: unknown) => {
+          ctx.logger.warn('mcp: Electron main did not get the page state of the widgets', error)
+        })
+      } : undefined,
+      // agent_library.guide.mode: the installer asks at its one look at page/, so a page/ written during the host
+      // gates can not pass the switch.
+      checkPageMode: async () => {
+        if (!(await readSettings(settingsFile)).on.library) throw new ModeOffError('library')
+      },
+      // kit.gates: the kit row is not a dependency of this row, so a widget with no page/ installs without it.
+      kit: () => ctx.get('kit'),
+    })
+    new WidgetInstallerService(inner, installer)
+    inner.effect(() => () => { installer = undefined }, 'mcp: the widget installer')
+  })
+
+  const modern = createMcpHandler((request) => buildServer(request.authInfo?.clientId ?? 'anonymous'), {
+    legacy: 'stateless',
+    onerror: (error) => { ctx.logger.warn('mcp: the handler reported an error', error) },
+  })
+  const mcpNode = toNodeHandler(modern, { onerror: (error) => { ctx.logger.warn('mcp: the request failed', error) } })
+  const validateHost = localhostHostValidation()
+
+  /**
+   * The fence, for each request on `/mcp` and `/mcp/token`:
+   * - In the desktop app, a request without the forward secret gets 403: only Electron main may call this port.
+   * - A peer that is not loopback gets 403, also when the web server binds a wider address.
+   * - An MCP client is never a browser, so a request with `Origin` or `Sec-Fetch-Site` gets 403.
+   * - A `Host` that is not exactly loopback gets 403, then the SDK guard checks it again.
+   * @returns true when the request may go on; false when the fence answered it.
+   */
+  function fence(req: IncomingMessage, res: ServerResponse): boolean {
+    if (forwarded && !sameSecret(req.headers[FORWARD_HEADER], secret)) {
+      send(res, 403, { error: 'use the port of mcp.json; this port takes only requests that the desktop app forwards' })
+      return false
+    }
+    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+      send(res, 403, { error: 'only loopback clients may use /mcp' })
+      return false
+    }
+    if (req.headers.origin !== undefined || req.headers['sec-fetch-site'] !== undefined) {
+      send(res, 403, { error: 'browser requests are refused' })
+      return false
+    }
+    if (!isLoopbackHost(req.headers.host)) {
+      send(res, 403, { error: 'the Host must be 127.0.0.1, localhost, or [::1]' })
+      return false
+    }
+    return validateHost(req, res)
+  }
+
+  async function issueToken(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      send(res, 405, { error: 'use POST' }, { allow: 'POST' })
+      return
+    }
+    const text = await readSmallBody(req)
+    if (text === undefined) {
+      send(res, 413, { error: `the body is larger than ${String(TOKEN_BODY_LIMIT)} bytes` })
+      return
+    }
+    let agent: unknown
+    let challenge: unknown
+    try {
+      ({ agent, challenge } = (JSON.parse(text) as { agent?: unknown; challenge?: unknown } | null) ?? {})
+    } catch {
+      send(res, 400, { error: 'the body must be JSON { agent, challenge }' })
+      return
+    }
+    if (typeof agent !== 'string' || !AGENT_NAME.test(agent)) {
+      send(res, 400, { error: 'agent must be 1 to 64 printable ASCII characters' })
+      return
+    }
+    if (typeof challenge !== 'string' || !CHALLENGE.test(challenge)) {
+      send(res, 400, { error: 'challenge must be at least 16 random bytes as base64url or hex (22 to 256 characters of A-Z a-z 0-9 _ -)' })
+      return
+    }
+    const token = randomBytes(24).toString('base64url')
+    const base = agent.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'agent'
+    const agentId = `${base}-${randomBytes(3).toString('hex')}`
+    const key = hashToken(token)
+    tokens.set(key, { agentId, agent, issuedAt: new Date().toISOString(), epoch })
+    // The map keeps insertion order, so the first keys are the oldest tokens.
+    const dropped: [string, TokenRow][] = []
+    for (const [oldKey, oldRow] of tokens) {
+      if (tokens.size <= MAX_AGENTS) break
+      tokens.delete(oldKey)
+      dropped.push([oldKey, oldRow])
+    }
+    try {
+      await persist()
+    } catch (error) {
+      // Hand out only a token that the file holds; keep the old rows.
+      tokens.delete(key)
+      const kept = [...tokens]
+      tokens.clear()
+      for (const [oldKey, oldRow] of [...dropped, ...kept]) tokens.set(oldKey, oldRow)
+      ctx.logger.error(`mcp: the token file ${tokenFile} was not written; no token was issued`, error)
+      send(res, 500, { error: 'the token was not saved; retry later' })
+      return
+    }
+    send(res, 200, { token, agentId, proof: mcpProof(nonce, challenge) })
+  }
+
+  async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!fence(req, res)) return
+    const path = (req.url ?? '/').split('?')[0]
+    if (path === '/mcp/token') {
+      await issueToken(req, res)
+      return
+    }
+    if (path !== '/mcp') {
+      send(res, 404, { error: 'not found' })
+      return
+    }
+    const row = agentOf(req.headers.authorization)
+    if (row === undefined) {
+      send(res, 401, { error: 'missing or unknown bearer token; POST /mcp/token { agent, challenge } first' }, { 'www-authenticate': 'Bearer' })
+      return
+    }
+    // The SDK types `method` and `url` as present under exactOptionalPropertyTypes; node:http fills both for a server request.
+    const authed = Object.assign(req, { auth: { token: row.token, clientId: row.agentId, scopes: [] } }) as NodeIncomingMessageLike
+    await mcpNode(authed, res)
+  }
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'prefix',
+    path: '/mcp',
+    handler: (req, res) => handle(req, res).catch((error: unknown) => {
+      ctx.logger.warn('mcp: a request failed', error)
+      if (!res.headersSent) send(res, 500, { error: error instanceof Error ? error.message : String(error) })
+      else res.end()
+    }),
+  }), 'mcp: the /mcp route')
+  ctx.effect(() => () => modern.close(), 'mcp: close the MCP handler')
+  // The route is live before the file names the port, so an agent that reads the file finds /mcp.
+  await ctx.effect(async () => {
+    const port = ctx.webServer.port
+    if (port === undefined) throw new Error('mcp: the web server has no listening port; the port file was not written')
+    if (forwarded) {
+      // Electron main writes the port file with its own port and this nonce, then forwards to this port.
+      await sendToMain({ type: 'deepwidgets-mcp', mcp: { port, nonce, secret } })
+      return async () => {
+        try {
+          await sendToMain({ type: 'deepwidgets-mcp', mcp: null })
+        } catch (error) {
+          ctx.logger.warn('mcp: Electron main did not get the end of the route', error)
+        }
+      }
+    }
+    // A live host owns the file (for example the desktop app while a CLI host starts); do not take it.
+    const owner = await otherOwner(portFile)
+    if (owner !== undefined) {
+      ctx.logger.warn(`mcp: ${portFile} belongs to the live host process ${String(owner)}; this host on port ${String(port)} does not write it`)
+      return () => {}
+    }
+    const content: PortFile = { port, nonce, pid: process.pid, started: Math.round(performance.timeOrigin) }
+    await writeFileAtomic(portFile, `${JSON.stringify(content)}\n`)
+    return async () => {
+      try {
+        await removePortFile(portFile, nonce)
+      } catch (error) {
+        ctx.logger.warn(`mcp: the port file ${portFile} was not removed`, error)
+      }
+    }
+  }, 'mcp: the port file')
+}

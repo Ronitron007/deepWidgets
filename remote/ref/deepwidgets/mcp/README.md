@@ -1,0 +1,165 @@
+# `@deepwidgets/mcp` `mcp_readme`
+
+This package is the MCP server for widgets. An agent uses it to read and change the widgets of the desktop app. The server is a route on the web server of the host. The host is the Node process that runs the plugins.
+
+## Port setting `mcp_readme.port`
+
+The desktop app binds a fixed port. The default port is 47615.
+
+To use a different port, set `DEEPWIDGETS_MCP_PORT`:
+
+- Put the line `DEEPWIDGETS_MCP_PORT=<port>` in `$DSH_HOME/.env`.
+
+- Or set `DEEPWIDGETS_MCP_PORT` in the environment that starts the app.
+
+The value is an integer from 0 to 65535. The value `0` lets the operating system select a free port. A value that is not a port stops the app with an error.
+
+If a different process uses the port, the app does not start. The app shows an error with `listen EADDRINUSE`. To run a second app at the same time, set `DEEPWIDGETS_MCP_PORT=0` for that app.
+
+## Port file `mcp_readme.port_file`
+
+The host writes the file `$DSH_HOME/deepwidgets/mcp.json`. The file has mode 0600, so only your user can read it. The content is:
+
+```json
+{ "port": 47615, "nonce": "<random text>", "pid": 12345, "started": 1793462400000 }
+```
+
+- `port` is the port of the server.
+
+- `nonce` is a random secret. The host makes a new nonce each time that it starts. The nonce never leaves the file.
+
+- `pid` is the process ID of the host.
+
+- `started` is the start time of the host process, in milliseconds since 1970. A different process can get the same process ID later. A process with a different start time is not the owner.
+
+The host does not replace a file whose host process is alive. The host removes its file when it stops. The desktop app removes the file when its host stops unexpectedly or fails to start.
+
+## Token handshake `mcp_readme.handshake`
+
+Before you send a token to a server, make sure that the server is the host. Another process can use the port after the host stops.
+
+1. Read `port` and `nonce` from `$DSH_HOME/deepwidgets/mcp.json`. Keep the nonce in the memory of your process. Do not put the nonce in a command line or in the environment of a different process. Other users can see command lines with `ps`.
+
+2. Make a challenge: at least 16 random bytes, as base64url or hex text.
+
+3. Send `POST http://127.0.0.1:<port>/mcp/token` with the JSON body `{ "agent": "<your name>", "challenge": "<challenge>" }`.
+
+4. The answer is `{ "token", "agentId", "proof" }`.
+
+5. Calculate HMAC-SHA256 of the challenge text. Use the nonce text as the key. Write the result as lowercase hex.
+
+6. If your result is not equal to `proof`, stop. Do not use the token. Do not send any data to the server.
+
+7. If your result is equal to `proof`, use the token. Send it in the header `Authorization: Bearer <token>` on each request to `http://127.0.0.1:<port>/mcp`.
+
+A shell example of the proof calculation. The `node` process reads the nonce from the file itself. Only the challenge, which is not secret, is in the environment:
+
+```bash
+challenge=$(node -e 'process.stdout.write(require("crypto").randomBytes(16).toString("base64url"))')
+# Send the challenge to POST /mcp/token. Then calculate the proof:
+CHALLENGE="$challenge" node -e '
+const { readFileSync } = require("fs"), { join } = require("path"), { homedir } = require("os")
+const file = join(process.env.DSH_HOME || join(homedir(), ".dsh"), "deepwidgets", "mcp.json")
+const { nonce } = JSON.parse(readFileSync(file, "utf8"))
+process.stdout.write(require("crypto").createHmac("sha256", nonce).update(process.env.CHALLENGE).digest("hex"))'
+```
+
+A token is valid only for the host start that issued it. When the host starts again, it has a new nonce, and all earlier tokens get 401. Thus:
+
+- Do not keep a token for a later session.
+
+- After a connection error or a 401, do a new handshake with a new challenge before you send data. A different process can use the port after the host stops.
+
+The host keeps the 64 newest tokens.
+
+## Tools `mcp_readme.tools`
+
+The server `instructions` text is one line: "Call deepwidgets_modes first." An MCP client reads that text only when it connects. Thus the text holds no facts that can change.
+
+| Tool | Mode | Use |
+|---|---|---|
+| `deepwidgets_modes` | all | Gives each mode, with its goal, `on`, its setting, its tools, and its guide. It also gives the path of the settings file, and the parse error of that file. |
+| `widget_list` | shared | Gives the live widgets and a cursor for `widget_changes`. |
+| `widget_guide` | shared | Gives the guide of one mode. Send `mode` with the value `interact`, `create`, or `library`. |
+| `widget_describe` | `interact` | Gives the actions of one widget, the argument schemas, and the state. For a widget that `widget_install` installed, it also gives `source`, the absolute path of the install folder. |
+| `widget_call` | `interact` | Runs one action. For a change, send a new `requestId`. |
+| `widget_changes` | `interact` | Gives the changes after a cursor. |
+| `widget_template` | `create` | Gives the files of the TypeScript widget template. |
+| `widget_install` | `create` | Runs the gates on a widget folder and installs the widget. A second install of one slug replaces the bundle. The state stays. |
+| `widget_reload` | `create` | Runs the gates on the install folder of a widget again and replaces the bundle. |
+| `widget_remove` | `create` | Removes the bundle of a widget. The state stays. |
+| `library_template` | `library` | Gives the five files of the page folder of a widget: the three fixed files, an example `child.tsx`, and an example `library.tsx`. The example child has the catalog id `<slug>@1`. |
+
+Each tool error gives `code`, `message`, and `nextStep`. A creation error also gives `gate` and `diagnostics`.
+
+The main widget, with the slug `main`, is for the operator only (`main_widget.widget`). `widget_list` does not list it, and `widget_changes` does not give its changes. `widget_describe` and `widget_call` give `unknown-widget` for it, as for a slug that does not exist. `widget_install` gives `slug-taken` for it, because it is a built-in widget.
+
+The row also provides the service `widgetInstaller` to the main widget. It gives the remove path of `widget_remove` and the source folder of an agent widget. The mode `create` does not gate it, because the operator calls it, not an agent.
+
+## Modes `mcp_readme.modes`
+
+A mode is one type of job that an agent does through this server. The spec is `docs/specs/modes.md`.
+
+| Mode | Goal | Setting |
+|---|---|---|
+| `interact` | Use widgets that exist. | None. This mode is always on. |
+| `create` | Write, change, or remove a widget. | `modes.create` |
+| `library` | Write the page of a widget with components of the agent. | `modes.library` |
+
+The settings file is `$DSH_HOME/deepwidgets/settings.json`. This is the content:
+
+```json
+{ "modes": { "create": true, "library": true } }
+```
+
+- The value `false` turns that mode off.
+
+- The server reads the file at each call of a tool. Thus a change to the file has an effect at the next call. You do not restart the app.
+
+- If the file or the key is missing, each mode is on.
+
+- If the file does not parse, each mode is on. `deepwidgets_modes` gives the error in `settingsError`.
+
+- The file also holds the key `kit` of the widget kit (spec `kit.settings`). A switch of a mode keeps this key.
+
+When a mode is off, its tools stay in the tool list. A call of `widget_install`, `widget_reload`, or `widget_remove` then does nothing. It gives the error code `mode-off`, with the fields `mode`, `setting`, and `settingsFile`. `widget_template` and `widget_guide` still answer, because they only read.
+
+When the mode `library` is off, `library_template` gives `mode-off` (spec `agent_library.guide.mode`). `widget_install` and `widget_reload` also give `mode-off`, with the mode `library`, for a widget folder that has `page/`. A widget folder with no `page/` installs as before. A page that is installed keeps its window.
+
+## Gates `mcp_readme.gates`
+
+`widget_install` and `widget_reload` copy `src/` of the widget folder into a temporary folder. Then they run these gates in order:
+
+1. Compile: esbuild bundles `src/index.ts` and zod into one file.
+
+2. Lint: oxlint, type-aware, with a type check against `widget/widget.d.ts`. The rules refuse a raw `setTimeout`, `setInterval`, `setImmediate`, or `queueMicrotask`, a floating promise, and a loop with no exit.
+
+3. Test run: a new process with a 256 MB heap runs `apply`, calls each action once, and lets timers run for 1.5 s.
+
+Code that fails a gate does not go into the host. The plugin manager installs a bundle that passes from the folder `<profile>/deepwidgets-widgets/<slug>`.
+
+A widget folder with `page/` also runs the page gates (`src/page-gate.ts`). The build gate `page-build` has two fences:
+
+- The import fence finds each import of a page file that is not on the allowed list.
+
+- The output fence finds each file that went into the page from outside `page/` and outside the allowed packages.
+
+The page gates use the widget kit (spec `kit`, package `@deepwidgets/kit`):
+
+- The staging `node_modules` folder has links to the core and to each extra of the current kit version. The installer gets their folders from `folders()` of the service `kit`. A page build uses no network.
+
+- Each extra is an allowed import, with its subpaths, such as `date-fns` and `date-fns/addDays`.
+
+- When the kit is unavailable, or while another process holds the lock of the kit, `widget_install` and `widget_reload` of a folder with `page/` give the error code `kit-unavailable` at once. They do not wait for the kit. Its next step tells the agent to try again. A folder with no `page/` installs as before.
+
+The render check gets the catalog of the widget definition. When the `CATALOG_ID` of `page/child.tsx` is another id, the gate `page-render` refuses the page with the diagnostic code `wrong-catalog` (spec `agent_library.guide.catalog`).
+
+The fences do not refuse the page (spec `agent_library.fence_warn`). Each finding is a warning of the gate `page-build`, and the install answer lists it. The host writes one warning line to its logger for each install that has such a warning. A PostCSS or Tailwind config file, `@plugin`, and `@config` still refuse the page.
+
+## Limits `mcp_readme.limits`
+
+- The server accepts only requests from this computer (loopback addresses). It refuses browser requests.
+
+- The handshake does not protect against a process of your own user. That process can read `mcp.json`.
+
+- The proof checks the server only at the handshake. If the host stops during a session, a different process can get the requests that follow. The steps above limit this to the requests before the first error.
