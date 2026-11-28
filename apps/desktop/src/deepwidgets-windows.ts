@@ -5,6 +5,8 @@
  * lists a page link for it, else the shared shell. This module also answers the requests of a widget origin.
  * The Host decides whether each window shows (`main_widget.window_state`, decision `widget.window_manager`): each frame
  * of the events stream carries the shown state, and this module shows or hides the window to match it.
+ * Each window has the bar of `window_manager.bar` (`deepwidgets-window-bar.ts`). The bar changes the layer, the lock,
+ * and the position of the window (`window_manager.move`). This module keeps that window data in memory, by slug.
  * @module deepwidgets-windows
  */
 import { join } from 'node:path'
@@ -12,6 +14,8 @@ import { BrowserWindow, screen } from 'electron'
 import { EventSourceParserStream } from 'eventsource-parser/stream'
 import { isWidgetSlug, widgetRoute, widgetUrl, type WidgetPageMode, type WidgetPages } from './deepwidgets-origin.ts'
 import { servePageFile } from './deepwidgets-page-path.ts'
+import { WidgetWindowBars, type WidgetBar } from './deepwidgets-window-bar.ts'
+import { defaultPosition, newWindowData, placeWindow, type ScreenPoint, type WidgetWindowData } from './deepwidgets-window-place.ts'
 
 /** One frame of `GET /api/widgets/events` (`widget_mvp.runtime.routes`, `main_widget.window_state`). */
 type WidgetEvent =
@@ -25,9 +29,6 @@ interface WidgetHostTarget {
   readonly cookie: string
 }
 
-const WIDGET_WIDTH = 320
-const WIDGET_HEIGHT = 300
-const WIDGET_GAP = 16
 const RETRY_FIRST_MS = 500
 const RETRY_MAX_MS = 10_000
 /** A second failure of an agent page in this time puts its window on the shared shell (`agent_library.serving.failures`). */
@@ -85,6 +86,15 @@ interface WidgetWindow {
   shown: boolean
   /** True after a load of the window ended: a Show can show it at once. */
   loaded?: true
+  /** The place of the window in the default column of its layer. */
+  readonly row: number
+  /** The bar over the page (`window_manager.bar`). */
+  readonly bar: WidgetBar
+  /**
+   * True from a `will-move`, which comes only for a move by the operator, such as a drag area of the page. A move of
+   * this module sets it false first: on macOS, `moved` also comes for a move from code (`window_manager.move`).
+   */
+  nativeMove: boolean
 }
 
 /** How the widget origin reaches the shared shell and the Host. Electron main gives these. */
@@ -102,6 +112,15 @@ export interface WidgetOriginServers {
  */
 export class DesktopWidgetWindows {
   private readonly windows = new Map<string, WidgetWindow>()
+  /** The window data of each slug that had a window in this run. It stays after the window closes. */
+  private readonly data = new Map<string, WidgetWindowData>()
+  /** The bars of the windows. Their controls change the window data. */
+  readonly bars = new WidgetWindowBars({
+    toggle: (slug, control) => { this.toggle(slug, control) },
+    movable: slug => this.data.get(slug)?.locked === false,
+    drag: (slug, point) => { this.dragged(slug, point) },
+  })
+  private watchingDisplays = false
   /** The page state of the Host. It stays across a Host restart, because the page files stay. */
   private pages: WidgetPages | undefined
   private target: WidgetHostTarget | undefined
@@ -169,6 +188,7 @@ export class DesktopWidgetWindows {
     this.stopped = true
     this.target = undefined
     this.halt()
+    this.bars.stop()
     for (const { window } of this.windows.values()) if (!window.isDestroyed()) window.hide()
   }
 
@@ -227,9 +247,9 @@ export class DesktopWidgetWindows {
   }
 
   /**
-   * Open the panel window of one slug once: no frame, always on top, on all Spaces,
-   * and shown without focus, as the trace window. Each window has its own renderer.
-   * A window that is open already takes the shown state.
+   * Open the panel window of one slug once: no frame, on all Spaces, and shown without focus, as the trace window.
+   * Each window has its own renderer, and the bar over it. The window data of the slug gives its layer, lock, place,
+   * and size (`window_manager.move`). A window that is open already takes the shown state.
    * @param shown - false keeps the window hidden (`main_widget.window_state`).
    */
   private open(slug: string, shown: boolean): void {
@@ -239,25 +259,43 @@ export class DesktopWidgetWindows {
       this.show(existing, shown)
       return
     }
-    const area = screen.getPrimaryDisplay().workArea
+    this.watchDisplays()
+    const data = this.dataOf(slug)
     const row = this.windows.size
+    const place = this.placeOf(data, row)
     const window = new BrowserWindow({
-      x: area.x + WIDGET_GAP,
-      y: Math.min(area.y + WIDGET_GAP + row * (WIDGET_HEIGHT + WIDGET_GAP), area.y + area.height - WIDGET_HEIGHT),
-      width: WIDGET_WIDTH,
-      height: WIDGET_HEIGHT,
-      resizable: true,
+      x: place.x,
+      y: place.y,
+      width: data.width,
+      height: data.height,
+      resizable: data.resizable,
+      movable: !data.locked,
       frame: false,
-      alwaysOnTop: true,
+      alwaysOnTop: data.layer === 'top',
+      // A press on the bar of a window of an app that is not in front also reaches the bar, so one press starts a drag.
+      acceptFirstMouse: true,
       show: false,
       title: `deepWidgets ${slug}`,
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
     })
     const stamp = this.pages?.pages.get(slug)
-    const entry: WidgetWindow = { window, mode: stamp === undefined ? 'shell' : 'page', stamp, loads: 0, counted: 0, failures: [], shown }
+    const bar = this.bars.attach(slug, window, { layer: data.layer, locked: data.locked })
+    const entry: WidgetWindow = { window, mode: stamp === undefined ? 'shell' : 'page', stamp, loads: 0, counted: 0, failures: [], shown, row, bar, nativeMove: false }
     this.windows.set(slug, entry)
     window.once('closed', () => { if (this.windows.get(slug) === entry) this.windows.delete(slug) })
     window.setVisibleOnAllWorkspaces(true, { skipTransformProcessType: true })
+    window.on('will-move', () => { entry.nativeMove = true })
+    window.on('moved', () => {
+      if (!entry.nativeMove || window.isDestroyed()) return
+      const [x = 0, y = 0] = window.getPosition()
+      data.position = { x, y }
+    })
+    window.on('resized', () => {
+      if (!data.resizable || window.isDestroyed()) return
+      const [width = data.width, height = data.height] = window.getSize()
+      data.width = width
+      data.height = height
+    })
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     window.webContents.on('will-navigate', (event) => { event.preventDefault() })
     window.webContents.on('render-process-gone', (_event, details) => {
@@ -275,7 +313,10 @@ export class DesktopWidgetWindows {
     const { window } = entry
     if (window.isDestroyed()) return
     if (!shown) window.hide()
-    else if (entry.loaded === true && !window.isVisible()) window.showInactive()
+    else if (entry.loaded === true && !window.isVisible()) {
+      window.showInactive()
+      this.bars.watch()
+    }
   }
 
   /**
@@ -290,7 +331,10 @@ export class DesktopWidgetWindows {
     void window.loadURL(url).then(() => {
       if (window.isDestroyed() || this.stopped || load !== entry.loads) return
       entry.loaded = true
-      if (entry.shown) window.showInactive()
+      if (entry.shown) {
+        window.showInactive()
+        this.bars.watch()
+      }
     }, (error: unknown) => {
       // A newer load stopped this one.
       if (window.isDestroyed() || load !== entry.loads) return
@@ -327,5 +371,75 @@ export class DesktopWidgetWindows {
     const entry = this.windows.get(slug)
     this.windows.delete(slug)
     if (entry !== undefined && !entry.window.isDestroyed()) entry.window.destroy()
+  }
+
+  /** The window data of a slug. A slug with no data gets the data of a new widget. */
+  private dataOf(slug: string): WidgetWindowData {
+    let data = this.data.get(slug)
+    if (data === undefined) {
+      data = newWindowData()
+      this.data.set(slug, data)
+    }
+    return data
+  }
+
+  /** The place of a window on the current displays (`window_manager.move`). */
+  private placeOf(data: WidgetWindowData, row: number): ScreenPoint {
+    return placeWindow(data, row, screen.getPrimaryDisplay().workArea, screen.getAllDisplays().map(display => display.bounds))
+  }
+
+  /** Move a window from code. The `moved` event of this move is not a move by the operator. */
+  private moveTo(entry: WidgetWindow, point: ScreenPoint): void {
+    if (entry.window.isDestroyed()) return
+    entry.nativeMove = false
+    entry.window.setPosition(point.x, point.y)
+  }
+
+  /**
+   * At each change of the displays, a window that touches no display moves to the default position of its layer. The
+   * move is not an operator choice, so the stored position stays (`window_manager.move`).
+   */
+  private watchDisplays(): void {
+    if (this.watchingDisplays) return
+    this.watchingDisplays = true
+    const check = (): void => {
+      for (const [slug, entry] of this.windows) {
+        const data = this.data.get(slug)
+        if (data === undefined || entry.window.isDestroyed()) continue
+        const [x = 0, y = 0] = entry.window.getPosition()
+        const place = this.placeOf({ ...data, position: { x, y } }, entry.row)
+        if (place.x !== x || place.y !== y) this.moveTo(entry, place)
+      }
+    }
+    screen.on('display-removed', check)
+    screen.on('display-metrics-changed', check)
+  }
+
+  /**
+   * The layer button and the lock button of the bar (`window_manager.bar`). A layer change of a window with no stored
+   * position moves it to the default position of the other layer. A lock stops a move, and not a resize.
+   */
+  private toggle(slug: string, control: 'layer' | 'lock'): void {
+    const entry = this.windows.get(slug)
+    const data = this.data.get(slug)
+    if (entry === undefined || data === undefined || entry.window.isDestroyed()) return
+    if (control === 'layer') {
+      data.layer = data.layer === 'top' ? 'normal' : 'top'
+      entry.window.setAlwaysOnTop(data.layer === 'top')
+      if (data.position === undefined) this.moveTo(entry, defaultPosition(data.layer, entry.row, screen.getPrimaryDisplay().workArea, data))
+    } else {
+      data.locked = !data.locked
+      entry.window.setMovable(!data.locked)
+    }
+    entry.bar.setState({ layer: data.layer, locked: data.locked })
+  }
+
+  /** A drag on the handle of the bar. The new position is an operator choice. */
+  private dragged(slug: string, point: ScreenPoint): void {
+    const entry = this.windows.get(slug)
+    const data = this.data.get(slug)
+    if (entry === undefined || data === undefined || data.locked) return
+    this.moveTo(entry, point)
+    data.position = point
   }
 }
