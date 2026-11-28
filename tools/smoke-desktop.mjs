@@ -1391,6 +1391,14 @@ async function checkWmTurnOn(deadline) {
  */
 async function checkWmHostDown(deadline) {
   const hellos = await withWidgetWindows(deadline, countHellos())
+  // hello_undo_check_misses_short_flip: a flip back to `top` lasts one round trip to the host, shorter than a poll. So
+  // the check records each layer that Electron main sets on the window from the next hello on.
+  await withWidgetWindows(deadline, `function () {
+    const original = Object.getPrototypeOf(this).setLayer
+    this.__smokeLayers = []
+    this.setLayer = function (window, layer) { this.__smokeLayers.push({ layer, hellos: this.__smokeHellos }); return original.call(this, window, layer) }
+    return true
+  }`)
   const kill = await killHost('wm')
   const gap = await wmMain(deadline, `
     let gone = false
@@ -1405,15 +1413,20 @@ async function checkWmHostDown(deadline) {
   if (gap?.gone !== true || gap.changed !== true || gap.pending?.layer !== 'normal') return `wm: a layer click while the Host is down does not wait in Electron main: ${JSON.stringify(gap)}`
   if (!await waitForNewHost(kill.pid, Math.min(deadline, Date.now() + 60_000))) return 'wm: no new host after the kill'
   const kept = await wmMain(deadline, `
-    let flips = 0
+    let result = { ok: false, timeout: true }
     for (const end = Date.now() + 45000; Date.now() < end; await sleep(20)) {
       const wm = read()
-      const helloed = this.__smokeHellos > ${String(hellos)}
-      if (helloed && wm.top) flips += 1
-      if (helloed && wm.pending === null && wm.host?.layer === 'normal') return { ok: flips === 0 && !wm.top, flips, value: wm }
+      if (this.__smokeHellos > ${String(hellos)} && wm.pending === null && wm.host?.layer === 'normal') {
+        result = { ok: !wm.top, value: wm }
+        break
+      }
     }
-    return { ok: false, timeout: true, hellos: this.__smokeHellos, value: read() }`)
-  note(`wm after the host restart: ${JSON.stringify({ ok: kept?.ok, flips: kept?.flips, timeout: kept?.timeout, host: kept?.value?.host, top: kept?.value?.top })}`)
+    const layers = this.__smokeLayers
+    delete this.setLayer
+    delete this.__smokeLayers
+    const flips = layers.filter((item) => item.hellos > ${String(hellos)} && item.layer === 'top').length
+    return { ...result, ok: result.ok === true && flips === 0, flips, layers, hellos: this.__smokeHellos }`)
+  note(`wm after the host restart: ${JSON.stringify({ ok: kept?.ok, flips: kept?.flips, layers: kept?.layers, timeout: kept?.timeout, host: kept?.value?.host, top: kept?.value?.top })}`)
   if (kept?.ok !== true) return `wm: after the host restart, the layer click of the gap did not reach the Host, or the hello undid it: ${JSON.stringify(kept)}`
   const back = await wmMain(deadline, `
     const failed = await click('layer')
